@@ -70,7 +70,6 @@ cargo run --locked --manifest-path rust/Cargo.toml --example convert_parquet -- 
 New native readers implement `BatchSource::open`, returning a
 `RecordBatchReader + Send` with a fixed schema. Callers already producing Arrow
 can use `LanceSink::create`, `write_batch`, and `finish` directly.
-See [the interface and lifecycle design](docs/architecture.md).
 
 ## Versions
 
@@ -80,7 +79,7 @@ These are separate version numbers:
 | --- | --- | --- |
 | This extension | `0.1.0` | `rust/Cargo.toml` package version |
 | Compatible DuckDB | `v1.5.4` | pinned `duckdb` submodule |
-| Lance Rust dependency | `11.0.0` | pinned Cargo dependency and lockfile |
+| Lance Rust dependency | `f3dc9364c07d6e84706e1f07a9a0654b4ec480f1` | upstream Git revision and Cargo lockfile |
 
 `extension_config.cmake` reads the Cargo package version and passes it as
 `EXTENSION_VERSION`, so DuckDB's extension metadata and `Version()` report the
@@ -96,8 +95,9 @@ WHERE extension_name = 'lance_conversion';
 ## Build
 
 Prerequisites: CMake, a C++17 compiler, Cargo/Rust, and `protoc`. The Rust lockfile
-pins Lance 11.0.0 and Arrow 58.4.0; local verification used Rust 1.97.1 and macOS
-arm64. No OpenSSL/vcpkg dependency is needed by the extension template anymore.
+pins the Lance upstream revision above and resolves the Arrow 58 dependency family.
+Cargo uses the committed lockfile for reproducible builds. No OpenSSL/vcpkg
+dependency is needed by the extension template anymore.
 
 ```sh
 git submodule update --init --recursive
@@ -119,22 +119,19 @@ The C++ extension is tied to the DuckDB version it was built against.
 Run the SQL regression using the already-built runner (no compilation):
 
 ```sh
-./build/reldebug/test/unittest test/sql/lance_conversion.test
+./build/reldebug/test/unittest "test/sql/*.test"
 ```
 
-Build/run Rust core tests and the end-to-end test against the extension:
+Run the standalone Rust tests (all run by default):
 
 ```sh
-DUCKDB_BINARY="$PWD/build/reldebug/duckdb" LANCE_EXTENSION="$PWD/build/reldebug/extension/lance_conversion/lance_conversion.duckdb_extension" cargo test --locked --manifest-path rust/Cargo.toml   --target-dir build/reldebug/rust-lance-conversion -- --include-ignored
+cargo test --locked --manifest-path rust/Cargo.toml --target-dir build/reldebug/rust-lance-conversion
 ```
 
-Without `--include-ignored`, the integration test is skipped because it requires
-the separately built DuckDB shell and extension. Core tests still run.
-The integration test generates one Parquet file, exports it via COPY, reads the
-Lance dataset with Rust, and compares values across all 10,001 rows. It also
-checks empty input, existing outputs, upstream failure, and unsupported options
-and types. The native tests cover writer failure, schema mismatch, aborted writes,
-and multiple input batches.
+The Rust tests cover single-file Parquet conversion, exact values across 10,001
+rows, empty input, existing outputs, writer failure, schema mismatch, aborted
+writes, and overwrite behavior. The SQL tests exercise COPY and extension version
+reporting through DuckDB's test runner.
 
 ## Scope and limits
 
