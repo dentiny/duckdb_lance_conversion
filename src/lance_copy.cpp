@@ -11,8 +11,9 @@
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 
 namespace duckdb {
+namespace {
 
-static void CheckLance(int32_t result) {
+void CheckLance(int32_t result) {
 	if (result != 0) {
 		throw IOException("Lance conversion: %s", lance_conversion_last_error());
 	}
@@ -45,7 +46,7 @@ struct LanceGlobalState : public GlobalFunctionData {
 	}
 };
 
-static void ValidateDuckDBType(const LogicalType &type) {
+void ValidateDuckDBType(const LogicalType &type) {
 	switch (type.id()) {
 	case LogicalTypeId::BOOLEAN:
 	case LogicalTypeId::TINYINT:
@@ -86,8 +87,8 @@ static void ValidateDuckDBType(const LogicalType &type) {
 	}
 }
 
-static unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput &input,
-                                          const vector<string> &names, const vector<LogicalType> &types) {
+unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput &input, const vector<string> &names,
+                                   const vector<LogicalType> &types) {
 	auto result = make_uniq<LanceBindData>();
 	result->names = names;
 	result->types = types;
@@ -121,8 +122,7 @@ static unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBi
 	return std::move(result);
 }
 
-static unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionData &bind_p,
-                                                      const string &path) {
+unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionData &bind_p, const string &path) {
 	auto &bind = bind_p.Cast<LanceBindData>();
 	ArrowSchemaWrapper schema;
 	ArrowConverter::ToArrowSchema(&schema.arrow_schema, bind.types, bind.names, bind.properties);
@@ -131,12 +131,12 @@ static unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, Fu
 	return std::move(state);
 }
 
-static unique_ptr<LocalFunctionData> LanceLocalInitialize(ExecutionContext &context, FunctionData &bind) {
+unique_ptr<LocalFunctionData> LanceLocalInitialize(ExecutionContext &context, FunctionData &bind) {
 	return make_uniq<LocalFunctionData>();
 }
 
-static void LanceSinkChunk(ExecutionContext &context, FunctionData &bind_p, GlobalFunctionData &global_p,
-                           LocalFunctionData &local, DataChunk &input) {
+void LanceSinkChunk(ExecutionContext &context, FunctionData &bind_p, GlobalFunctionData &global_p,
+                    LocalFunctionData &local, DataChunk &input) {
 	auto &bind = bind_p.Cast<LanceBindData>();
 	auto &global = global_p.Cast<LanceGlobalState>();
 	ArrowArrayWrapper array;
@@ -144,15 +144,15 @@ static void LanceSinkChunk(ExecutionContext &context, FunctionData &bind_p, Glob
 	CheckLance(lance_conversion_push(global.writer, &array.arrow_array));
 }
 
-static void LanceFinalize(ClientContext &context, FunctionData &bind, GlobalFunctionData &global_p) {
+void LanceFinalize(ClientContext &context, FunctionData &bind, GlobalFunctionData &global_p) {
 	CheckLance(lance_conversion_finish(global_p.Cast<LanceGlobalState>().writer));
 }
 
-static CopyFunctionExecutionMode LanceExecutionMode(bool preserve_order, bool supports_batch_index) {
+CopyFunctionExecutionMode LanceExecutionMode(bool preserve_order, bool supports_batch_index) {
 	return CopyFunctionExecutionMode::REGULAR_COPY_TO_FILE;
 }
 
-static CopyFunction MakeLanceCopyFunction() {
+CopyFunction MakeLanceCopyFunction() {
 	CopyFunction function("lance");
 	function.extension = "lance";
 	function.copy_to_bind = LanceBind;
@@ -165,7 +165,7 @@ static CopyFunction MakeLanceCopyFunction() {
 }
 
 // Own the plan so DuckDB file rotation/overwrite options cannot operate on a dataset directory.
-static BoundStatement LancePlan(Binder &binder, CopyStatement &statement) {
+BoundStatement LancePlan(Binder &binder, CopyStatement &statement) {
 	auto function = MakeLanceCopyFunction();
 	auto query = statement.info->select_statement->Copy();
 	auto source = binder.Bind(*query);
@@ -191,6 +191,8 @@ static BoundStatement LancePlan(Binder &binder, CopyStatement &statement) {
 	result.plan = std::move(copy);
 	return result;
 }
+
+} // namespace
 
 void RegisterLanceCopyFunction(ExtensionLoader &loader) {
 	auto function = MakeLanceCopyFunction();
