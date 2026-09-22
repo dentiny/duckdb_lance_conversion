@@ -1,6 +1,6 @@
 # name: test/sql/lance_conversion.test
 # description: Single Parquet file to a Lance dataset
-# group: [lance_conversion]
+# group: [sql]
 
 require lance_conversion
 
