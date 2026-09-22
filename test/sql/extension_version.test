@@ -1,6 +1,6 @@
 # name: test/sql/extension_version.test
 # description: Verify the Lance conversion extension release version
-# group: [lance_conversion]
+# group: [sql]
 
 require lance_conversion
 
