@@ -10,10 +10,10 @@ use arrow_array::{
 };
 use arrow_schema::{ffi::FFI_ArrowSchema, DataType, Schema};
 
-use crate::{LanceSink, WriteOptions};
+use crate::{LanceWriter, WriteOptions};
 
 pub struct LanceConversionWriter {
-    sink: LanceSink,
+    sink: LanceWriter,
     runtime: tokio::runtime::Runtime,
 }
 
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn lance_conversion_open(
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        let sink = runtime.block_on(LanceSink::create(path, schema, options))?;
+        let sink = runtime.block_on(LanceWriter::create(path, schema, options))?;
         *output = Box::into_raw(Box::new(LanceConversionWriter { sink, runtime }));
         Ok(())
     })

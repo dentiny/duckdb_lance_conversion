@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 
 use anyhow::{ensure, Context, Result};
-use arrow_schema::ArrowError;
-use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream};
+use arrow_schema::SchemaRef;
 use futures::TryStreamExt;
 use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
 use tokio::fs::File;
 
-use super::BatchSource;
+use super::{BatchSource, BatchStream};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
 
@@ -31,7 +30,7 @@ impl ParquetFileSource {
 }
 
 impl BatchSource for ParquetFileSource {
-    async fn open(self) -> Result<SendableRecordBatchStream> {
+    async fn open(self) -> Result<(SchemaRef, BatchStream)> {
         ensure!(self.batch_size > 0, "batch_size must be positive");
         let file = File::open(&self.path)
             .await
@@ -46,7 +45,7 @@ impl BatchSource for ParquetFileSource {
             .with_batch_size(self.batch_size)
             .build()?;
         let schema = reader.schema().clone();
-        let stream = reader.map_err(|error| ArrowError::ExternalError(Box::new(error)).into());
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+        let batches = reader.map_err(anyhow::Error::from);
+        Ok((schema, Box::pin(batches)))
     }
 }

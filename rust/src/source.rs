@@ -1,24 +1,17 @@
 use std::future::Future;
-use std::path::Path;
+use std::pin::Pin;
 
 use anyhow::Result;
-use datafusion_physical_plan::SendableRecordBatchStream;
-
-use crate::{write_stream, WriteOptions, WriteSummary};
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
+use futures::Stream;
 
 mod parquet;
 pub use parquet::ParquetFileSource;
 
-/// Adapters asynchronously open a batch stream with a fixed schema.
-/// Future directory, Hub and WARC readers can implement this same contract.
-pub trait BatchSource: Send {
-    fn open(self) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send;
-}
+pub type BatchStream = Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send + 'static>>;
 
-pub async fn convert(
-    source: impl BatchSource,
-    destination: impl AsRef<Path>,
-    options: WriteOptions,
-) -> Result<WriteSummary> {
-    write_stream(destination, source.open().await?, options).await
+/// Open an async Arrow batch stream and its fixed schema.
+pub trait BatchSource: Send {
+    fn open(self) -> impl Future<Output = Result<(SchemaRef, BatchStream)>> + Send;
 }

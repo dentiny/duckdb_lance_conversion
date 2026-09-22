@@ -1,6 +1,6 @@
 mod common;
 
-use lance_conversion::{convert, LanceSink, ParquetFileSource, WriteOptions};
+use lance_conversion::{convert, LanceSink, LanceWriter, ParquetFileSource, WriteOptions};
 use parquet::arrow::async_writer::AsyncArrowWriter;
 use tempfile::tempdir;
 use tokio::{fs::File, task::spawn_blocking};
@@ -19,8 +19,7 @@ async fn single_parquet_streams_multiple_batches_into_lance() {
     writer.close().await.unwrap();
     let result = convert(
         ParquetFileSource::new(input).with_batch_size(257),
-        &output,
-        WriteOptions::default(),
+        LanceSink::new(&output, WriteOptions::default()),
     )
     .await
     .unwrap();
@@ -43,8 +42,7 @@ async fn empty_parquet_preserves_schema() {
         .unwrap();
     let result = convert(
         ParquetFileSource::new(input),
-        &output,
-        WriteOptions::default(),
+        LanceSink::new(&output, WriteOptions::default()),
     )
     .await
     .unwrap();
@@ -59,7 +57,7 @@ async fn overwrite_replaces_rows_and_can_commit_an_empty_dataset() {
     let output = temp.path().join("overwrite.lance");
     for (rows, overwrite) in [(10, false), (3, true), (0, true)] {
         let batch = fixture(rows);
-        let mut writer = LanceSink::create(&output, batch.schema(), WriteOptions { overwrite })
+        let mut writer = LanceWriter::create(&output, batch.schema(), WriteOptions { overwrite })
             .await
             .unwrap();
         if rows != 0 {

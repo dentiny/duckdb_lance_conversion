@@ -1,5 +1,5 @@
 use std::panic::AssertUnwindSafe;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -7,9 +7,9 @@ use std::sync::{
 
 use anyhow::{anyhow, ensure, Context, Result};
 use arrow_array::RecordBatch;
-use arrow_schema::{ArrowError, DataType, SchemaRef};
+use arrow_schema::{ArrowError, SchemaRef};
 use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream};
-use futures::{stream, FutureExt, TryStreamExt};
+use futures::{stream, FutureExt, Stream, TryStreamExt};
 use lance::{
     dataset::{write::InsertBuilder, WriteMode, WriteParams},
     Dataset,
@@ -20,14 +20,50 @@ use tokio::{
     task::JoinHandle,
 };
 
+use super::{BatchSink, WriteSummary};
+use crate::schema::validate_schema;
+
 #[derive(Clone, Debug, Default)]
 pub struct WriteOptions {
     pub overwrite: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WriteSummary {
-    pub rows_written: u64,
+/// Local Lance output configuration for a native Arrow stream.
+pub struct LanceSink {
+    destination: PathBuf,
+    options: WriteOptions,
+}
+
+impl LanceSink {
+    pub fn new(destination: impl Into<PathBuf>, options: WriteOptions) -> Self {
+        Self {
+            destination: destination.into(),
+            options,
+        }
+    }
+}
+
+impl BatchSink for LanceSink {
+    async fn write<S>(self, schema: SchemaRef, batches: S) -> Result<WriteSummary>
+    where
+        S: Stream<Item = Result<RecordBatch>> + Send + 'static,
+    {
+        validate_schema(&schema)?;
+        let expected_schema = schema.clone();
+        let batches = batches.and_then(move |batch| {
+            let result = if batch.schema().as_ref() == expected_schema.as_ref() {
+                Ok(batch)
+            } else {
+                Err(anyhow!("batch schema does not match the conversion schema"))
+            };
+            futures::future::ready(result)
+        });
+        let batches = batches.map_err(|error| ArrowError::ExternalError(error.into()).into());
+        let stream = Box::pin(RecordBatchStreamAdapter::new(schema, batches));
+        let owns_destination =
+            reserve_destination(&self.destination, self.options.overwrite).await?;
+        write_reserved_stream(&self.destination, stream, owns_destination).await
+    }
 }
 
 enum Message {
@@ -62,12 +98,12 @@ enum SinkState {
 
 /// Push-based adapter for callers such as DuckDB, with at most one queued batch.
 /// Dropping the sender lets the writer task clean up an unfinished dataset.
-pub struct LanceSink {
+pub struct LanceWriter {
     schema: SchemaRef,
     state: SinkState,
 }
 
-impl LanceSink {
+impl LanceWriter {
     pub async fn create(
         destination: impl AsRef<Path>,
         schema: SchemaRef,
@@ -142,29 +178,6 @@ impl LanceSink {
         self.state = SinkState::Failed;
         result.context("Lance writer task failed")?
     }
-}
-
-/// Write an async batch stream directly, without the push adapter's channel.
-pub async fn write_stream(
-    destination: impl AsRef<Path>,
-    stream: SendableRecordBatchStream,
-    options: WriteOptions,
-) -> Result<WriteSummary> {
-    validate_schema(&stream.schema())?;
-    let destination = destination.as_ref();
-    let owns_destination = reserve_destination(destination, options.overwrite).await?;
-    write_reserved_stream(destination, stream, owns_destination).await
-}
-
-fn validate_schema(schema: &SchemaRef) -> Result<()> {
-    ensure!(
-        !schema.fields().is_empty(),
-        "Lance requires at least one column"
-    );
-    for field in schema.fields() {
-        validate_type(field.data_type())?;
-    }
-    Ok(())
 }
 
 async fn reserve_destination(destination: &Path, overwrite: bool) -> Result<bool> {
@@ -246,44 +259,4 @@ async fn write_dataset(
             .await?;
     }
     Ok(())
-}
-
-fn validate_type(data_type: &DataType) -> Result<()> {
-    match data_type {
-        DataType::Boolean
-        | DataType::Int8
-        | DataType::Int16
-        | DataType::Int32
-        | DataType::Int64
-        | DataType::UInt8
-        | DataType::UInt16
-        | DataType::UInt32
-        | DataType::UInt64
-        | DataType::Float16
-        | DataType::Float32
-        | DataType::Float64
-        | DataType::Utf8
-        | DataType::LargeUtf8
-        | DataType::Binary
-        | DataType::LargeBinary
-        | DataType::FixedSizeBinary(_)
-        | DataType::Decimal128(_, _)
-        | DataType::Date32
-        | DataType::Date64
-        | DataType::Time32(_)
-        | DataType::Time64(_)
-        | DataType::Timestamp(_, _) => Ok(()),
-        DataType::List(field) | DataType::LargeList(field) | DataType::FixedSizeList(field, _) => {
-            validate_type(field.data_type())
-        }
-        DataType::Struct(fields) => {
-            for field in fields {
-                validate_type(field.data_type())?;
-            }
-            Ok(())
-        }
-        _ => Err(anyhow!(
-            "unsupported Arrow type {data_type}; cast it explicitly"
-        )),
-    }
 }

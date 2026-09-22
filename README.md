@@ -77,26 +77,38 @@ output. A subsequent DuckDB transaction rollback does not roll back Lance writes
 The standalone core can convert Parquet without DuckDB:
 
 ```rust
-use lance_conversion::{convert, ParquetFileSource, WriteOptions};
+use lance_conversion::{convert, LanceSink, ParquetFileSource, WriteOptions};
 
 let result = convert(
     ParquetFileSource::new("input.parquet").with_batch_size(8192),
-    "output.lance",
-    WriteOptions::default(),
+    LanceSink::new("output.lance", WriteOptions::default()),
 ).await?;
 println!("{} rows written", result.rows_written);
 ```
 
-New native readers implement async `BatchSource::open`, returning a
-`SendableRecordBatchStream` with a fixed schema. `convert` passes that stream
-directly to `write_stream(destination, stream, options)`. Callers producing
-batches incrementally can await `LanceSink::create`, `write_batch`, and `finish`;
-this push adapter uses a bounded channel. Run these APIs inside a Tokio runtime. Dropping an unfinished sink closes its input; the writer
-task asynchronously removes newly created output. Keep the runtime alive for
-cleanup to complete. DuckDB uses a synchronous FFI adapter that waits for these
-async operations and for cleanup on destruction.
+`convert(source, sink)` connects any `BatchSource` to any `BatchSink`. A source
+returns `(SchemaRef, BatchStream)`, where each stream item is an
+`anyhow::Result<RecordBatch>`. A sink consumes the schema and stream through its
+async `write` method. Public interfaces use Arrow and `futures::Stream`;
+DataFusion adaptation stays inside the Lance implementation.
 
-The Rust interface rejects unsupported Arrow types, including `Map`,
+Callers with an existing Arrow stream can write it directly:
+
+```rust
+use lance_conversion::{BatchSink, LanceSink, WriteOptions};
+
+let result = LanceSink::new("output.lance", WriteOptions::default())
+    .write(schema, batches)
+    .await?;
+```
+
+Run these APIs inside a Tokio runtime. DuckDB uses the incremental `LanceWriter`
+adapter (`create`, `write_batch`, and `finish`) with a bounded channel. Dropping an
+unfinished writer closes its input; its task asynchronously removes newly created
+output. Keep the runtime alive for cleanup to complete. The synchronous FFI layer
+owns the runtime and waits for async operations and cleanup on destruction.
+
+The Lance sink rejects unsupported Arrow types, including `Map`,
 `Dictionary`, `Union`, `Null`, `Duration`, `Interval`, and decimal types other
 than `Decimal128`. It does not automatically cast them.
 

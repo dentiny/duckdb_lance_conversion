@@ -1,9 +1,12 @@
-//! Source-independent, streaming Arrow-to-Lance conversion.
+//! Async Arrow conversion with pluggable sources and sinks.
 //!
-//! DuckDB feeds `LanceSink` directly. Native adapters implement `BatchSource`.
+//! DuckDB feeds `LanceWriter` through FFI. Native callers use `convert`.
+pub mod converter;
 mod ffi;
+mod schema;
+pub mod sink;
 pub mod source;
-pub mod writer;
 
-pub use source::{convert, BatchSource, ParquetFileSource};
-pub use writer::{write_stream, LanceSink, WriteOptions, WriteSummary};
+pub use converter::convert;
+pub use sink::{BatchSink, LanceSink, LanceWriter, WriteOptions, WriteSummary};
+pub use source::{BatchSource, BatchStream, ParquetFileSource};
