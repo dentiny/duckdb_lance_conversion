@@ -83,14 +83,17 @@ let result = convert(
     ParquetFileSource::new("input.parquet").with_batch_size(8192),
     "output.lance",
     WriteOptions::default(),
-)?;
+).await?;
 println!("{} rows written", result.rows_written);
 ```
 
-New native readers implement `BatchSource::open`, returning a
-`RecordBatchReader + Send` with a fixed schema. Callers already producing Arrow
-can use `LanceSink::create`, `write_batch`, and `finish` directly. Dropping an
-unfinished sink aborts the write and attempts to remove newly created output.
+New native readers implement async `BatchSource::open`, returning a
+`SendableRecordBatchStream` with a fixed schema. Callers already producing Arrow
+can await `LanceSink::create`, `write_batch`, and `finish` directly. Run these APIs
+inside a Tokio runtime. Dropping an unfinished sink closes its input; the writer
+task asynchronously removes newly created output. Keep the runtime alive for
+cleanup to complete. DuckDB uses a synchronous FFI adapter that waits for these
+async operations and for cleanup on destruction.
 
 The Rust interface rejects unsupported Arrow types, including `Map`,
 `Dictionary`, `Union`, `Null`, `Duration`, `Interval`, and decimal types other

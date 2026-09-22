@@ -2591,6 +2591,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "arrow-select",
+ "datafusion-physical-plan",
  "futures",
  "lance",
  "parquet",
@@ -3504,6 +3505,7 @@ dependencies = [
  "bytes",
  "chrono",
  "flate2",
+ "futures",
  "half",
  "hashbrown 0.17.1",
  "lz4_flex",
@@ -3515,6 +3517,7 @@ dependencies = [
  "simdutf8",
  "snap",
  "thrift",
+ "tokio",
  "twox-hash",
  "zstd",
 ]

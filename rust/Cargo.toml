@@ -13,14 +13,15 @@ crate-type = ["staticlib", "rlib"]
 anyhow = "1"
 arrow-array = { version = "58.4", features = ["ffi"] }
 arrow-schema = { version = "58.4", features = ["ffi"] }
+datafusion-physical-plan = "54"
+futures = "0.3"
 lance = { git = "https://github.com/lance-format/lance.git", rev = "f3dc9364c07d6e84706e1f07a9a0654b4ec480f1", default-features = false }
-parquet = { version = "58.4", features = ["arrow"] }
-tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
+parquet = { version = "58.4", features = ["arrow", "async"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "fs", "sync"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros"] }
 arrow-select = "58.4"
-futures = "0.3"
 tempfile = "3"
 
 [profile.dev]

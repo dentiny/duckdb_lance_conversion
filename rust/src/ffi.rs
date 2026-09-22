@@ -13,6 +13,11 @@ use arrow_schema::{ffi::FFI_ArrowSchema, DataType, Schema};
 
 use crate::{LanceSink, WriteOptions};
 
+pub struct LanceConversionWriter {
+    sink: LanceSink,
+    runtime: tokio::runtime::Runtime,
+}
+
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
 }
@@ -37,7 +42,7 @@ pub unsafe extern "C" fn lance_conversion_open(
     path: *const c_char,
     schema: *const FFI_ArrowSchema,
     overwrite: i32,
-    output: *mut *mut LanceSink,
+    output: *mut *mut LanceConversionWriter,
 ) -> i32 {
     call(|| {
         ensure!(
@@ -50,14 +55,18 @@ pub unsafe extern "C" fn lance_conversion_open(
         let options = WriteOptions {
             overwrite: overwrite != 0,
         };
-        *output = Box::into_raw(Box::new(LanceSink::create(path, schema, options)?));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let sink = runtime.block_on(LanceSink::create(path, schema, options))?;
+        *output = Box::into_raw(Box::new(LanceConversionWriter { sink, runtime }));
         Ok(())
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn lance_conversion_push(
-    writer: *mut LanceSink,
+    writer: *mut LanceConversionWriter,
     array: *mut FFI_ArrowArray,
 ) -> i32 {
     call(|| {
@@ -65,28 +74,31 @@ pub unsafe extern "C" fn lance_conversion_push(
         let writer = &mut *writer;
         // Move Arrow ownership; the C++ wrapper sees an empty release callback.
         let array = ptr::replace(array, FFI_ArrowArray::empty());
-        let data_type = DataType::Struct(writer.schema().fields().clone());
+        let data_type = DataType::Struct(writer.sink.schema().fields().clone());
         let data = from_ffi_and_data_type(array, data_type)?;
         let array = StructArray::from(data);
-        let batch = RecordBatch::try_new(writer.schema().clone(), array.columns().to_vec())?;
-        writer.write_batch(batch)
+        let batch = RecordBatch::try_new(writer.sink.schema().clone(), array.columns().to_vec())?;
+        writer.runtime.block_on(writer.sink.write_batch(batch))
     })
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lance_conversion_finish(writer: *mut LanceSink) -> i32 {
+pub unsafe extern "C" fn lance_conversion_finish(writer: *mut LanceConversionWriter) -> i32 {
     call(|| {
         ensure!(!writer.is_null(), "null writer");
-        (&mut *writer).finish()?;
+        let writer = &mut *writer;
+        writer.runtime.block_on(writer.sink.finish())?;
         Ok(())
     })
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lance_conversion_destroy(writer: *mut LanceSink) {
+pub unsafe extern "C" fn lance_conversion_destroy(writer: *mut LanceConversionWriter) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if !writer.is_null() {
-            drop(Box::from_raw(writer));
+            let mut writer = Box::from_raw(writer);
+            let LanceConversionWriter { sink, runtime } = &mut *writer;
+            runtime.block_on(sink.abort());
         }
     }));
 }

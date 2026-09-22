@@ -1,16 +1,19 @@
-use std::fs::File;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context, Result};
-use arrow_array::RecordBatchReader;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use arrow_schema::ArrowError;
+use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream};
+use futures::TryStreamExt;
+use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
+use tokio::fs::File;
 
 use crate::{LanceSink, WriteOptions, WriteSummary};
 
-/// Adapters resolve their own input and yield batches with a fixed schema.
+/// Adapters asynchronously open a batch stream with a fixed schema.
 /// Future directory, Hub and WARC readers can implement this same contract.
-pub trait BatchSource {
-    fn open(self) -> Result<Box<dyn RecordBatchReader + Send>>;
+pub trait BatchSource: Send {
+    fn open(self) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send;
 }
 
 pub struct ParquetFileSource {
@@ -33,31 +36,42 @@ impl ParquetFileSource {
 }
 
 impl BatchSource for ParquetFileSource {
-    fn open(self) -> Result<Box<dyn RecordBatchReader + Send>> {
+    async fn open(self) -> Result<SendableRecordBatchStream> {
         ensure!(self.batch_size > 0, "batch_size must be positive");
+        let file = File::open(&self.path)
+            .await
+            .context("opening Parquet input")?;
         ensure!(
-            self.path.is_file(),
+            file.metadata().await?.is_file(),
             "input must be a single local Parquet file: {}",
             self.path.display()
         );
-        let file = File::open(&self.path).context("opening Parquet input")?;
-        Ok(Box::new(
-            ParquetRecordBatchReaderBuilder::try_new(file)?
-                .with_batch_size(self.batch_size)
-                .build()?,
-        ))
+        let reader = ParquetRecordBatchStreamBuilder::new(file)
+            .await?
+            .with_batch_size(self.batch_size)
+            .build()?;
+        let schema = reader.schema().clone();
+        let stream = reader.map_err(|error| ArrowError::ExternalError(Box::new(error)).into());
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 }
 
-pub fn convert(
+pub async fn convert(
     source: impl BatchSource,
     destination: impl AsRef<Path>,
     options: WriteOptions,
 ) -> Result<WriteSummary> {
-    let reader = source.open()?;
-    let mut sink = LanceSink::create(destination, reader.schema(), options)?;
-    for batch in reader {
-        sink.write_batch(batch?)?;
+    let mut stream = source.open().await?;
+    let mut sink = LanceSink::create(destination, stream.schema(), options).await?;
+    let result = async {
+        while let Some(batch) = stream.try_next().await? {
+            sink.write_batch(batch).await?;
+        }
+        sink.finish().await
     }
-    sink.finish()
+    .await;
+    if result.is_err() {
+        sink.abort().await;
+    }
+    result
 }
