@@ -55,21 +55,19 @@ pub fn fixture(rows: usize) -> RecordBatch {
     RecordBatch::try_new(Arc::new(schema), batch.columns().to_vec()).unwrap()
 }
 
-pub fn read_lance(path: &Path) -> RecordBatch {
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-        let mut scanner = dataset.scan();
-        scanner.scan_in_order(true);
-        let batches: Vec<RecordBatch> = scanner
-            .try_into_stream()
-            .await
-            .unwrap()
-            .try_collect()
-            .await
-            .unwrap();
-        let schema = Arc::new(arrow_schema::Schema::from(dataset.schema()));
-        concat_batches(&schema, &batches).unwrap()
-    })
+pub async fn read_lance(path: &Path) -> RecordBatch {
+    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    let mut scanner = dataset.scan();
+    scanner.scan_in_order(true);
+    let batches: Vec<RecordBatch> = scanner
+        .try_into_stream()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let schema = Arc::new(arrow_schema::Schema::from(dataset.schema()));
+    concat_batches(&schema, &batches).unwrap()
 }
 
 pub fn assert_values(actual: &RecordBatch, expected: &RecordBatch) {

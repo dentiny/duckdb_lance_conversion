@@ -2,7 +2,9 @@
 mod common;
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
+use tokio::process::Command;
+use tokio::task::spawn_blocking;
 
 use arrow_array::{Array, ListArray, RecordBatch, StructArray};
 use arrow_select::concat::concat_batches;
@@ -13,11 +15,12 @@ fn literal(path: &Path) -> String {
     format!("'{}'", path.to_str().unwrap().replace('\'', "''"))
 }
 
-fn sql(sql: &str) -> Output {
+async fn sql(sql: &str) -> Output {
     let binary = std::env::var("DUCKDB_BINARY").expect("set DUCKDB_BINARY to the v1.5.4 shell");
     let extension =
         std::env::var("LANCE_EXTENSION").expect("set LANCE_EXTENSION to the compiled extension");
     Command::new(binary)
+        .kill_on_drop(true)
         .args([
             "-unsigned",
             "-batch",
@@ -30,11 +33,12 @@ fn sql(sql: &str) -> Output {
             ),
         ])
         .output()
+        .await
         .unwrap()
 }
 
-fn ok(sql_text: &str) -> String {
-    let output = sql(sql_text);
+async fn ok(sql_text: &str) -> String {
+    let output = sql(sql_text).await;
     assert!(
         output.status.success(),
         "SQL: {sql_text}\n{}",
@@ -74,9 +78,9 @@ fn assert_array_values(actual: &dyn Array, expected: &dyn Array) {
     }
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "requires built DuckDB and extension; see README"]
-fn parquet_copy_roundtrip_and_failures() {
+async fn parquet_copy_roundtrip_and_failures() {
     let temp = tempdir().unwrap();
     let input = temp.path().join("input.parquet");
     let output = temp.path().join("output.lance");
@@ -108,12 +112,17 @@ fn parquet_copy_roundtrip_and_failures() {
         literal(&input),
         literal(&input),
         literal(&output)
-    ));
-    let reader = ParquetFileSource::new(&input).open().unwrap();
-    let schema = reader.schema();
-    let expected: Vec<RecordBatch> = reader.collect::<Result<_, _>>().unwrap();
-    let expected = concat_batches(&schema, &expected).unwrap();
-    let actual = common::read_lance(&output);
+    )).await;
+    let expected_input = input.clone();
+    let expected = spawn_blocking(move || {
+        let reader = ParquetFileSource::new(&expected_input).open().unwrap();
+        let schema = reader.schema();
+        let batches: Vec<RecordBatch> = reader.collect::<Result<_, _>>().unwrap();
+        concat_batches(&schema, &batches).unwrap()
+    })
+    .await
+    .unwrap();
+    let actual = common::read_lance(&output).await;
     assert_eq!(actual.num_rows(), 10001);
     assert_eq!(actual.num_columns(), expected.num_columns());
     for col in 0..expected.num_columns() {
@@ -126,25 +135,27 @@ fn parquet_copy_roundtrip_and_failures() {
     let existing = sql(&format!(
         "COPY (SELECT 1 AS id) TO {} (FORMAT LANCE);",
         literal(&output)
-    ));
+    ))
+    .await;
     assert!(!existing.status.success());
-    assert_eq!(common::read_lance(&output).num_rows(), 10001);
+    assert_eq!(common::read_lance(&output).await.num_rows(), 10001);
 
     let empty = temp.path().join("empty.lance");
     ok(&format!(
         "COPY (SELECT * FROM read_parquet({}) WHERE false) TO {} (FORMAT LANCE);",
         literal(&input),
         literal(&empty)
-    ));
-    let empty_batch = common::read_lance(&empty);
+    ))
+    .await;
+    let empty_batch = common::read_lance(&empty).await;
     assert_eq!(empty_batch.num_rows(), 0);
     assert_eq!(empty_batch.num_columns(), expected.num_columns());
 
     let failed = temp.path().join("failed.lance");
-    let result = sql(&format!("COPY (SELECT CASE WHEN i > 5000 THEN error('upstream failed') ELSE i END AS id FROM range(10001) t(i)) TO {} (FORMAT LANCE);", literal(&failed)));
+    let result = sql(&format!("COPY (SELECT CASE WHEN i > 5000 THEN error('upstream failed') ELSE i END AS id FROM range(10001) t(i)) TO {} (FORMAT LANCE);", literal(&failed))).await;
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("upstream failed"));
-    assert!(!failed.exists());
+    assert!(!tokio::fs::try_exists(&failed).await.unwrap());
 
     for option in [
         "APPEND",
@@ -157,19 +168,21 @@ fn parquet_copy_roundtrip_and_failures() {
         let result = sql(&format!(
             "COPY (SELECT 1 AS id) TO {} (FORMAT LANCE, {option});",
             literal(&unsupported)
-        ));
+        ))
+        .await;
         assert!(
             !result.status.success(),
             "accepted unsupported option {option}"
         );
-        assert!(!unsupported.exists());
+        assert!(!tokio::fs::try_exists(&unsupported).await.unwrap());
     }
     ok(&format!(
         "COPY (SELECT * FROM read_parquet({}) WHERE id < 4) TO {} (FORMAT LANCE, OVERWRITE);",
         literal(&input),
         literal(&output)
-    ));
-    let replacement = common::read_lance(&output);
+    ))
+    .await;
+    let replacement = common::read_lance(&output).await;
     assert_eq!(replacement.num_rows(), 4);
     for col in 0..expected.num_columns() {
         assert_array_values(
@@ -180,14 +193,15 @@ fn parquet_copy_roundtrip_and_failures() {
     let rejected = sql(&format!(
         "COPY (SELECT 1 AS id) TO {} (FORMAT LANCE, OVERWRITE false);",
         literal(&output)
-    ));
+    ))
+    .await;
     assert!(!rejected.status.success());
-    let aborted = sql(&format!("COPY (SELECT CASE WHEN i > 5000 THEN error('upstream failed') ELSE i END AS id FROM range(10001) t(i)) TO {} (FORMAT LANCE, OVERWRITE);", literal(&output)));
+    let aborted = sql(&format!("COPY (SELECT CASE WHEN i > 5000 THEN error('upstream failed') ELSE i END AS id FROM range(10001) t(i)) TO {} (FORMAT LANCE, OVERWRITE);", literal(&output))).await;
     assert!(!aborted.status.success());
-    common::assert_values(&common::read_lance(&output), &replacement);
+    common::assert_values(&common::read_lance(&output).await, &replacement);
 
     let unsupported = temp.path().join("bad-type.lance");
-    let result = sql(&format!("COPY (SELECT 170141183460469231731687303715884105727::HUGEINT AS id) TO {} (FORMAT LANCE);", literal(&unsupported)));
+    let result = sql(&format!("COPY (SELECT 170141183460469231731687303715884105727::HUGEINT AS id) TO {} (FORMAT LANCE);", literal(&unsupported))).await;
     assert!(!result.status.success());
-    assert!(!unsupported.exists());
+    assert!(!tokio::fs::try_exists(&unsupported).await.unwrap());
 }

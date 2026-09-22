@@ -13,3 +13,8 @@ See the [project README](../README.md#test) for exact commands.
 
 The last test is ignored by default because it needs a built DuckDB and extension.
 Set `DUCKDB_BINARY` and `LANCE_EXTENSION` and pass `--include-ignored` to run it.
+
+All Rust test entry points use `#[tokio::test]`. Lance reads and DuckDB subprocesses
+are awaited directly. Synchronous conversion APIs, Parquet I/O, and writer-drop
+cleanup run through `tokio::task::spawn_blocking`; test helpers do not create their
+own runtimes. SQLLogicTests remain SQL files for DuckDB's test runner.
