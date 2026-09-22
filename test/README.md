@@ -1,11 +1,15 @@
-# Testing this extension
-This directory contains all the tests for this extension. The `sql` directory holds tests that are written as [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.html). DuckDB aims to have most its tests in this format as SQL statements, so for the quack extension, this should probably be the goal too.
+# Tests
 
-The root makefile contains targets to build and run all of these tests. To run the SQLLogicTests:
-```bash
-make test
-```
-or 
-```bash
-make test_debug
-```
+See the [project README](../README.md#test) for exact commands.
+
+- `sql/lance_conversion.test`: SQL COPY counts, manifest creation, empty input,
+  existing output protection, overwrite, invalid options, and unsupported types.
+- `../rust/tests/conversion.rs`: native Parquet conversion, streaming batches,
+  exact values, empty schema-preserving output, write errors, and abort cleanup.
+  Overwrite tests cover replacement, empty replacement, preserving the previous
+  version on abort, and rejecting non-dataset targets.
+- `../rust/tests/duckdb_copy.rs`: actual DuckDB COPY output read back with Lance
+  and compared against the source Parquet across 10,001 rows and nested columns.
+
+The last test is ignored by default because it needs a built DuckDB and extension.
+Set `DUCKDB_BINARY` and `LANCE_EXTENSION` and pass `--include-ignored` to run it.

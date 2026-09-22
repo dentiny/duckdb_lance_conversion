@@ -1,0 +1,12 @@
+# name: test/sql/extension_version.test
+# description: Verify the Lance conversion extension release version
+# group: [lance_conversion]
+
+require lance_conversion
+
+query T
+SELECT extension_version
+FROM duckdb_extensions()
+WHERE extension_name = 'lance_conversion' AND loaded;
+----
+0.1.0

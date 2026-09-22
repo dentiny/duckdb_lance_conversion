@@ -1,8 +1,8 @@
 PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-
-# Configuration of extension
-EXT_NAME=waddle
+EXT_NAME=lance_conversion
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
-
-# Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
+
+.PHONY: rust-test
+rust-test:
+	cargo test --locked --manifest-path rust/Cargo.toml

@@ -1,0 +1,29 @@
+[package]
+name = "lance-conversion"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "lance_conversion"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+anyhow = "1"
+arrow-array = { version = "58.4", features = ["ffi"] }
+arrow-schema = { version = "58.4", features = ["ffi"] }
+lance = { version = "=11.0.0", default-features = false }
+parquet = { version = "58.4", features = ["arrow"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
+
+[dev-dependencies]
+arrow-select = "58.4"
+futures = "0.3"
+tempfile = "3"
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+debug = 0
