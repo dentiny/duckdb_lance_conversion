@@ -1,12 +1,15 @@
 use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 use anyhow::{anyhow, ensure, Context, Result};
 use arrow_array::RecordBatch;
 use arrow_schema::{ArrowError, DataType, SchemaRef};
 use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream};
-use futures::{stream, FutureExt};
+use futures::{stream, FutureExt, TryStreamExt};
 use lance::{
     dataset::{write::InsertBuilder, WriteMode, WriteParams},
     Dataset,
@@ -47,15 +50,21 @@ fn batch_stream(schema: SchemaRef, receiver: Receiver<Message>) -> SendableRecor
     Box::pin(RecordBatchStreamAdapter::new(schema, stream))
 }
 
-/// One dataset write, with at most one queued input batch.
-/// Drop closes the input; the writer task asynchronously cleans up aborted output.
+enum SinkState {
+    Open {
+        sender: Sender<Message>,
+        worker: JoinHandle<Result<WriteSummary>>,
+    },
+    Closing(JoinHandle<Result<WriteSummary>>),
+    Finished,
+    Failed,
+}
+
+/// Push-based adapter for callers such as DuckDB, with at most one queued batch.
+/// Dropping the sender lets the writer task clean up an unfinished dataset.
 pub struct LanceSink {
     schema: SchemaRef,
-    sender: Option<Sender<Message>>,
-    worker: Option<JoinHandle<Result<()>>>,
-    rows_written: u64,
-    committed: bool,
-    failed: bool,
+    state: SinkState,
 }
 
 impl LanceSink {
@@ -65,17 +74,16 @@ impl LanceSink {
         options: WriteOptions,
     ) -> Result<Self> {
         validate_schema(&schema)?;
-        let destination = resolve_destination(destination.as_ref()).await?;
+        let destination = destination.as_ref().to_path_buf();
         let owns_destination = reserve_destination(&destination, options.overwrite).await?;
         let (sender, receiver) = channel(1);
-        let worker = spawn_writer(destination, schema.clone(), receiver, owns_destination);
+        let stream = batch_stream(schema.clone(), receiver);
+        let worker = tokio::spawn(async move {
+            write_reserved_stream(&destination, stream, owns_destination).await
+        });
         Ok(Self {
             schema,
-            sender: Some(sender),
-            worker: Some(worker),
-            rows_written: 0,
-            committed: false,
-            failed: false,
+            state: SinkState::Open { sender, worker },
         })
     }
 
@@ -84,65 +92,68 @@ impl LanceSink {
     }
 
     pub async fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        ensure!(
-            !self.committed && !self.failed,
-            "writer is already finished or failed"
-        );
+        let SinkState::Open { sender, .. } = &self.state else {
+            return Err(anyhow!("writer is already finished or failed"));
+        };
         if batch.schema().as_ref() != self.schema.as_ref() {
             self.abort().await;
             return Err(anyhow!("batch schema does not match the conversion schema"));
         }
-        let rows = batch.num_rows() as u64;
-        if self
-            .sender
-            .as_ref()
-            .context("writer is closed")?
-            .send(Message::Batch(batch))
-            .await
-            .is_err()
-        {
-            self.failed = true;
-            self.sender.take();
+        if sender.send(Message::Batch(batch)).await.is_err() {
+            self.close_input();
             self.join_worker().await?;
             return Err(anyhow!("Lance writer stopped before accepting a batch"));
         }
-        self.rows_written += rows;
         Ok(())
     }
 
     pub async fn finish(&mut self) -> Result<WriteSummary> {
-        ensure!(
-            !self.committed && !self.failed,
-            "writer is already finished or failed"
-        );
-        let sender = self.sender.take().context("writer is closed")?;
+        let SinkState::Open { sender, .. } = &self.state else {
+            return Err(anyhow!("writer is already finished or failed"));
+        };
         let sent = sender.send(Message::Finish).await.is_ok();
-        drop(sender);
-        if let Err(error) = self.join_worker().await {
-            self.failed = true;
-            return Err(error);
-        }
+        self.close_input();
+        let summary = self.join_worker().await?;
         ensure!(sent, "Lance writer stopped before finish");
-        self.committed = true;
-        Ok(WriteSummary {
-            rows_written: self.rows_written,
-        })
+        self.state = SinkState::Finished;
+        Ok(summary)
     }
 
     pub(crate) async fn abort(&mut self) {
-        self.failed = true;
-        self.sender.take();
-        let _ = self.join_worker().await;
+        self.close_input();
+        if matches!(self.state, SinkState::Closing(_)) {
+            let _ = self.join_worker().await;
+        }
     }
 
-    async fn join_worker(&mut self) -> Result<()> {
-        if let Some(worker) = self.worker.as_mut() {
-            let result = worker.await;
-            self.worker.take();
-            result.context("Lance writer task failed")??;
-        }
-        Ok(())
+    fn close_input(&mut self) {
+        let state = std::mem::replace(&mut self.state, SinkState::Failed);
+        self.state = match state {
+            SinkState::Open { worker, .. } => SinkState::Closing(worker),
+            state => state,
+        };
     }
+
+    async fn join_worker(&mut self) -> Result<WriteSummary> {
+        let SinkState::Closing(worker) = &mut self.state else {
+            return Err(anyhow!("writer is closed"));
+        };
+        let result = worker.await;
+        self.state = SinkState::Failed;
+        result.context("Lance writer task failed")?
+    }
+}
+
+/// Write an async batch stream directly, without the push adapter's channel.
+pub async fn write_stream(
+    destination: impl AsRef<Path>,
+    stream: SendableRecordBatchStream,
+    options: WriteOptions,
+) -> Result<WriteSummary> {
+    validate_schema(&stream.schema())?;
+    let destination = destination.as_ref();
+    let owns_destination = reserve_destination(destination, options.overwrite).await?;
+    write_reserved_stream(destination, stream, owns_destination).await
 }
 
 fn validate_schema(schema: &SchemaRef) -> Result<()> {
@@ -154,27 +165,6 @@ fn validate_schema(schema: &SchemaRef) -> Result<()> {
         validate_type(field.data_type())?;
     }
     Ok(())
-}
-
-async fn resolve_destination(destination: &Path) -> Result<PathBuf> {
-    let path_text = destination
-        .to_str()
-        .context("destination must be valid UTF-8")?;
-    ensure!(
-        !path_text.contains("://"),
-        "only local Lance destinations are supported"
-    );
-    let parent = destination
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let parent = fs::canonicalize(parent)
-        .await
-        .context("destination parent directory must exist")?;
-    let name = destination
-        .file_name()
-        .context("destination must name a new dataset directory")?;
-    Ok(parent.join(name))
 }
 
 async fn reserve_destination(destination: &Path, overwrite: bool) -> Result<bool> {
@@ -200,22 +190,28 @@ async fn reserve_destination(destination: &Path, overwrite: bool) -> Result<bool
     }
 }
 
-fn spawn_writer(
-    destination: PathBuf,
-    schema: SchemaRef,
-    receiver: Receiver<Message>,
+async fn write_reserved_stream(
+    destination: &Path,
+    stream: SendableRecordBatchStream,
     owns_destination: bool,
-) -> JoinHandle<Result<()>> {
-    tokio::spawn(async move {
-        let stream = batch_stream(schema, receiver);
-        let result = AssertUnwindSafe(write_dataset(&destination, stream, owns_destination))
-            .catch_unwind()
-            .await
-            .unwrap_or_else(|_| Err(anyhow!("Lance writer task panicked")));
-        if result.is_err() && owns_destination {
-            let _ = fs::remove_dir_all(&destination).await;
-        }
-        result
+) -> Result<WriteSummary> {
+    let rows_written = Arc::new(AtomicU64::new(0));
+    let count = rows_written.clone();
+    let schema = stream.schema();
+    let counted = stream.inspect_ok(move |batch| {
+        count.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+    });
+    let stream = Box::pin(RecordBatchStreamAdapter::new(schema, counted));
+    let result = AssertUnwindSafe(write_dataset(destination, stream, owns_destination))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("Lance writer task panicked")));
+    if result.is_err() && owns_destination {
+        let _ = fs::remove_dir_all(destination).await;
+    }
+    result?;
+    Ok(WriteSummary {
+        rows_written: rows_written.load(Ordering::Relaxed),
     })
 }
 

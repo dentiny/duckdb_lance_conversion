@@ -1,4 +1,5 @@
 #include "lance_copy.hpp"
+#include <memory>
 #include "lance_conversion.h"
 #include "duckdb/common/arrow/arrow_converter.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
@@ -13,9 +14,10 @@
 namespace duckdb {
 namespace {
 
-void CheckLance(int32_t result) {
-	if (result != 0) {
-		throw IOException("Lance conversion: %s", lance_conversion_last_error());
+void CheckLance(char *error) {
+	if (error) {
+		std::unique_ptr<char, decltype(&lance_conversion_error_free)> owned_error(error, lance_conversion_error_free);
+		throw IOException("Lance conversion: %s", owned_error.get());
 	}
 }
 

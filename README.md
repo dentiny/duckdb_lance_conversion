@@ -88,9 +88,10 @@ println!("{} rows written", result.rows_written);
 ```
 
 New native readers implement async `BatchSource::open`, returning a
-`SendableRecordBatchStream` with a fixed schema. Callers already producing Arrow
-can await `LanceSink::create`, `write_batch`, and `finish` directly. Run these APIs
-inside a Tokio runtime. Dropping an unfinished sink closes its input; the writer
+`SendableRecordBatchStream` with a fixed schema. `convert` passes that stream
+directly to `write_stream(destination, stream, options)`. Callers producing
+batches incrementally can await `LanceSink::create`, `write_batch`, and `finish`;
+this push adapter uses a bounded channel. Run these APIs inside a Tokio runtime. Dropping an unfinished sink closes its input; the writer
 task asynchronously removes newly created output. Keep the runtime alive for
 cleanup to complete. DuckDB uses a synchronous FFI adapter that waits for these
 async operations and for cleanup on destruction.

@@ -6,4 +6,4 @@ pub mod source;
 pub mod writer;
 
 pub use source::{convert, BatchSource, ParquetFileSource};
-pub use writer::{LanceSink, WriteOptions, WriteSummary};
+pub use writer::{write_stream, LanceSink, WriteOptions, WriteSummary};
