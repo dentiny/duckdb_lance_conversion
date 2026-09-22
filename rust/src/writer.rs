@@ -81,53 +81,9 @@ impl LanceSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Self> {
-        ensure!(
-            !schema.fields().is_empty(),
-            "Lance requires at least one column"
-        );
-        for field in schema.fields() {
-            validate_type(field.data_type())?;
-        }
-        let destination = destination.as_ref();
-        let path_text = destination
-            .to_str()
-            .context("destination must be valid UTF-8")?;
-        ensure!(
-            !path_text.contains("://"),
-            "only local Lance destinations are supported"
-        );
-        let parent = destination
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let parent = parent
-            .canonicalize()
-            .context("destination parent directory must exist")?;
-        let name = destination
-            .file_name()
-            .context("destination must name a new dataset directory")?;
-        let destination = parent.join(name);
-        // Reserve new paths atomically; existing datasets remain owned by their caller.
-        let owns_destination = match fs::create_dir(&destination) {
-            Ok(()) => true,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::AlreadyExists && options.overwrite =>
-            {
-                ensure!(
-                    fs::symlink_metadata(&destination)?.file_type().is_dir(),
-                    "overwrite requires an existing Lance dataset directory"
-                );
-                false
-            }
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "creating destination {} (must not exist unless OVERWRITE is enabled)",
-                        destination.display()
-                    )
-                })
-            }
-        };
+        validate_schema(&schema)?;
+        let destination = resolve_destination(destination.as_ref())?;
+        let owns_destination = reserve_destination(&destination, options.overwrite)?;
         let (sender, receiver) = sync_channel(0);
         let mut sink = Self {
             schema: schema.clone(),
@@ -139,43 +95,12 @@ impl LanceSink {
             committed: false,
             failed: false,
         };
-        sink.worker = Some(
-            thread::Builder::new()
-                .name("lance-conversion".into())
-                .spawn(move || {
-                    let runtime = tokio::runtime::Builder::new_multi_thread()
-                        .worker_threads(2)
-                        .enable_all()
-                        .build()?;
-                    let reader = ChannelReader {
-                        schema,
-                        receiver,
-                        finished: false,
-                    };
-                    runtime.block_on(async move {
-                        let params = WriteParams {
-                            mode: if owns_destination {
-                                WriteMode::Create
-                            } else {
-                                WriteMode::Overwrite
-                            },
-                            ..Default::default()
-                        };
-                        let uri = destination.to_str().unwrap();
-                        if owns_destination {
-                            Dataset::write(reader, uri, Some(params)).await?;
-                        } else {
-                            let existing = Dataset::open(uri)
-                                .await
-                                .context("OVERWRITE requires an existing valid Lance dataset")?;
-                            Dataset::write(reader, Arc::new(existing), Some(params)).await?;
-                        }
-                        Ok::<_, anyhow::Error>(())
-                    })?;
-                    Ok(())
-                })
-                .context("starting Lance writer")?,
-        );
+        sink.worker = Some(spawn_writer(
+            destination,
+            schema,
+            receiver,
+            owns_destination,
+        )?);
         Ok(sink)
     }
 
@@ -247,6 +172,105 @@ impl Drop for LanceSink {
             let _ = fs::remove_dir_all(&self.destination);
         }
     }
+}
+
+fn validate_schema(schema: &SchemaRef) -> Result<()> {
+    ensure!(
+        !schema.fields().is_empty(),
+        "Lance requires at least one column"
+    );
+    for field in schema.fields() {
+        validate_type(field.data_type())?;
+    }
+    Ok(())
+}
+
+fn resolve_destination(destination: &Path) -> Result<PathBuf> {
+    let path_text = destination
+        .to_str()
+        .context("destination must be valid UTF-8")?;
+    ensure!(
+        !path_text.contains("://"),
+        "only local Lance destinations are supported"
+    );
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let parent = parent
+        .canonicalize()
+        .context("destination parent directory must exist")?;
+    let name = destination
+        .file_name()
+        .context("destination must name a new dataset directory")?;
+    Ok(parent.join(name))
+}
+
+fn reserve_destination(destination: &Path, overwrite: bool) -> Result<bool> {
+    // Reserve new paths atomically; existing datasets remain owned by their caller.
+    match fs::create_dir(destination) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && overwrite => {
+            ensure!(
+                fs::symlink_metadata(destination)?.file_type().is_dir(),
+                "overwrite requires an existing Lance dataset directory"
+            );
+            Ok(false)
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "creating destination {} (must not exist unless OVERWRITE is enabled)",
+                destination.display()
+            )
+        }),
+    }
+}
+
+fn spawn_writer(
+    destination: PathBuf,
+    schema: SchemaRef,
+    receiver: Receiver<Message>,
+    owns_destination: bool,
+) -> Result<JoinHandle<Result<()>>> {
+    thread::Builder::new()
+        .name("lance-conversion".into())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let reader = ChannelReader {
+                schema,
+                receiver,
+                finished: false,
+            };
+            runtime.block_on(write_dataset(&destination, reader, owns_destination))
+        })
+        .context("starting Lance writer")
+}
+
+async fn write_dataset(
+    destination: &Path,
+    reader: ChannelReader,
+    owns_destination: bool,
+) -> Result<()> {
+    let params = WriteParams {
+        mode: if owns_destination {
+            WriteMode::Create
+        } else {
+            WriteMode::Overwrite
+        },
+        ..Default::default()
+    };
+    let uri = destination.to_str().unwrap();
+    if owns_destination {
+        Dataset::write(reader, uri, Some(params)).await?;
+    } else {
+        let existing = Dataset::open(uri)
+            .await
+            .context("OVERWRITE requires an existing valid Lance dataset")?;
+        Dataset::write(reader, Arc::new(existing), Some(params)).await?;
+    }
+    Ok(())
 }
 
 fn validate_type(data_type: &DataType) -> Result<()> {
