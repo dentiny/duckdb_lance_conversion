@@ -61,12 +61,6 @@ let result = convert(
 println!("{} rows written", result.rows_written);
 ```
 
-There is also an executable example:
-
-```sh
-cargo run --locked --manifest-path rust/Cargo.toml --example convert_parquet --   input.parquet output.lance
-```
-
 New native readers implement `BatchSource::open`, returning a
 `RecordBatchReader + Send` with a fixed schema. Callers already producing Arrow
 can use `LanceSink::create`, `write_batch`, and `finish` directly.
@@ -141,9 +135,8 @@ reporting through DuckDB's test runner.
   the single-file Parquet workflow and local output.
 - Supported DuckDB types: booleans; signed/unsigned integers through 64 bits;
   float/double; decimal; varchar; blob; date/time/timestamp; and recursively
-  supported list, fixed-size array, and struct columns. Unsupported types such
-  as HUGEINT, UHUGEINT, UUID, MAP, ENUM, UNION, INTERVAL, and TIME WITH TIME ZONE
-  require an explicit cast. Untyped NULL also requires a cast.
+  supported list, fixed-size array, and struct columns. See the unsupported
+  types below for conversion restrictions.
 - The mapping preserves supported query values, not original Parquet encodings,
   field IDs, key/value metadata, or Hugging Face feature metadata. Binary values
   stay binary; there is no media downloading, embedding, or special blob storage.
@@ -156,3 +149,27 @@ reporting through DuckDB's test runner.
   uncommitted data files for later Lance cleanup. Process termination or cleanup
   I/O failure can also leave partial files; there is no crash recovery or resume yet. External writes are not rolled back
   by a subsequent DuckDB SQL transaction rollback.
+
+### Unsupported types
+
+`COPY ... TO ... (FORMAT LANCE)` rejects types outside the supported list above,
+including:
+
+- `HUGEINT` and `UHUGEINT` (128-bit integers)
+- `UUID`
+- `MAP`, `ENUM`, and `UNION`
+- `INTERVAL`
+- `TIME WITH TIME ZONE` (`TIMETZ`)
+- Untyped `NULL` (for example, `SELECT NULL AS value`)
+
+Explicitly cast unsupported columns to a supported type before exporting.
+For example, use `uuid_column::VARCHAR` or `NULL::INTEGER`. NULL values within
+supported typed columns are allowed.
+
+Type validation is recursive: nested `LIST`, fixed-size `ARRAY`, and `STRUCT`
+columns are accepted only when every child type is supported. Nested arrays are
+allowed by the implementation but do not yet have end-to-end round-trip tests.
+
+The standalone Rust Parquet converter also rejects unsupported Arrow types,
+including `Map`, `Dictionary`, `Union`, `Null`, `Duration`, `Interval`, and decimal
+types other than `Decimal128`. It does not automatically cast these types.
