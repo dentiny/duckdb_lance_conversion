@@ -1,9 +1,10 @@
 use std::future::Future;
 
-use anyhow::Result;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use futures::Stream;
+
+use crate::Result;
 
 mod lance;
 pub use lance::{LanceSink, LanceWriter, WriteOptions};

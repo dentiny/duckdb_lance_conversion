@@ -1,13 +1,13 @@
 //! Schema and type validation for the Lance sink.
 
-use anyhow::{anyhow, ensure, Result};
 use arrow_schema::{DataType, SchemaRef};
 
+use crate::{Error, Result};
+
 pub(crate) fn validate_schema(schema: &SchemaRef) -> Result<()> {
-    ensure!(
-        !schema.fields().is_empty(),
-        "Lance requires at least one column"
-    );
+    if schema.fields().is_empty() {
+        return Err(Error::message("Lance requires at least one column"));
+    }
     for field in schema.fields() {
         validate_type(field.data_type())?;
     }
@@ -48,8 +48,8 @@ fn validate_type(data_type: &DataType) -> Result<()> {
             }
             Ok(())
         }
-        _ => Err(anyhow!(
+        _ => Err(Error::message(format!(
             "unsupported Arrow type {data_type}; cast it explicitly"
-        )),
+        ))),
     }
 }

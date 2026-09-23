@@ -1,6 +1,4 @@
-use anyhow::Result;
-
-use crate::{BatchSink, BatchSource, WriteSummary};
+use crate::{BatchSink, BatchSource, Result, WriteSummary};
 
 pub async fn convert(source: impl BatchSource, sink: impl BatchSink) -> Result<WriteSummary> {
     let (schema, batches) = source.open().await?;

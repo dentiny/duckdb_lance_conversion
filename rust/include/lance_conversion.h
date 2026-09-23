@@ -1,10 +1,21 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 struct ArrowSchema;
 struct ArrowArray;
 struct LanceConversionWriter;
+
+struct LanceS3Config {
+	const char *endpoint = NULL;
+	const char *region = NULL;
+	const char *key_id = NULL;
+	const char *secret = NULL;
+	const char *session_token = NULL;
+	int32_t use_ssl = 0;
+	int32_t virtual_host_style = 0;
+};
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,7 +24,7 @@ extern "C" {
 // NULL means success. Free each owned error with lance_conversion_error_free.
 void lance_conversion_error_free(char *error);
 char *lance_conversion_open(const char *path, const struct ArrowSchema *schema, int32_t overwrite,
-                            struct LanceConversionWriter **output);
+                            const struct LanceS3Config *s3, struct LanceConversionWriter **output);
 // Takes ownership of array on import and clears its release callback.
 char *lance_conversion_push(struct LanceConversionWriter *writer, struct ArrowArray *array);
 char *lance_conversion_finish(struct LanceConversionWriter *writer);
