@@ -1,5 +1,7 @@
 {
   "name": "lance-conversion",
   "version-string": "0.1.0",
-  "dependencies": []
+  "dependencies": [
+    "protobuf"
+  ]
 }
