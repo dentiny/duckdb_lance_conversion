@@ -131,14 +131,11 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	auto state = make_uniq<LanceGlobalState>();
 	LanceS3Config s3;
 	const LanceS3Config *s3_ptr = nullptr;
+	LanceS3Options options;
 	if (bind.s3) {
-		auto options = ReadS3Options(context, path);
+		options = ReadS3Options(context, path);
 		s3 = options.ToConfig();
 		s3_ptr = &s3;
-		ThrowIfLanceError(
-		    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer),
-		    "Lance conversion");
-		return std::move(state);
 	}
 	ThrowIfLanceError(
 	    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer),
