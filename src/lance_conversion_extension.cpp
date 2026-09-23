@@ -1,12 +1,14 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "lance_conversion_extension.hpp"
+#include "huggingface_scan.hpp"
 #include "lance_copy.hpp"
 
 namespace duckdb {
 
 void LanceConversionExtension::Load(ExtensionLoader &loader) {
 	RegisterLanceCopyFunction(loader);
+	RegisterHuggingFaceScanFunction(loader);
 }
 std::string LanceConversionExtension::Name() {
 	return "lance_conversion";
@@ -23,5 +25,6 @@ std::string LanceConversionExtension::Version() const {
 extern "C" {
 DUCKDB_CPP_EXTENSION_ENTRY(lance_conversion, loader) {
 	duckdb::RegisterLanceCopyFunction(loader);
+	duckdb::RegisterHuggingFaceScanFunction(loader);
 }
 }

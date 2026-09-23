@@ -21,7 +21,8 @@ lance = { git = "https://github.com/lance-format/lance.git", rev = "f3dc9364c07d
 lance-io = { git = "https://github.com/lance-format/lance.git", rev = "f3dc9364c07d6e84706e1f07a9a0654b4ec480f1", default-features = false }
 object_store = "0.14"
 object_store_opendal = { version = "0.59", features = ["services-s3"] }
-opendal = { version = "0.58", default-features = false, features = ["executors-tokio", "http-transport-reqwest", "services-fs", "services-s3"] }
+opendal = { version = "0.58", default-features = false, features = ["executors-tokio", "http-transport-reqwest", "services-fs", "services-hf", "services-s3"] }
+opendal-http-transport-reqwest = "0.58"
 parquet = { version = "58", features = ["arrow", "async"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "fs", "sync"] }
 thiserror = "2"

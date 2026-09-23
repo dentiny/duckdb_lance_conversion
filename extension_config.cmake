@@ -16,9 +16,7 @@ duckdb_extension_load(parquet)
 
 if(BUILD_UNITTESTS)
   duckdb_extension_load(
-    lance
-    GIT_URL https://github.com/lance-format/lance-duckdb.git
+    lance GIT_URL https://github.com/lance-format/lance-duckdb.git
     # Includes the Rust 1.97 / ethnum compatibility fix and targets DuckDB 1.5.
-    GIT_TAG 2f167ea1aa8b1201c89d53740b84deb00aff680e
-    DONT_LINK)
+    GIT_TAG 2f167ea1aa8b1201c89d53740b84deb00aff680e DONT_LINK)
 endif()

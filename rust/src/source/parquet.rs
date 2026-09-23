@@ -104,6 +104,40 @@ async fn open_parquet(
     )
 }
 
+pub(crate) async fn open_parquet_paths(
+    operator: opendal::Operator,
+    paths: Vec<String>,
+    batch_size: usize,
+) -> Result<(SchemaRef, BatchStream)> {
+    if batch_size == 0 {
+        return Err(Error::message("batch_size must be positive"));
+    }
+    let mut paths = paths.into_iter();
+    let first_path = paths
+        .next()
+        .ok_or_else(|| Error::message("Parquet source contains no .parquet files"))?;
+    let reader = open_parquet(operator.clone(), first_path, batch_size).await?;
+    let schema = reader.schema().clone();
+    let expected_schema = schema.clone();
+    let remaining = stream::iter(paths)
+        .then(move |path| {
+            let operator = operator.clone();
+            let expected_schema = expected_schema.clone();
+            async move {
+                let reader = open_parquet(operator, path.clone(), batch_size).await?;
+                if reader.schema() != &expected_schema {
+                    return Err(Error::message(format!(
+                        "Parquet schema does not match the first file: {path}"
+                    )));
+                }
+                Ok(reader.map_err(Error::from))
+            }
+        })
+        .try_flatten();
+    let batches = reader.map_err(Error::from).chain(remaining);
+    Ok((schema, Box::pin(batches)))
+}
+
 async fn parquet_paths(storage: &OpendalStorage) -> Result<Vec<String>> {
     let path = storage.object_path.to_string();
     if !path.ends_with('/') {
@@ -177,39 +211,12 @@ impl ParquetFileSource {
 
 impl BatchSource for ParquetFileSource {
     async fn open(self) -> Result<(SchemaRef, BatchStream)> {
-        if self.batch_size == 0 {
-            return Err(Error::message("batch_size must be positive"));
-        }
         let path = self
             .path
             .to_str()
             .ok_or_else(|| Error::message("Parquet input path must be valid UTF-8"))?;
         let storage = OpendalStorage::from_path(path, self.s3_config.as_ref())?;
-        let mut paths = parquet_paths(&storage).await?.into_iter();
-        let first_path = paths
-            .next()
-            .expect("parquet_paths returns at least one path");
-        let reader = open_parquet(storage.operator.clone(), first_path, self.batch_size).await?;
-        let schema = reader.schema().clone();
-        let expected_schema = schema.clone();
-        let operator = storage.operator;
-        let batch_size = self.batch_size;
-        let remaining = stream::iter(paths)
-            .then(move |path| {
-                let operator = operator.clone();
-                let expected_schema = expected_schema.clone();
-                async move {
-                    let reader = open_parquet(operator, path.clone(), batch_size).await?;
-                    if reader.schema() != &expected_schema {
-                        return Err(Error::message(format!(
-                            "Parquet schema does not match the first file: {path}"
-                        )));
-                    }
-                    Ok(reader.map_err(Error::from))
-                }
-            })
-            .try_flatten();
-        let batches = reader.map_err(Error::from).chain(remaining);
-        Ok((schema, Box::pin(batches)))
+        let paths = parquet_paths(&storage).await?;
+        open_parquet_paths(storage.operator, paths, self.batch_size).await
     }
 }

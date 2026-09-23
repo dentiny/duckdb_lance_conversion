@@ -14,5 +14,5 @@ pub use converter::convert;
 pub use error::{Error, Result};
 pub use error_struct::{ErrorStatus, ErrorStruct};
 pub use sink::{BatchSink, LanceSink, LanceWriter, WriteOptions, WriteSummary};
-pub use source::{BatchSource, BatchStream, ParquetFileSource};
+pub use source::{BatchSource, BatchStream, HuggingFaceSource, ParquetFileSource};
 pub use storage::S3StorageConfig;

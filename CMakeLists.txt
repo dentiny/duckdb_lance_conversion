@@ -54,6 +54,7 @@ if(APPLE)
       System
       resolv
       "-framework CoreFoundation"
+      "-framework IOKit"
       "-framework Security"
       "-framework SystemConfiguration")
 elseif(UNIX)
@@ -69,7 +70,8 @@ elseif(WIN32)
       bcrypt
       advapi32)
 endif()
-set(EXTENSION_SOURCES src/lance_conversion_extension.cpp src/lance_copy.cpp)
+set(EXTENSION_SOURCES src/lance_conversion_extension.cpp src/lance_copy.cpp
+                      src/huggingface_scan.cpp)
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 foreach(target ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
