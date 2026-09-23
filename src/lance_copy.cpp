@@ -43,10 +43,17 @@ LanceS3Options ReadS3Options(ClientContext &context, const string &path) {
 	return result;
 }
 
-void CheckLance(char *error) {
+struct LanceErrorDeleter {
+	void operator()(char *error) const {
+		lance_conversion_error_free(error);
+	}
+};
+
+using LanceError = std::unique_ptr<char, LanceErrorDeleter>;
+
+void ThrowIfLanceError(LanceError error) {
 	if (error) {
-		std::unique_ptr<char, decltype(&lance_conversion_error_free)> owned_error(error, lance_conversion_error_free);
-		throw IOException("Lance conversion: %s", owned_error.get());
+		throw IOException("Lance conversion: %s", error.get());
 	}
 }
 
@@ -176,12 +183,12 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 		s3.use_ssl = options.use_ssl ? 1 : 0;
 		s3.virtual_host_style = options.virtual_host_style ? 1 : 0;
 		s3_ptr = &s3;
-		CheckLance(
-		    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer));
+		ThrowIfLanceError(LanceError(
+		    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer)));
 		return std::move(state);
 	}
-	CheckLance(
-	    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer));
+	ThrowIfLanceError(LanceError(
+	    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer)));
 	return std::move(state);
 }
 
@@ -195,11 +202,11 @@ void LanceSinkChunk(ExecutionContext &context, FunctionData &bind_p, GlobalFunct
 	auto &global = global_p.Cast<LanceGlobalState>();
 	ArrowArrayWrapper array;
 	ArrowConverter::ToArrowArray(input, &array.arrow_array, bind.properties, {});
-	CheckLance(lance_conversion_push(global.writer, &array.arrow_array));
+	ThrowIfLanceError(LanceError(lance_conversion_push(global.writer, &array.arrow_array)));
 }
 
 void LanceFinalize(ClientContext &context, FunctionData &bind, GlobalFunctionData &global_p) {
-	CheckLance(lance_conversion_finish(global_p.Cast<LanceGlobalState>().writer));
+	ThrowIfLanceError(LanceError(lance_conversion_finish(global_p.Cast<LanceGlobalState>().writer)));
 }
 
 CopyFunctionExecutionMode LanceExecutionMode(bool preserve_order, bool supports_batch_index) {
