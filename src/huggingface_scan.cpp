@@ -40,13 +40,6 @@ public:
 	HuggingFaceStreamFactory *factory;
 };
 
-unique_ptr<BaseSecret> CreateHuggingFaceSecret(ClientContext &, CreateSecretInput &input) {
-	auto secret = make_uniq<KeyValueSecret>(input.scope, input.type, input.provider, input.name);
-	secret->TrySetValue("token", input);
-	secret->redact_keys = {"token"};
-	return std::move(secret);
-}
-
 unique_ptr<ArrowArrayStreamWrapper> ProduceHuggingFaceStream(uintptr_t factory_ptr, ArrowStreamParameters &) {
 	auto result = make_uniq<ArrowArrayStreamWrapper>();
 	ThrowIfLanceError(LanceError(lance_huggingface_get_stream(reinterpret_cast<HuggingFaceStreamFactory *>(factory_ptr),
@@ -69,7 +62,7 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	}
 
 	string token;
-	KeyValueSecretReader secret_reader(context, "huggingface", "hf://datasets/" + dataset);
+	KeyValueSecretReader secret_reader(*context.db, "huggingface", "hf://datasets/" + dataset);
 	secret_reader.TryGetSecretKey("token", token);
 
 	HuggingFaceStreamFactory *factory = nullptr;
@@ -93,19 +86,6 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 } // namespace
 
 void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
-	SecretType secret_type;
-	secret_type.name = "huggingface";
-	secret_type.deserializer = KeyValueSecret::Deserialize<KeyValueSecret>;
-	secret_type.default_provider = "config";
-	loader.RegisterSecretType(secret_type);
-
-	CreateSecretFunction secret_function;
-	secret_function.secret_type = "huggingface";
-	secret_function.provider = "config";
-	secret_function.function = CreateHuggingFaceSecret;
-	secret_function.named_parameters["token"] = LogicalType::VARCHAR;
-	loader.RegisterFunction(secret_function);
-
 	TableFunction function("read_huggingface", {LogicalType::VARCHAR}, ArrowTableFunction::ArrowScanFunction,
 	                       BindHuggingFace, ArrowTableFunction::ArrowScanInitGlobal,
 	                       ArrowTableFunction::ArrowScanInitLocal);

@@ -27,7 +27,7 @@ struct LanceS3Options {
 
 LanceS3Options ReadS3Options(ClientContext &context, const string &path) {
 	LanceS3Options result;
-	KeyValueSecretReader secret_reader(context, "s3", path);
+	KeyValueSecretReader secret_reader(*context.db, "s3", path);
 	secret_reader.TryGetSecretKey("key_id", result.key_id);
 	secret_reader.TryGetSecretKey("secret", result.secret);
 	secret_reader.TryGetSecretKey("session_token", result.session_token);

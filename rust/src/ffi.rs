@@ -1,7 +1,7 @@
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow_array::{
     ffi::{from_ffi_and_data_type, FFI_ArrowArray},
@@ -56,8 +56,36 @@ impl RecordBatchReader for HuggingFaceBatchReader {
 }
 
 pub struct HuggingFaceStreamFactory {
+    dataset: String,
+    config: String,
+    split: String,
+    token: Option<String>,
     schema: SchemaRef,
-    reader: Option<HuggingFaceBatchReader>,
+    reader: Mutex<Option<HuggingFaceBatchReader>>,
+}
+
+impl HuggingFaceStreamFactory {
+    fn open_reader(&self) -> Result<HuggingFaceBatchReader> {
+        let mut source = HuggingFaceSource::new(&self.dataset)
+            .with_config(&self.config)
+            .with_split(&self.split);
+        if let Some(token) = &self.token {
+            source = source.with_token(token);
+        }
+        open_huggingface_reader(source)
+    }
+}
+
+fn open_huggingface_reader(source: HuggingFaceSource) -> Result<HuggingFaceBatchReader> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let (schema, stream) = runtime.block_on(source.open())?;
+    Ok(HuggingFaceBatchReader {
+        schema,
+        stream,
+        runtime,
+    })
 }
 
 unsafe fn optional_string(value: *const c_char) -> Result<Option<String>> {
@@ -186,28 +214,25 @@ pub unsafe extern "C" fn lance_huggingface_open(
             return Err(Error::message("null Hugging Face reader argument"));
         }
         *output = ptr::null_mut();
-        let dataset = CStr::from_ptr(dataset).to_str()?;
-        let config = CStr::from_ptr(config).to_str()?;
-        let split = CStr::from_ptr(split).to_str()?;
+        let dataset = CStr::from_ptr(dataset).to_str()?.to_owned();
+        let config = CStr::from_ptr(config).to_str()?.to_owned();
+        let split = CStr::from_ptr(split).to_str()?.to_owned();
         let token = optional_string(token)?;
-        let mut source = HuggingFaceSource::new(dataset)
-            .with_config(config)
-            .with_split(split);
-        if let Some(token) = token {
+        let mut source = HuggingFaceSource::new(&dataset)
+            .with_config(&config)
+            .with_split(&split);
+        if let Some(token) = &token {
             source = source.with_token(token);
         }
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
-        let (schema, stream) = runtime.block_on(source.open())?;
-        let reader = HuggingFaceBatchReader {
-            schema: schema.clone(),
-            stream,
-            runtime,
-        };
+        let reader = open_huggingface_reader(source)?;
+        let schema = reader.schema();
         *output = Box::into_raw(Box::new(HuggingFaceStreamFactory {
+            dataset,
+            config,
+            split,
+            token,
             schema,
-            reader: Some(reader),
+            reader: Mutex::new(Some(reader)),
         }));
         Ok(())
     })
@@ -232,17 +257,23 @@ pub unsafe extern "C" fn lance_huggingface_get_schema(
 
 #[no_mangle]
 pub unsafe extern "C" fn lance_huggingface_get_stream(
-    factory: *mut HuggingFaceStreamFactory,
+    factory: *const HuggingFaceStreamFactory,
     output: *mut FFI_ArrowArrayStream,
 ) -> *mut c_char {
     call(|| {
         if factory.is_null() || output.is_null() {
             return Err(Error::message("null Hugging Face stream argument"));
         }
-        let reader = (&mut *factory)
+        let factory = &*factory;
+        let reader = factory
             .reader
-            .take()
-            .ok_or_else(|| Error::message("Hugging Face stream was already opened"))?;
+            .lock()
+            .map_err(|_| Error::message("Hugging Face stream factory lock was poisoned"))?
+            .take();
+        let reader = match reader {
+            Some(reader) => reader,
+            None => factory.open_reader()?,
+        };
         ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
         Ok(())
     })
