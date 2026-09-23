@@ -27,12 +27,27 @@ enum LanceWriteMode : int32_t {
 };
 
 struct LanceWriteConfig {
+	// Write mode.
 	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
+	// Storage configurations.
 	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
 	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
 	int64_t target_file_size = 512 * 1024 * 1024;
+	// Blob columns.
 	const char *const *blob_columns = NULL;
 	size_t blob_column_count = 0;
+	// Scalar index columns.
+	const char *const *scalar_index_columns = NULL;
+	size_t scalar_index_column_count = 0;
+	// Vector index columns.
+	const char *const *vector_index_columns = NULL;
+	size_t vector_index_column_count = 0;
+	// Text index columns.
+	const char *const *text_index_columns = NULL;
+	size_t text_index_column_count = 0;
+	// Bloom filter index columns.
+	const char *const *bloom_filter_index_columns = NULL;
+	size_t bloom_filter_index_column_count = 0;
 };
 
 #ifdef __cplusplus

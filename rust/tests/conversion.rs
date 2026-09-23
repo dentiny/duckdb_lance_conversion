@@ -3,9 +3,12 @@ mod common;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
+use arrow_array::{
+    ArrayRef, BinaryArray, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, StringArray,
+};
 use arrow_schema::{DataType, Field, Schema};
 use arrow_select::concat::concat_batches;
+use lance::index::DatasetIndexExt;
 use lance_conversion::{
     convert, LanceSink, LanceWriter, ParquetFileSource, WriteMode, WriteOptions,
 };
@@ -182,5 +185,73 @@ async fn string_uri_column_is_ingested_as_a_blob() {
     writer.write_batch(batch).await.unwrap();
     writer.finish().await.unwrap();
     assert_values(&read_lance(&output).await, &expected);
+    spawn_blocking(move || temp.close()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn index_types_are_inferred_from_the_schema() {
+    let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
+    let output = temp.path().join("indexed.lance");
+    let rows = 32;
+    let vectors = FixedSizeListArray::try_new(
+        Arc::new(Field::new("item", DataType::Float32, true)),
+        4,
+        Arc::new(Float32Array::from_iter(
+            (0..rows * 4).map(|value| Some(value as f32)),
+        )),
+        None,
+    )
+    .unwrap();
+    let batch = RecordBatch::try_from_iter(vec![
+        (
+            "id",
+            Arc::new(Int64Array::from_iter_values(0..rows as i64)) as ArrayRef,
+        ),
+        (
+            "name",
+            Arc::new(StringArray::from_iter_values(
+                (0..rows).map(|row| format!("row-{row}")),
+            )) as ArrayRef,
+        ),
+        (
+            "category",
+            Arc::new(StringArray::from_iter_values(
+                (0..rows).map(|row| format!("category-{}", row % 4)),
+            )) as ArrayRef,
+        ),
+        ("embedding", Arc::new(vectors) as ArrayRef),
+    ])
+    .unwrap();
+    let mut writer = LanceWriter::create(
+        &output,
+        batch.schema(),
+        WriteOptions {
+            scalar_index_columns: vec!["id".into()],
+            vector_index_columns: vec!["embedding".into()],
+            text_index_columns: vec!["name".into()],
+            bloom_filter_index_columns: vec!["category".into()],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    writer.write_batch(batch).await.unwrap();
+    writer.finish().await.unwrap();
+
+    let dataset = lance::Dataset::open(output.to_str().unwrap())
+        .await
+        .unwrap();
+    let mut names = dataset
+        .load_indices()
+        .await
+        .unwrap()
+        .iter()
+        .map(|index| index.name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        ["category_idx", "embedding_idx", "id_idx", "name_idx"]
+    );
     spawn_blocking(move || temp.close()).await.unwrap().unwrap();
 }

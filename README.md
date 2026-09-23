@@ -92,6 +92,35 @@ TO 'media.lance' (
 Every named column must exist and have type `VARCHAR`. A failed object read
 fails the COPY.
 
+Index options create indexes after writing the dataset. Users select the
+purpose; the Rust writer chooses the corresponding Lance implementation:
+
+- `SCALAR_INDEX_COLUMNS` creates BTree indexes.
+- `VECTOR_INDEX_COLUMNS` creates IVF_FLAT indexes with L2 distance.
+- `TEXT_INDEX_COLUMNS` creates Inverted full-text indexes.
+- `BLOOM_FILTER_INDEX_COLUMNS` creates Bloom filter indexes for equality and
+  membership tests.
+
+```sql
+COPY (
+    SELECT id, event_id, category, description, embedding
+    FROM read_parquet('vectors.parquet')
+)
+TO 'vectors.lance' (
+    FORMAT LANCE,
+    SCALAR_INDEX_COLUMNS (id, category),
+    VECTOR_INDEX_COLUMNS (embedding),
+    TEXT_INDEX_COLUMNS (description),
+    BLOOM_FILTER_INDEX_COLUMNS (event_id)
+);
+```
+
+Scalar and Bloom filter options accept supported scalar values, text indexes
+require `VARCHAR`, and vector indexes require fixed-size numeric arrays. A
+column may appear in only one index option per COPY. Unsupported combinations
+are rejected before data is written. Index creation publishes additional Lance
+dataset versions and can fail after the data version has committed.
+
 ### Types and conversion limits
 
 Supported DuckDB types are booleans, signed/unsigned integers through 64 bits,

@@ -23,6 +23,7 @@ use tokio::{
     task::JoinHandle,
 };
 
+use super::lance_index::LanceIndexPlan;
 use super::{BatchSink, WriteSummary};
 use crate::error::ResultExt;
 use crate::schema::validate_schema;
@@ -41,6 +42,10 @@ pub struct WriteOptions {
     pub blob_dedicated_size_threshold: Option<usize>,
     pub target_file_size: usize,
     pub blob_columns: Vec<String>,
+    pub scalar_index_columns: Vec<String>,
+    pub vector_index_columns: Vec<String>,
+    pub text_index_columns: Vec<String>,
+    pub bloom_filter_index_columns: Vec<String>,
 }
 
 impl Default for WriteOptions {
@@ -52,6 +57,10 @@ impl Default for WriteOptions {
             blob_dedicated_size_threshold: Some(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
             target_file_size: DEFAULT_TARGET_FILE_SIZE,
             blob_columns: Vec::new(),
+            scalar_index_columns: Vec::new(),
+            vector_index_columns: Vec::new(),
+            text_index_columns: Vec::new(),
+            bloom_filter_index_columns: Vec::new(),
         }
     }
 }
@@ -405,6 +414,7 @@ async fn write_dataset(
             "Lance destination must not be a storage root",
         ));
     }
+    let indexes = LanceIndexPlan::new(&stream.schema(), options)?;
     let mut params = WriteParams {
         mode: options.mode,
         max_bytes_per_file: options.target_file_size,
@@ -422,7 +432,7 @@ async fn write_dataset(
     );
     params.session = Some(Arc::new(session));
     let uri = destination.location.as_str();
-    InsertBuilder::new(uri)
+    let mut dataset = InsertBuilder::new(uri)
         .with_params(&params)
         .execute_stream(stream)
         .await
@@ -431,5 +441,6 @@ async fn write_dataset(
             WriteMode::Append => "appending to Lance dataset",
             WriteMode::Overwrite => "overwriting Lance dataset",
         })?;
+    indexes.create(&mut dataset).await?;
     Ok(())
 }

@@ -25,6 +25,10 @@ struct LanceBindData : public FunctionData {
 	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
 	int64_t target_file_size = 512 * 1024 * 1024;
 	vector<string> blob_columns;
+	vector<string> scalar_index_columns;
+	vector<string> vector_index_columns;
+	vector<string> text_index_columns;
+	vector<string> bloom_filter_index_columns;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<LanceBindData>();
@@ -37,6 +41,10 @@ struct LanceBindData : public FunctionData {
 		result->blob_dedicated_size_threshold = blob_dedicated_size_threshold;
 		result->target_file_size = target_file_size;
 		result->blob_columns = blob_columns;
+		result->scalar_index_columns = scalar_index_columns;
+		result->vector_index_columns = vector_index_columns;
+		result->text_index_columns = text_index_columns;
+		result->bloom_filter_index_columns = bloom_filter_index_columns;
 		return std::move(result);
 	}
 	bool Equals(const FunctionData &other_p) const override {
@@ -44,7 +52,10 @@ struct LanceBindData : public FunctionData {
 		return names == other.names && types == other.types && mode == other.mode && s3 == other.s3 &&
 		       blob_inline_size_threshold == other.blob_inline_size_threshold &&
 		       blob_dedicated_size_threshold == other.blob_dedicated_size_threshold &&
-		       target_file_size == other.target_file_size && blob_columns == other.blob_columns;
+		       target_file_size == other.target_file_size && blob_columns == other.blob_columns &&
+		       scalar_index_columns == other.scalar_index_columns &&
+		       vector_index_columns == other.vector_index_columns && text_index_columns == other.text_index_columns &&
+		       bloom_filter_index_columns == other.bloom_filter_index_columns;
 	}
 };
 
@@ -140,6 +151,56 @@ vector<string> ParseBlobColumns(ClientContext &context, const vector<Value> &val
 	return result;
 }
 
+vector<string> ParseIndexColumns(ClientContext &context, const string &option_name, const vector<Value> &values,
+                                 const vector<string> &names) {
+	if (values.empty()) {
+		throw BinderException("%s requires at least one column", option_name);
+	}
+	vector<string> result;
+	for (const auto &value : values) {
+		if (value.IsNull()) {
+			throw BinderException("%s cannot contain NULL", option_name);
+		}
+		auto requested = value.CastAs(context, LogicalType::VARCHAR).GetValue<string>();
+		idx_t index;
+		for (index = 0; index < names.size(); index++) {
+			if (StringUtil::CIEquals(names[index], requested)) {
+				break;
+			}
+		}
+		if (index == names.size()) {
+			throw BinderException("%s column not found: %s", option_name, requested);
+		}
+		for (const auto &column : result) {
+			if (StringUtil::CIEquals(column, names[index])) {
+				throw BinderException("Duplicate index column: %s", names[index]);
+			}
+		}
+		result.push_back(names[index]);
+	}
+	return result;
+}
+
+void ValidateIndexColumns(const LanceBindData &data) {
+	vector<string> columns;
+	for (const auto *group : {&data.scalar_index_columns, &data.vector_index_columns, &data.text_index_columns,
+	                          &data.bloom_filter_index_columns}) {
+		for (const auto &column : *group) {
+			for (const auto &existing : columns) {
+				if (StringUtil::CIEquals(column, existing)) {
+					throw BinderException("Column cannot have multiple indexes in one COPY: %s", column);
+				}
+			}
+			for (const auto &blob_column : data.blob_columns) {
+				if (StringUtil::CIEquals(column, blob_column)) {
+					throw BinderException("BLOB_COLUMNS column cannot also be indexed: %s", column);
+				}
+			}
+			columns.push_back(column);
+		}
+	}
+}
+
 unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput &input, const vector<string> &names,
                                    const vector<LogicalType> &types) {
 	auto result = make_uniq<LanceBindData>();
@@ -184,10 +245,19 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			}
 		} else if (StringUtil::CIEquals(option.first, "blob_columns")) {
 			result->blob_columns = ParseBlobColumns(context, option.second, names, types);
+		} else if (StringUtil::CIEquals(option.first, "scalar_index_columns")) {
+			result->scalar_index_columns = ParseIndexColumns(context, option.first, option.second, names);
+		} else if (StringUtil::CIEquals(option.first, "vector_index_columns")) {
+			result->vector_index_columns = ParseIndexColumns(context, option.first, option.second, names);
+		} else if (StringUtil::CIEquals(option.first, "text_index_columns")) {
+			result->text_index_columns = ParseIndexColumns(context, option.first, option.second, names);
+		} else if (StringUtil::CIEquals(option.first, "bloom_filter_index_columns")) {
+			result->bloom_filter_index_columns = ParseIndexColumns(context, option.first, option.second, names);
 		} else {
 			throw BinderException("Unsupported option for FORMAT LANCE: %s", option.first);
 		}
 	}
+	ValidateIndexColumns(*result);
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (FileSystem::IsRemoteFile(input.info.file_path)) {
 		if (!StringUtil::CIStartsWith(input.info.file_path, "s3://")) {
@@ -219,6 +289,25 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	}
 	write_config.blob_columns = blob_columns.data();
 	write_config.blob_column_count = blob_columns.size();
+	auto string_pointers = [](const vector<string> &columns) {
+		vector<const char *> result;
+		for (const auto &column : columns) {
+			result.push_back(column.c_str());
+		}
+		return result;
+	};
+	auto scalar_index_columns = string_pointers(bind.scalar_index_columns);
+	auto vector_index_columns = string_pointers(bind.vector_index_columns);
+	auto text_index_columns = string_pointers(bind.text_index_columns);
+	auto bloom_filter_index_columns = string_pointers(bind.bloom_filter_index_columns);
+	write_config.scalar_index_columns = scalar_index_columns.data();
+	write_config.scalar_index_column_count = scalar_index_columns.size();
+	write_config.vector_index_columns = vector_index_columns.data();
+	write_config.vector_index_column_count = vector_index_columns.size();
+	write_config.text_index_columns = text_index_columns.data();
+	write_config.text_index_column_count = text_index_columns.size();
+	write_config.bloom_filter_index_columns = bloom_filter_index_columns.data();
+	write_config.bloom_filter_index_column_count = bloom_filter_index_columns.size();
 	LanceS3Config s3;
 	const LanceS3Config *s3_ptr = nullptr;
 	LanceS3Options options;
