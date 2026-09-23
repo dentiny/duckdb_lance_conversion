@@ -49,6 +49,14 @@ pub struct LanceWriteConfig {
     target_file_size: i64,
     blob_columns: *const *const c_char,
     blob_column_count: usize,
+    scalar_index_columns: *const *const c_char,
+    scalar_index_column_count: usize,
+    vector_index_columns: *const *const c_char,
+    vector_index_column_count: usize,
+    text_index_columns: *const *const c_char,
+    text_index_column_count: usize,
+    bloom_filter_index_columns: *const *const c_char,
+    bloom_filter_index_column_count: usize,
 }
 
 pub struct LanceConversionWriter {
@@ -244,6 +252,22 @@ pub unsafe extern "C" fn lance_conversion_open(
             )?
             .unwrap_or_else(|| WriteOptions::default().target_file_size),
             blob_columns: string_list(config.blob_columns, config.blob_column_count)?,
+            scalar_index_columns: string_list(
+                config.scalar_index_columns,
+                config.scalar_index_column_count,
+            )?,
+            vector_index_columns: string_list(
+                config.vector_index_columns,
+                config.vector_index_column_count,
+            )?,
+            text_index_columns: string_list(
+                config.text_index_columns,
+                config.text_index_column_count,
+            )?,
+            bloom_filter_index_columns: string_list(
+                config.bloom_filter_index_columns,
+                config.bloom_filter_index_column_count,
+            )?,
         };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

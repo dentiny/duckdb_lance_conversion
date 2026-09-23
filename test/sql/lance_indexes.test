@@ -1,0 +1,51 @@
+# name: test/sql/lance_indexes.test
+# description: Infer Lance index types from selected columns
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT
+        i,
+        'row-' || i AS name,
+        'category-' || (i % 4) AS category,
+        [i::FLOAT, (i + 1)::FLOAT]::FLOAT[2] AS embedding
+    FROM range(32) t(i)
+) TO '__TEST_DIR__/indexed.lance' (
+    FORMAT LANCE,
+    SCALAR_INDEX_COLUMNS (i),
+    VECTOR_INDEX_COLUMNS (embedding),
+    TEXT_INDEX_COLUMNS (name),
+    BLOOM_FILTER_INDEX_COLUMNS (category)
+);
+----
+32
+
+query I
+SELECT count(*) >= 5 FROM glob('__TEST_DIR__/indexed.lance/_versions/*');
+----
+true
+
+statement error
+COPY (SELECT true AS flag) TO '__TEST_DIR__/unsupported_index.lance' (
+    FORMAT LANCE,
+    VECTOR_INDEX_COLUMNS (flag)
+);
+----
+cannot create the requested index
+
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/unsupported_index.lance/*');
+----
+0
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/indexed.lance';
+----
+32
