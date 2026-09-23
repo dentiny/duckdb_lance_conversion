@@ -8,7 +8,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include_directories(src/include rust/include)
 
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
-find_program(PROTOC_EXECUTABLE protoc REQUIRED)
+set(PROTOC_HINTS)
+foreach(triplet_var VCPKG_HOST_TRIPLET VCPKG_TARGET_TRIPLET)
+  if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED ${triplet_var})
+    list(APPEND PROTOC_HINTS
+         "${VCPKG_INSTALLED_DIR}/${${triplet_var}}/tools/protobuf")
+  endif()
+endforeach()
+find_program(PROTOC_EXECUTABLE protoc HINTS ${PROTOC_HINTS} REQUIRED)
 set(LANCE_CARGO_PROFILE
     "release"
     CACHE STRING "Cargo profile: dev or release")
