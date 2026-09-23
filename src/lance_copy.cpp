@@ -1,5 +1,6 @@
 #include "lance_copy.hpp"
-#include <memory>
+#include "lance_ffi.hpp"
+#include "storage_options.hpp"
 #include "lance_conversion.h"
 #include "duckdb/common/arrow/arrow_converter.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
@@ -8,54 +9,11 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/query_result.hpp"
-#include "duckdb/main/secret/secret.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 
 namespace duckdb {
 namespace {
-
-struct LanceS3Options {
-	string endpoint;
-	string region;
-	string key_id;
-	string secret;
-	string session_token;
-	bool use_ssl = true;
-	bool virtual_host_style = false;
-};
-
-LanceS3Options ReadS3Options(ClientContext &context, const string &path) {
-	LanceS3Options result;
-	KeyValueSecretReader secret_reader(*context.db, "s3", path);
-	secret_reader.TryGetSecretKey("key_id", result.key_id);
-	secret_reader.TryGetSecretKey("secret", result.secret);
-	secret_reader.TryGetSecretKey("session_token", result.session_token);
-	secret_reader.TryGetSecretKey("endpoint", result.endpoint);
-	secret_reader.TryGetSecretKey("region", result.region);
-	secret_reader.TryGetSecretKey("use_ssl", result.use_ssl);
-	string url_style;
-	secret_reader.TryGetSecretKey("url_style", url_style);
-	if (!url_style.empty() && url_style != "path" && url_style != "vhost") {
-		throw InvalidConfigurationException("S3 secret url_style must be either 'path' or 'vhost'");
-	}
-	result.virtual_host_style = url_style == "vhost";
-	return result;
-}
-
-struct LanceErrorDeleter {
-	void operator()(char *error) const {
-		lance_conversion_error_free(error);
-	}
-};
-
-using LanceError = std::unique_ptr<char, LanceErrorDeleter>;
-
-void ThrowIfLanceError(LanceError error) {
-	if (error) {
-		throw IOException("Lance conversion: %s", error.get());
-	}
-}
 
 struct LanceBindData : public FunctionData {
 	vector<string> names;
@@ -175,20 +133,16 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	const LanceS3Config *s3_ptr = nullptr;
 	if (bind.s3) {
 		auto options = ReadS3Options(context, path);
-		s3.endpoint = options.endpoint.c_str();
-		s3.region = options.region.c_str();
-		s3.key_id = options.key_id.c_str();
-		s3.secret = options.secret.c_str();
-		s3.session_token = options.session_token.c_str();
-		s3.use_ssl = options.use_ssl ? 1 : 0;
-		s3.virtual_host_style = options.virtual_host_style ? 1 : 0;
+		s3 = options.ToConfig();
 		s3_ptr = &s3;
-		ThrowIfLanceError(LanceError(
-		    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer)));
+		ThrowIfLanceError(
+		    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer),
+		    "Lance conversion");
 		return std::move(state);
 	}
-	ThrowIfLanceError(LanceError(
-	    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer)));
+	ThrowIfLanceError(
+	    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer),
+	    "Lance conversion");
 	return std::move(state);
 }
 
@@ -202,11 +156,11 @@ void LanceSinkChunk(ExecutionContext &context, FunctionData &bind_p, GlobalFunct
 	auto &global = global_p.Cast<LanceGlobalState>();
 	ArrowArrayWrapper array;
 	ArrowConverter::ToArrowArray(input, &array.arrow_array, bind.properties, {});
-	ThrowIfLanceError(LanceError(lance_conversion_push(global.writer, &array.arrow_array)));
+	ThrowIfLanceError(lance_conversion_push(global.writer, &array.arrow_array), "Lance conversion");
 }
 
 void LanceFinalize(ClientContext &context, FunctionData &bind, GlobalFunctionData &global_p) {
-	ThrowIfLanceError(LanceError(lance_conversion_finish(global_p.Cast<LanceGlobalState>().writer)));
+	ThrowIfLanceError(lance_conversion_finish(global_p.Cast<LanceGlobalState>().writer), "Lance conversion");
 }
 
 CopyFunctionExecutionMode LanceExecutionMode(bool preserve_order, bool supports_batch_index) {
