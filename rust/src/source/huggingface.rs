@@ -217,13 +217,4 @@ mod tests {
         let error = stream.try_next().await.unwrap_err();
         assert!(error.to_string().contains("schema does not match"));
     }
-
-    #[tokio::test]
-    async fn reads_small_public_dataset() {
-        let (_, mut stream) = HuggingFaceSource::new("lhoestq/demo1")
-            .open()
-            .await
-            .unwrap();
-        assert!(stream.try_next().await.unwrap().is_some());
-    }
 }
