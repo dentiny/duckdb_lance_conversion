@@ -40,7 +40,6 @@ pub(crate) struct OpendalStorage {
     pub object_store: Arc<dyn ObjectStore>,
     pub object_path: object_store::path::Path,
     pub location: Url,
-    pub is_local: bool,
 }
 
 impl OpendalStorage {
@@ -76,7 +75,6 @@ impl OpendalStorage {
             object_store,
             object_path,
             location,
-            is_local: true,
         })
     }
 
@@ -133,7 +131,6 @@ impl OpendalStorage {
             object_store,
             object_path,
             location,
-            is_local: false,
         })
     }
 }

@@ -134,9 +134,9 @@ let result = LanceSink::new("output.lance", WriteOptions::default())
 
 Run these APIs inside a Tokio runtime. DuckDB uses the incremental `LanceWriter`
 adapter (`create`, `write_batch`, and `finish`) with a bounded channel. Dropping an
-unfinished writer closes its input; its task asynchronously removes newly created
-output. Keep the runtime alive for cleanup to complete. The synchronous FFI layer
-owns the runtime and waits for async operations and cleanup on destruction.
+unfinished writer closes its input and waits for the writer task to stop. An
+aborted write may leave uncommitted output. The synchronous FFI layer owns the
+runtime and waits for the task on destruction.
 
 The Lance sink rejects unsupported Arrow types, including `Map`,
 `Dictionary`, `Union`, `Null`, `Duration`, `Interval`, and decimal types other

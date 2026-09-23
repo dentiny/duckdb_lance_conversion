@@ -68,8 +68,7 @@ impl BatchSink for LanceSink {
             .context("destination must be valid UTF-8")?;
         let destination =
             OpendalStorage::from_path(destination_path, self.options.s3_config.as_ref())?;
-        let owns_destination = reserve_destination(&destination, self.options.overwrite).await?;
-        write_reserved_stream(&destination, stream, owns_destination).await
+        write_stream(&destination, stream, !self.options.overwrite).await
     }
 }
 
@@ -104,7 +103,7 @@ enum SinkState {
 }
 
 /// Push-based adapter for callers such as DuckDB, with at most one queued batch.
-/// Dropping the sender lets the writer task clean up an unfinished dataset.
+/// Dropping the sender lets the writer task stop an unfinished write.
 pub struct LanceWriter {
     schema: SchemaRef,
     state: SinkState,
@@ -122,12 +121,13 @@ impl LanceWriter {
             .to_str()
             .context("destination must be valid UTF-8")?;
         let destination = OpendalStorage::from_path(destination_path, options.s3_config.as_ref())?;
-        let owns_destination = reserve_destination(&destination, options.overwrite).await?;
+        let create_new_dataset = !options.overwrite;
         let (sender, receiver) = channel(1);
         let stream = batch_stream(schema.clone(), receiver);
-        let worker = tokio::spawn(async move {
-            write_reserved_stream(&destination, stream, owns_destination).await
-        });
+        let worker =
+            tokio::spawn(
+                async move { write_stream(&destination, stream, create_new_dataset).await },
+            );
         Ok(Self {
             schema,
             state: SinkState::Open { sender, worker },
@@ -191,35 +191,10 @@ impl LanceWriter {
     }
 }
 
-async fn reserve_destination(destination: &OpendalStorage, overwrite: bool) -> Result<bool> {
-    ensure!(
-        !destination.object_path.as_ref().is_empty(),
-        "Lance destination must not be a storage root"
-    );
-    if !destination.is_local {
-        return Ok(!overwrite);
-    }
-
-    let prefix = format!("{}/", destination.object_path);
-    let exists = destination
-        .operator
-        .exists(destination.object_path.as_ref())
-        .await?;
-    ensure!(
-        !exists || overwrite,
-        "Lance destination must not exist: {}",
-        destination.location
-    );
-    if !exists {
-        destination.operator.create_dir(&prefix).await?;
-    }
-    Ok(!exists)
-}
-
-async fn write_reserved_stream(
+async fn write_stream(
     destination: &OpendalStorage,
     stream: SendableRecordBatchStream,
-    owns_destination: bool,
+    create_new_dataset: bool,
 ) -> Result<WriteSummary> {
     let rows_written = Arc::new(AtomicU64::new(0));
     let count = rows_written.clone();
@@ -228,17 +203,10 @@ async fn write_reserved_stream(
         count.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
     });
     let stream = Box::pin(RecordBatchStreamAdapter::new(schema, counted));
-    let result = AssertUnwindSafe(write_dataset(destination, stream, owns_destination))
+    let result = AssertUnwindSafe(write_dataset(destination, stream, create_new_dataset))
         .catch_unwind()
         .await
         .unwrap_or_else(|_| Err(anyhow!("Lance writer task panicked")));
-    if result.is_err() && owns_destination && destination.is_local {
-        let _ = destination
-            .operator
-            .delete_with(&format!("{}/", destination.object_path))
-            .recursive(true)
-            .await;
-    }
     result?;
     Ok(WriteSummary {
         rows_written: rows_written.load(Ordering::Relaxed),
@@ -248,10 +216,14 @@ async fn write_reserved_stream(
 async fn write_dataset(
     destination: &OpendalStorage,
     stream: SendableRecordBatchStream,
-    owns_destination: bool,
+    create_new_dataset: bool,
 ) -> Result<()> {
+    ensure!(
+        !destination.object_path.as_ref().is_empty(),
+        "Lance destination must not be a storage root"
+    );
     let mut params = WriteParams {
-        mode: if owns_destination {
+        mode: if create_new_dataset {
             WriteMode::Create
         } else {
             WriteMode::Overwrite
@@ -273,7 +245,7 @@ async fn write_dataset(
         .with_params(&params)
         .execute_stream(stream)
         .await
-        .context(if owns_destination {
+        .context(if create_new_dataset {
             "creating Lance dataset"
         } else {
             "OVERWRITE requires an existing valid Lance dataset"
