@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
-use futures::{future::BoxFuture, FutureExt, TryStreamExt};
+use futures::{future::BoxFuture, stream, FutureExt, StreamExt, TryStreamExt};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::{
     AsyncFileReader, MetadataSuffixFetch, ParquetRecordBatchStreamBuilder,
@@ -17,6 +17,7 @@ use crate::storage::OpendalStorage;
 use crate::{Error, Result, S3StorageConfig};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
+const MAX_CONCURRENT_RANGE_READS: usize = 8;
 
 struct OpendalParquetReader {
     operator: opendal::Operator,
@@ -38,6 +39,26 @@ impl AsyncFileReader for OpendalParquetReader {
                 .map_err(opendal_error)
         }
         .boxed()
+    }
+
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<Range<u64>>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
+        let operator = &self.operator;
+        let path = &self.path;
+        stream::iter(ranges)
+            .map(move |range| async move {
+                operator
+                    .read_with(path)
+                    .range(range)
+                    .await
+                    .map(|buffer| buffer.to_bytes())
+                    .map_err(opendal_error)
+            })
+            .buffered(MAX_CONCURRENT_RANGE_READS)
+            .try_collect()
+            .boxed()
     }
 
     fn get_metadata<'a>(
