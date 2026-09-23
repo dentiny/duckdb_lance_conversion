@@ -2758,7 +2758,6 @@ dependencies = [
  "futures",
  "lance",
  "lance-io",
- "lance-table",
  "object_store 0.14.2",
  "object_store_opendal",
  "opendal",

@@ -13,7 +13,6 @@ use lance::{
     dataset::{write::InsertBuilder, WriteMode, WriteParams},
     session::Session,
 };
-use lance_table::io::commit::ConditionalPutCommitHandler;
 use tokio::{
     sync::mpsc::{channel, Receiver, Sender},
     task::JoinHandle,
@@ -241,7 +240,6 @@ async fn write_dataset(
         Arc::new(OpendalStoreProvider::new(destination.object_store.clone())),
     );
     params.session = Some(Arc::new(session));
-    params.commit_handler = Some(Arc::new(ConditionalPutCommitHandler));
     let uri = destination.location.as_str();
     InsertBuilder::new(uri)
         .with_params(&params)
