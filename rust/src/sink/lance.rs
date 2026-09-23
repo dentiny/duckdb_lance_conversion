@@ -15,20 +15,15 @@ pub use lance::dataset::write::WriteMode;
 use lance::{
     blob_field_with_options,
     dataset::write::{ExternalBlobMode, InsertBuilder, WriteParams},
-    index::{vector::VectorIndexParams, DatasetIndexExt},
     session::Session,
     BlobFieldOptions,
 };
-use lance_index::{
-    scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams},
-    IndexType,
-};
-use lance_linalg::distance::MetricType;
 use tokio::{
     sync::mpsc::{channel, Receiver, Sender},
     task::JoinHandle,
 };
 
+use super::lance_index::LanceIndexPlan;
 use super::{BatchSink, WriteSummary};
 use crate::error::ResultExt;
 use crate::schema::validate_schema;
@@ -38,7 +33,6 @@ use crate::{Error, Result, S3StorageConfig};
 const DEFAULT_BLOB_INLINE_SIZE_THRESHOLD: usize = 2 * 1024 * 1024;
 const DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD: usize = 16 * 1024 * 1024;
 const DEFAULT_TARGET_FILE_SIZE: usize = 512 * 1024 * 1024;
-const TARGET_VECTOR_PARTITION_ROWS: usize = 8192;
 
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
@@ -420,7 +414,7 @@ async fn write_dataset(
             "Lance destination must not be a storage root",
         ));
     }
-    let indexes = prepare_indexes(&stream.schema(), options)?;
+    let indexes = LanceIndexPlan::new(&stream.schema(), options)?;
     let mut params = WriteParams {
         mode: options.mode,
         max_bytes_per_file: options.target_file_size,
@@ -447,223 +441,6 @@ async fn write_dataset(
             WriteMode::Append => "appending to Lance dataset",
             WriteMode::Overwrite => "overwriting Lance dataset",
         })?;
-    create_indexes(&mut dataset, &indexes).await?;
-    Ok(())
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum InferredIndexKind {
-    BTree,
-    Vector,
-    Text,
-    BloomFilter,
-}
-
-fn supports_scalar_index(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Boolean
-            | DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float16
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Decimal128(_, _)
-            | DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Utf8View
-            | DataType::Date32
-            | DataType::Date64
-            | DataType::Time32(_)
-            | DataType::Time64(_)
-            | DataType::Timestamp(_, _)
-    )
-}
-
-fn supports_vector_index(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::FixedSizeList(field, _)
-            if matches!(
-                field.data_type(),
-                DataType::Int8
-                    | DataType::UInt8
-                    | DataType::Float16
-                    | DataType::Float32
-                    | DataType::Float64
-            )
-    )
-}
-
-fn supports_bloom_filter_index(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Date32
-            | DataType::Date64
-            | DataType::Time32(_)
-            | DataType::Time64(_)
-            | DataType::Timestamp(_, _)
-    )
-}
-
-fn validate_index_type(data_type: &DataType, column: &str, kind: InferredIndexKind) -> Result<()> {
-    let supported = match kind {
-        InferredIndexKind::BTree => supports_scalar_index(data_type),
-        InferredIndexKind::Vector => supports_vector_index(data_type),
-        InferredIndexKind::Text => matches!(
-            data_type,
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-        ),
-        InferredIndexKind::BloomFilter => supports_bloom_filter_index(data_type),
-    };
-    if supported {
-        Ok(())
-    } else {
-        Err(Error::invalid_argument(format!(
-            "cannot create the requested index on column '{column}' with type {data_type}"
-        )))
-    }
-}
-
-fn append_indexes(
-    schema: &SchemaRef,
-    columns: &[String],
-    kind: InferredIndexKind,
-    indexes: &mut Vec<(String, InferredIndexKind)>,
-) -> Result<()> {
-    for column in columns {
-        let field = schema
-            .field_with_name(column)
-            .map_err(|_| Error::invalid_argument(format!("index column not found: {column}")))?;
-        validate_index_type(field.data_type(), column, kind)?;
-        indexes.push((column.clone(), kind));
-    }
-    Ok(())
-}
-
-fn prepare_indexes(
-    schema: &SchemaRef,
-    options: &WriteOptions,
-) -> Result<Vec<(String, InferredIndexKind)>> {
-    let mut indexes = Vec::new();
-    append_indexes(
-        schema,
-        &options.scalar_index_columns,
-        InferredIndexKind::BTree,
-        &mut indexes,
-    )?;
-    append_indexes(
-        schema,
-        &options.vector_index_columns,
-        InferredIndexKind::Vector,
-        &mut indexes,
-    )?;
-    append_indexes(
-        schema,
-        &options.text_index_columns,
-        InferredIndexKind::Text,
-        &mut indexes,
-    )?;
-    append_indexes(
-        schema,
-        &options.bloom_filter_index_columns,
-        InferredIndexKind::BloomFilter,
-        &mut indexes,
-    )?;
-    indexes.sort_by(|left, right| left.0.cmp(&right.0));
-    if indexes
-        .windows(2)
-        .any(|indexes| indexes[0].0 == indexes[1].0)
-    {
-        return Err(Error::invalid_argument(
-            "a column cannot have multiple indexes in one write",
-        ));
-    }
-    Ok(indexes)
-}
-
-async fn create_indexes(
-    dataset: &mut lance::Dataset,
-    indexes: &[(String, InferredIndexKind)],
-) -> Result<()> {
-    let vector_partitions = if indexes
-        .iter()
-        .any(|(_, kind)| *kind == InferredIndexKind::Vector)
-    {
-        Some(
-            dataset
-                .count_rows(None)
-                .await?
-                .div_ceil(TARGET_VECTOR_PARTITION_ROWS)
-                .clamp(1, 4096),
-        )
-    } else {
-        None
-    };
-
-    for (column, kind) in indexes {
-        match kind {
-            InferredIndexKind::BTree => {
-                let params = ScalarIndexParams::for_builtin(BuiltinIndexType::BTree);
-                dataset
-                    .create_index(&[column.as_str()], IndexType::BTree, None, &params, true)
-                    .await
-                    .context(format!("creating BTree index on '{column}'"))?;
-            }
-            InferredIndexKind::Vector => {
-                let params = VectorIndexParams::ivf_flat(
-                    vector_partitions.expect("vector partition count must exist"),
-                    MetricType::L2,
-                );
-                dataset
-                    .create_index(&[column.as_str()], IndexType::IvfFlat, None, &params, true)
-                    .await
-                    .context(format!("creating vector index on '{column}'"))?;
-            }
-            InferredIndexKind::Text => {
-                dataset
-                    .create_index(
-                        &[column.as_str()],
-                        IndexType::Inverted,
-                        None,
-                        &InvertedIndexParams::default(),
-                        true,
-                    )
-                    .await
-                    .context(format!("creating text index on '{column}'"))?;
-            }
-            InferredIndexKind::BloomFilter => {
-                let params = ScalarIndexParams::for_builtin(BuiltinIndexType::BloomFilter);
-                dataset
-                    .create_index(
-                        &[column.as_str()],
-                        IndexType::BloomFilter,
-                        None,
-                        &params,
-                        true,
-                    )
-                    .await
-                    .context(format!("creating Bloom filter index on '{column}'"))?;
-            }
-        }
-    }
+    indexes.create(&mut dataset).await?;
     Ok(())
 }
