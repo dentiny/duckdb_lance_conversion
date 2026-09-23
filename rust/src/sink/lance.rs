@@ -68,7 +68,7 @@ impl BatchSink for LanceSink {
             .context("destination must be valid UTF-8")?;
         let destination =
             OpendalStorage::from_path(destination_path, self.options.s3_config.as_ref())?;
-        write_stream(&destination, stream, !self.options.overwrite).await
+        write_stream(&destination, stream, self.options).await
     }
 }
 
@@ -121,13 +121,9 @@ impl LanceWriter {
             .to_str()
             .context("destination must be valid UTF-8")?;
         let destination = OpendalStorage::from_path(destination_path, options.s3_config.as_ref())?;
-        let create_new_dataset = !options.overwrite;
         let (sender, receiver) = channel(1);
         let stream = batch_stream(schema.clone(), receiver);
-        let worker =
-            tokio::spawn(
-                async move { write_stream(&destination, stream, create_new_dataset).await },
-            );
+        let worker = tokio::spawn(async move { write_stream(&destination, stream, options).await });
         Ok(Self {
             schema,
             state: SinkState::Open { sender, worker },
@@ -194,7 +190,7 @@ impl LanceWriter {
 async fn write_stream(
     destination: &OpendalStorage,
     stream: SendableRecordBatchStream,
-    create_new_dataset: bool,
+    options: WriteOptions,
 ) -> Result<WriteSummary> {
     let rows_written = Arc::new(AtomicU64::new(0));
     let count = rows_written.clone();
@@ -203,7 +199,7 @@ async fn write_stream(
         count.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
     });
     let stream = Box::pin(RecordBatchStreamAdapter::new(schema, counted));
-    let result = AssertUnwindSafe(write_dataset(destination, stream, create_new_dataset))
+    let result = AssertUnwindSafe(write_dataset(destination, stream, &options))
         .catch_unwind()
         .await
         .unwrap_or_else(|_| Err(anyhow!("Lance writer task panicked")));
@@ -216,17 +212,17 @@ async fn write_stream(
 async fn write_dataset(
     destination: &OpendalStorage,
     stream: SendableRecordBatchStream,
-    create_new_dataset: bool,
+    options: &WriteOptions,
 ) -> Result<()> {
     ensure!(
         !destination.object_path.as_ref().is_empty(),
         "Lance destination must not be a storage root"
     );
     let mut params = WriteParams {
-        mode: if create_new_dataset {
-            WriteMode::Create
-        } else {
+        mode: if options.overwrite {
             WriteMode::Overwrite
+        } else {
+            WriteMode::Create
         },
         ..Default::default()
     };
@@ -245,10 +241,10 @@ async fn write_dataset(
         .with_params(&params)
         .execute_stream(stream)
         .await
-        .context(if create_new_dataset {
-            "creating Lance dataset"
-        } else {
+        .context(if options.overwrite {
             "OVERWRITE requires an existing valid Lance dataset"
+        } else {
+            "creating Lance dataset"
         })?;
     Ok(())
 }
