@@ -1,0 +1,41 @@
+# name: test/sql/csv_source.test
+# description: CSV file to a Lance dataset
+# group: [sql]
+
+require lance_conversion
+
+statement ok
+CREATE TABLE source_rows (id INTEGER, name VARCHAR, score DOUBLE);
+
+statement ok
+INSERT INTO source_rows VALUES
+    (1, 'alpha', 1.5),
+    (2, 'beta', NULL),
+    (3, 'gamma', 2.25);
+
+statement ok
+COPY source_rows
+TO '__TEST_DIR__/source.csv' (FORMAT CSV, HEADER);
+
+query I
+COPY (
+    SELECT * FROM read_csv('__TEST_DIR__/source.csv')
+)
+TO '__TEST_DIR__/csv_source.lance' (FORMAT LANCE);
+----
+3
+
+# Load the official Lance reader only after exercising our FORMAT LANCE writer.
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query ITT
+SELECT id, name, score::VARCHAR
+FROM '__TEST_DIR__/csv_source.lance'
+ORDER BY id;
+----
+1	alpha	1.5
+2	beta	NULL
+3	gamma	2.25
