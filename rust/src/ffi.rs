@@ -3,14 +3,13 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::Arc;
 
-use anyhow::{ensure, Result};
 use arrow_array::{
     ffi::{from_ffi_and_data_type, FFI_ArrowArray},
     RecordBatch, StructArray,
 };
 use arrow_schema::{ffi::FFI_ArrowSchema, DataType, Schema};
 
-use crate::{LanceWriter, S3StorageConfig, WriteOptions};
+use crate::{Error, LanceWriter, Result, S3StorageConfig, WriteOptions};
 
 #[repr(C)]
 pub struct LanceS3Config {
@@ -77,10 +76,9 @@ pub unsafe extern "C" fn lance_conversion_open(
     output: *mut *mut LanceConversionWriter,
 ) -> *mut c_char {
     call(|| {
-        ensure!(
-            !path.is_null() && !schema.is_null() && !output.is_null(),
-            "null writer argument"
-        );
+        if path.is_null() || schema.is_null() || output.is_null() {
+            return Err(Error::message("null writer argument"));
+        }
         *output = ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?;
         let schema = Arc::new(Schema::try_from(&*schema)?);
@@ -103,7 +101,9 @@ pub unsafe extern "C" fn lance_conversion_push(
     array: *mut FFI_ArrowArray,
 ) -> *mut c_char {
     call(|| {
-        ensure!(!writer.is_null() && !array.is_null(), "null batch argument");
+        if writer.is_null() || array.is_null() {
+            return Err(Error::message("null batch argument"));
+        }
         let writer = &mut *writer;
         // Move Arrow ownership; the C++ wrapper sees an empty release callback.
         let array = ptr::replace(array, FFI_ArrowArray::empty());
@@ -120,7 +120,9 @@ pub unsafe extern "C" fn lance_conversion_finish(
     writer: *mut LanceConversionWriter,
 ) -> *mut c_char {
     call(|| {
-        ensure!(!writer.is_null(), "null writer");
+        if writer.is_null() {
+            return Err(Error::message("null writer"));
+        }
         let writer = &mut *writer;
         writer.runtime.block_on(writer.sink.finish())?;
         Ok(())
@@ -149,12 +151,15 @@ mod tests {
             let second = lance_conversion_push(ptr::null_mut(), ptr::null_mut());
             assert!(!first.is_null());
             assert!(!second.is_null());
-            assert_eq!(CStr::from_ptr(first).to_str().unwrap(), "null writer");
+            assert!(CStr::from_ptr(first)
+                .to_str()
+                .unwrap()
+                .starts_with("null writer (permanent) at "));
             lance_conversion_error_free(first);
-            assert_eq!(
-                CStr::from_ptr(second).to_str().unwrap(),
-                "null batch argument"
-            );
+            assert!(CStr::from_ptr(second)
+                .to_str()
+                .unwrap()
+                .starts_with("null batch argument (permanent) at "));
             lance_conversion_error_free(second);
             lance_conversion_error_free(ptr::null_mut());
             assert!(call(|| Ok(())).is_null());

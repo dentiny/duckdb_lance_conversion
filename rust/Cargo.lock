@@ -2764,6 +2764,7 @@ dependencies = [
  "opendal",
  "parquet",
  "tempfile",
+ "thiserror",
  "tokio",
  "url",
 ]

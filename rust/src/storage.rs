@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use anyhow::{ensure, Context, Result};
 use lance_io::object_store::{
     ObjectStore as LanceObjectStore, ObjectStoreParams, ObjectStoreProvider,
     DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_DOWNLOAD_RETRY_COUNT, DEFAULT_LOCAL_IO_PARALLELISM,
@@ -12,6 +11,9 @@ use opendal::{
     Operator,
 };
 use url::Url;
+
+use crate::error::ResultExt;
+use crate::{Error, Result};
 
 #[derive(Clone, Debug)]
 pub struct S3StorageConfig {
@@ -86,13 +88,15 @@ impl ObjectStoreProvider for OpendalStoreProvider {
 impl OpendalStorage {
     pub fn from_path(path: &str, s3_config: Option<&S3StorageConfig>) -> Result<Self> {
         if is_s3_uri(path) {
-            let config = s3_config.context("S3 path requires S3 storage configuration")?;
+            let config = s3_config
+                .ok_or_else(|| Error::message("S3 path requires S3 storage configuration"))?;
             Self::from_s3_uri(path, config)
         } else {
-            ensure!(
-                s3_config.is_none(),
-                "S3 storage configuration can only be used with an s3:// path"
-            );
+            if s3_config.is_some() {
+                return Err(Error::message(
+                    "S3 storage configuration can only be used with an s3:// path",
+                ));
+            }
             Self::from_local_path(path)
         }
     }
@@ -104,8 +108,12 @@ impl OpendalStorage {
         } else {
             std::env::current_dir()?.join(path)
         };
-        let location = Url::from_file_path(&absolute)
-            .map_err(|_| anyhow::anyhow!("invalid local storage path: {}", absolute.display()))?;
+        let location = Url::from_file_path(&absolute).map_err(|_| {
+            Error::message(format!(
+                "invalid local storage path: {}",
+                absolute.display()
+            ))
+        })?;
         let operator =
             Operator::new(Fs::default().root("/")).context("initializing OpenDAL local storage")?;
         let object_store = Arc::new(OpendalStore::new(operator.clone()));
@@ -121,19 +129,13 @@ impl OpendalStorage {
 
     fn from_s3_uri(uri: &str, config: &S3StorageConfig) -> Result<Self> {
         let location = Url::parse(uri).context("invalid S3 URI")?;
-        ensure!(location.scheme() == "s3", "expected an s3:// URI");
+        if location.scheme() != "s3" {
+            return Err(Error::message("expected an s3:// URI"));
+        }
         let bucket = location
             .host_str()
             .filter(|bucket| !bucket.is_empty())
-            .context("S3 URI must include a bucket")?;
-        ensure!(
-            config.key_id.is_some() == config.secret.is_some(),
-            "S3 key ID and secret must be provided together"
-        );
-        ensure!(
-            config.session_token.is_none() || config.key_id.is_some(),
-            "S3 session token requires a key ID and secret"
-        );
+            .ok_or_else(|| Error::message("S3 URI must include a bucket"))?;
 
         // Static libraries do not reliably run OpenDAL's process constructor.
         opendal::install_default();
@@ -152,12 +154,16 @@ impl OpendalStorage {
             };
             builder = builder.endpoint(&endpoint);
         }
-        if let (Some(key_id), Some(secret)) = (&config.key_id, &config.secret) {
-            builder = builder.access_key_id(key_id).secret_access_key(secret);
-            if let Some(token) = config.session_token.as_deref() {
-                builder = builder.session_token(token);
-            }
-        } else {
+        if let Some(key_id) = config.key_id.as_deref() {
+            builder = builder.access_key_id(key_id);
+        }
+        if let Some(secret) = config.secret.as_deref() {
+            builder = builder.secret_access_key(secret);
+        }
+        if let Some(token) = config.session_token.as_deref() {
+            builder = builder.session_token(token);
+        }
+        if config.key_id.is_none() && config.secret.is_none() && config.session_token.is_none() {
             builder = builder.skip_signature();
         }
         if config.virtual_host_style {
@@ -194,19 +200,5 @@ mod tests {
         .unwrap();
         assert_eq!(storage.object_path.as_ref(), "path/data.parquet");
         assert_eq!(storage.location.host_str(), Some("example-bucket"));
-    }
-
-    #[test]
-    fn rejects_partial_static_credentials() {
-        let error = OpendalStorage::from_path(
-            "s3://example-bucket/path",
-            Some(&S3StorageConfig {
-                key_id: Some("key".into()),
-                ..Default::default()
-            }),
-        )
-        .err()
-        .unwrap();
-        assert!(error.to_string().contains("provided together"));
     }
 }

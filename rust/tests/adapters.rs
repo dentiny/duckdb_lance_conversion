@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use anyhow::{ensure, Result};
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::SchemaRef;
 use futures::{stream, Stream, TryStreamExt};
-use lance_conversion::{convert, BatchSink, BatchSource, BatchStream, WriteSummary};
+use lance_conversion::{convert, BatchSink, BatchSource, BatchStream, Error, Result, WriteSummary};
 
 struct MemorySource(RecordBatch);
 
@@ -23,7 +22,9 @@ impl BatchSink for MemorySink {
     where
         S: Stream<Item = Result<RecordBatch>> + Send + 'static,
     {
-        ensure!(schema == self.0.schema(), "schema changed");
+        if schema != self.0.schema() {
+            return Err(Error::message("schema changed"));
+        }
         let mut batches = Box::pin(batches);
         let mut rows_written = 0;
         while let Some(batch) = batches.try_next().await? {

@@ -5,7 +5,6 @@ use std::sync::{
     Arc,
 };
 
-use anyhow::{anyhow, ensure, Context, Result};
 use arrow_array::RecordBatch;
 use arrow_schema::{ArrowError, SchemaRef};
 use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream};
@@ -21,9 +20,10 @@ use tokio::{
 };
 
 use super::{BatchSink, WriteSummary};
+use crate::error::ResultExt;
 use crate::schema::validate_schema;
 use crate::storage::{OpendalStorage, OpendalStoreProvider};
-use crate::S3StorageConfig;
+use crate::{Error, Result, S3StorageConfig};
 
 #[derive(Clone, Debug, Default)]
 pub struct WriteOptions {
@@ -56,7 +56,9 @@ impl BatchSink for LanceSink {
             let result = if batch.schema().as_ref() == expected_schema.as_ref() {
                 Ok(batch)
             } else {
-                Err(anyhow!("batch schema does not match the conversion schema"))
+                Err(Error::message(
+                    "batch schema does not match the conversion schema",
+                ))
             };
             futures::future::ready(result)
         });
@@ -65,7 +67,7 @@ impl BatchSink for LanceSink {
         let destination_path = self
             .destination
             .to_str()
-            .context("destination must be valid UTF-8")?;
+            .ok_or_else(|| Error::message("destination must be valid UTF-8"))?;
         let destination =
             OpendalStorage::from_path(destination_path, self.options.s3_config.as_ref())?;
         write_stream(&destination, stream, self.options).await
@@ -119,7 +121,7 @@ impl LanceWriter {
         let destination_path = destination
             .as_ref()
             .to_str()
-            .context("destination must be valid UTF-8")?;
+            .ok_or_else(|| Error::message("destination must be valid UTF-8"))?;
         let destination = OpendalStorage::from_path(destination_path, options.s3_config.as_ref())?;
         let (sender, receiver) = channel(1);
         let stream = batch_stream(schema.clone(), receiver);
@@ -136,28 +138,34 @@ impl LanceWriter {
 
     pub async fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
         let SinkState::Open { sender, .. } = &self.state else {
-            return Err(anyhow!("writer is already finished or failed"));
+            return Err(Error::message("writer is already finished or failed"));
         };
         if batch.schema().as_ref() != self.schema.as_ref() {
             self.abort().await;
-            return Err(anyhow!("batch schema does not match the conversion schema"));
+            return Err(Error::message(
+                "batch schema does not match the conversion schema",
+            ));
         }
         if sender.send(Message::Batch(batch)).await.is_err() {
             self.close_input();
             self.join_worker().await?;
-            return Err(anyhow!("Lance writer stopped before accepting a batch"));
+            return Err(Error::message(
+                "Lance writer stopped before accepting a batch",
+            ));
         }
         Ok(())
     }
 
     pub async fn finish(&mut self) -> Result<WriteSummary> {
         let SinkState::Open { sender, .. } = &self.state else {
-            return Err(anyhow!("writer is already finished or failed"));
+            return Err(Error::message("writer is already finished or failed"));
         };
         let sent = sender.send(Message::Finish).await.is_ok();
         self.close_input();
         let summary = self.join_worker().await?;
-        ensure!(sent, "Lance writer stopped before finish");
+        if !sent {
+            return Err(Error::message("Lance writer stopped before finish"));
+        }
         self.state = SinkState::Finished;
         Ok(summary)
     }
@@ -179,7 +187,7 @@ impl LanceWriter {
 
     async fn join_worker(&mut self) -> Result<WriteSummary> {
         let SinkState::Closing(worker) = &mut self.state else {
-            return Err(anyhow!("writer is closed"));
+            return Err(Error::message("writer is closed"));
         };
         let result = worker.await;
         self.state = SinkState::Failed;
@@ -202,7 +210,7 @@ async fn write_stream(
     let result = AssertUnwindSafe(write_dataset(destination, stream, &options))
         .catch_unwind()
         .await
-        .unwrap_or_else(|_| Err(anyhow!("Lance writer task panicked")));
+        .unwrap_or_else(|_| Err(Error::message("Lance writer task panicked")));
     result?;
     Ok(WriteSummary {
         rows_written: rows_written.load(Ordering::Relaxed),
@@ -214,10 +222,11 @@ async fn write_dataset(
     stream: SendableRecordBatchStream,
     options: &WriteOptions,
 ) -> Result<()> {
-    ensure!(
-        !destination.object_path.as_ref().is_empty(),
-        "Lance destination must not be a storage root"
-    );
+    if destination.object_path.as_ref().is_empty() {
+        return Err(Error::message(
+            "Lance destination must not be a storage root",
+        ));
+    }
     let mut params = WriteParams {
         mode: if options.overwrite {
             WriteMode::Overwrite

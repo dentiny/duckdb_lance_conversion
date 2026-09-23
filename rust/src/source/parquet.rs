@@ -2,7 +2,6 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{ensure, Context, Result};
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use futures::{future::BoxFuture, FutureExt, TryStreamExt};
@@ -15,7 +14,7 @@ use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 
 use super::{BatchSource, BatchStream};
 use crate::storage::OpendalStorage;
-use crate::S3StorageConfig;
+use crate::{Error, Result, S3StorageConfig};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
 
@@ -99,11 +98,13 @@ impl ParquetFileSource {
 
 impl BatchSource for ParquetFileSource {
     async fn open(self) -> Result<(SchemaRef, BatchStream)> {
-        ensure!(self.batch_size > 0, "batch_size must be positive");
+        if self.batch_size == 0 {
+            return Err(Error::message("batch_size must be positive"));
+        }
         let path = self
             .path
             .to_str()
-            .context("Parquet input path must be valid UTF-8")?;
+            .ok_or_else(|| Error::message("Parquet input path must be valid UTF-8"))?;
         let storage = OpendalStorage::from_path(path, self.s3_config.as_ref())?;
         let object_path = storage.object_path.to_string();
         let object_reader = OpendalParquetReader {
@@ -115,7 +116,7 @@ impl BatchSource for ParquetFileSource {
             .with_batch_size(self.batch_size)
             .build()?;
         let schema = reader.schema().clone();
-        let batches = reader.map_err(anyhow::Error::from);
+        let batches = reader.map_err(Error::from);
         Ok((schema, Box::pin(batches)))
     }
 }

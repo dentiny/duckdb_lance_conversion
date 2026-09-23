@@ -1,10 +1,11 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use anyhow::Result;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use futures::Stream;
+
+use crate::Result;
 
 mod parquet;
 pub use parquet::ParquetFileSource;
