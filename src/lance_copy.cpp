@@ -8,11 +8,40 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/query_result.hpp"
+#include "duckdb/main/secret/secret.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 
 namespace duckdb {
 namespace {
+
+struct LanceS3Options {
+	string endpoint;
+	string region;
+	string key_id;
+	string secret;
+	string session_token;
+	bool use_ssl = true;
+	bool virtual_host_style = false;
+};
+
+LanceS3Options ReadS3Options(ClientContext &context, const string &path) {
+	LanceS3Options result;
+	KeyValueSecretReader secret_reader(context, "s3", path);
+	secret_reader.TryGetSecretKey("key_id", result.key_id);
+	secret_reader.TryGetSecretKey("secret", result.secret);
+	secret_reader.TryGetSecretKey("session_token", result.session_token);
+	secret_reader.TryGetSecretKey("endpoint", result.endpoint);
+	secret_reader.TryGetSecretKey("region", result.region);
+	secret_reader.TryGetSecretKey("use_ssl", result.use_ssl);
+	string url_style;
+	secret_reader.TryGetSecretKey("url_style", url_style);
+	if (!url_style.empty() && url_style != "path" && url_style != "vhost") {
+		throw InvalidConfigurationException("S3 secret url_style must be either 'path' or 'vhost'");
+	}
+	result.virtual_host_style = url_style == "vhost";
+	return result;
+}
 
 void CheckLance(char *error) {
 	if (error) {
@@ -26,6 +55,7 @@ struct LanceBindData : public FunctionData {
 	vector<LogicalType> types;
 	ClientProperties properties;
 	bool overwrite = false;
+	bool s3 = false;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<LanceBindData>();
@@ -33,11 +63,12 @@ struct LanceBindData : public FunctionData {
 		result->types = types;
 		result->properties = properties;
 		result->overwrite = overwrite;
+		result->s3 = s3;
 		return std::move(result);
 	}
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<LanceBindData>();
-		return names == other.names && types == other.types && overwrite == other.overwrite;
+		return names == other.names && types == other.types && overwrite == other.overwrite && s3 == other.s3;
 	}
 };
 
@@ -115,7 +146,11 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 	}
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (FileSystem::IsRemoteFile(input.info.file_path)) {
-		throw BinderException("FORMAT LANCE currently supports only local destinations");
+		if (!StringUtil::CIStartsWith(input.info.file_path, "s3://")) {
+			throw BinderException("FORMAT LANCE supports only local and s3:// destinations");
+		}
+		result->s3 = true;
+		return std::move(result);
 	}
 	if (fs.FileExists(fs.ExpandPath(input.info.file_path)) ||
 	    (!result->overwrite && fs.DirectoryExists(fs.ExpandPath(input.info.file_path)))) {
@@ -129,7 +164,24 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	ArrowSchemaWrapper schema;
 	ArrowConverter::ToArrowSchema(&schema.arrow_schema, bind.types, bind.names, bind.properties);
 	auto state = make_uniq<LanceGlobalState>();
-	CheckLance(lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, &state->writer));
+	LanceS3Config s3;
+	const LanceS3Config *s3_ptr = nullptr;
+	if (bind.s3) {
+		auto options = ReadS3Options(context, path);
+		s3.endpoint = options.endpoint.c_str();
+		s3.region = options.region.c_str();
+		s3.key_id = options.key_id.c_str();
+		s3.secret = options.secret.c_str();
+		s3.session_token = options.session_token.c_str();
+		s3.use_ssl = options.use_ssl ? 1 : 0;
+		s3.virtual_host_style = options.virtual_host_style ? 1 : 0;
+		s3_ptr = &s3;
+		CheckLance(
+		    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer));
+		return std::move(state);
+	}
+	CheckLance(
+	    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer));
 	return std::move(state);
 }
 

@@ -12,23 +12,25 @@ use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordB
 use futures::{stream, FutureExt, Stream, TryStreamExt};
 use lance::{
     dataset::{write::InsertBuilder, WriteMode, WriteParams},
-    Dataset,
+    io::ObjectStoreParams,
 };
+use lance_table::io::commit::ConditionalPutCommitHandler;
 use tokio::{
-    fs,
     sync::mpsc::{channel, Receiver, Sender},
     task::JoinHandle,
 };
 
 use super::{BatchSink, WriteSummary};
 use crate::schema::validate_schema;
+use crate::storage::OpendalStorage;
+use crate::S3StorageConfig;
 
 #[derive(Clone, Debug, Default)]
 pub struct WriteOptions {
     pub overwrite: bool,
+    pub s3_config: Option<S3StorageConfig>,
 }
 
-/// Local Lance output configuration for a native Arrow stream.
 pub struct LanceSink {
     destination: PathBuf,
     options: WriteOptions,
@@ -60,9 +62,14 @@ impl BatchSink for LanceSink {
         });
         let batches = batches.map_err(|error| ArrowError::ExternalError(error.into()).into());
         let stream = Box::pin(RecordBatchStreamAdapter::new(schema, batches));
-        let owns_destination =
-            reserve_destination(&self.destination, self.options.overwrite).await?;
-        write_reserved_stream(&self.destination, stream, owns_destination).await
+        let destination_path = self
+            .destination
+            .to_str()
+            .context("destination must be valid UTF-8")?;
+        let destination =
+            OpendalStorage::from_path(destination_path, self.options.s3_config.as_ref())?;
+        let owns_destination = reserve_destination(&destination, self.options.overwrite).await?;
+        write_reserved_stream(&destination, stream, owns_destination).await
     }
 }
 
@@ -110,7 +117,11 @@ impl LanceWriter {
         options: WriteOptions,
     ) -> Result<Self> {
         validate_schema(&schema)?;
-        let destination = destination.as_ref().to_path_buf();
+        let destination_path = destination
+            .as_ref()
+            .to_str()
+            .context("destination must be valid UTF-8")?;
+        let destination = OpendalStorage::from_path(destination_path, options.s3_config.as_ref())?;
         let owns_destination = reserve_destination(&destination, options.overwrite).await?;
         let (sender, receiver) = channel(1);
         let stream = batch_stream(schema.clone(), receiver);
@@ -180,31 +191,34 @@ impl LanceWriter {
     }
 }
 
-async fn reserve_destination(destination: &Path, overwrite: bool) -> Result<bool> {
-    // Reserve new paths atomically; existing datasets remain owned by their caller.
-    match fs::create_dir(destination).await {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && overwrite => {
-            ensure!(
-                fs::symlink_metadata(destination)
-                    .await?
-                    .file_type()
-                    .is_dir(),
-                "overwrite requires an existing Lance dataset directory"
-            );
-            Ok(false)
-        }
-        Err(error) => Err(error).with_context(|| {
-            format!(
-                "creating destination {} (must not exist unless OVERWRITE is enabled)",
-                destination.display()
-            )
-        }),
+async fn reserve_destination(destination: &OpendalStorage, overwrite: bool) -> Result<bool> {
+    ensure!(
+        !destination.object_path.as_ref().is_empty(),
+        "Lance destination must not be a storage root"
+    );
+    let prefix = format!("{}/", destination.object_path);
+    let exists = if destination.is_local {
+        destination
+            .operator
+            .exists(destination.object_path.as_ref())
+            .await?
+    } else {
+        let mut entries = destination.operator.lister(&prefix).await?;
+        entries.try_next().await?.is_some()
+    };
+    ensure!(
+        !exists || overwrite,
+        "Lance destination must not exist: {}",
+        destination.location
+    );
+    if !exists && destination.is_local {
+        destination.operator.create_dir(&prefix).await?;
     }
+    Ok(!exists)
 }
 
 async fn write_reserved_stream(
-    destination: &Path,
+    destination: &OpendalStorage,
     stream: SendableRecordBatchStream,
     owns_destination: bool,
 ) -> Result<WriteSummary> {
@@ -220,7 +234,11 @@ async fn write_reserved_stream(
         .await
         .unwrap_or_else(|_| Err(anyhow!("Lance writer task panicked")));
     if result.is_err() && owns_destination {
-        let _ = fs::remove_dir_all(destination).await;
+        let _ = destination
+            .operator
+            .delete_with(&format!("{}/", destination.object_path))
+            .recursive(true)
+            .await;
     }
     result?;
     Ok(WriteSummary {
@@ -229,11 +247,11 @@ async fn write_reserved_stream(
 }
 
 async fn write_dataset(
-    destination: &Path,
+    destination: &OpendalStorage,
     stream: SendableRecordBatchStream,
     owns_destination: bool,
 ) -> Result<()> {
-    let params = WriteParams {
+    let mut params = WriteParams {
         mode: if owns_destination {
             WriteMode::Create
         } else {
@@ -241,22 +259,25 @@ async fn write_dataset(
         },
         ..Default::default()
     };
-    let uri = destination
-        .to_str()
-        .context("destination must be valid UTF-8")?;
-    if owns_destination {
-        InsertBuilder::new(uri)
-            .with_params(&params)
-            .execute_stream(stream)
-            .await?;
-    } else {
-        let existing = Dataset::open(uri)
-            .await
-            .context("OVERWRITE requires an existing valid Lance dataset")?;
-        InsertBuilder::new(Arc::new(existing))
-            .with_params(&params)
-            .execute_stream(stream)
-            .await?;
-    }
+    #[allow(deprecated)]
+    let store_params = ObjectStoreParams {
+        object_store: Some((
+            destination.object_store.clone(),
+            destination.location.clone(),
+        )),
+        ..Default::default()
+    };
+    params.store_params = Some(store_params);
+    params.commit_handler = Some(Arc::new(ConditionalPutCommitHandler));
+    let uri = destination.location.as_str();
+    InsertBuilder::new(uri)
+        .with_params(&params)
+        .execute_stream(stream)
+        .await
+        .context(if owns_destination {
+            "creating Lance dataset"
+        } else {
+            "OVERWRITE requires an existing valid Lance dataset"
+        })?;
     Ok(())
 }

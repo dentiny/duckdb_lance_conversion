@@ -65,8 +65,33 @@ supported typed columns are allowed.
 
 Binary values remain ordinary binary columns. Conversion does not preserve
 original Parquet encodings, field IDs, key/value metadata, or Hugging Face feature
-metadata. Only local output paths are supported. Rust allocations are not
-accounted for by DuckDB's `memory_limit`.
+metadata. Rust allocations are not accounted for by DuckDB's `memory_limit`.
+
+### S3-compatible storage
+
+An `s3://bucket/prefix.lance` destination uses the best matching DuckDB S3
+secret. The extension passes its credentials and connection settings directly
+to OpenDAL:
+
+```sql
+CREATE SECRET lance_s3 (
+    TYPE S3,
+    KEY_ID 'access-key',
+    SECRET 'secret-key',
+    REGION 'us-east-1',
+    ENDPOINT 'localhost:9000',
+    USE_SSL false,
+    URL_STYLE 'path',
+    SCOPE 's3://bucket'
+);
+
+COPY (SELECT * FROM read_parquet('s3://bucket/input.parquet'))
+TO 's3://bucket/output.lance' (FORMAT LANCE);
+```
+
+Supported secret fields are `key_id`, `secret`, `session_token`, `endpoint`,
+`region`, `use_ssl`, and `url_style` (`path` or `vhost`). The source query is
+still executed by DuckDB; load `httpfs` when `read_parquet` itself reads S3.
 
 Failed overwrites preserve the previous dataset version but may leave
 uncommitted files. Process termination or cleanup failures can leave partial
@@ -85,6 +110,11 @@ let result = convert(
 ).await?;
 println!("{} rows written", result.rows_written);
 ```
+
+For standalone S3 input/output, attach the same `S3StorageConfig` to
+`ParquetFileSource::with_s3_config` and `WriteOptions::s3_config`. This API does
+not read DuckDB secrets; the DuckDB extension resolves those before crossing
+the FFI boundary.
 
 `convert(source, sink)` connects any `BatchSource` to any `BatchSink`. A source
 returns `(SchemaRef, BatchStream)`, where each stream item is an

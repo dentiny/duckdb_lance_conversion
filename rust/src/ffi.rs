@@ -10,11 +10,46 @@ use arrow_array::{
 };
 use arrow_schema::{ffi::FFI_ArrowSchema, DataType, Schema};
 
-use crate::{LanceWriter, WriteOptions};
+use crate::{LanceWriter, S3StorageConfig, WriteOptions};
+
+#[repr(C)]
+pub struct LanceS3Config {
+    endpoint: *const c_char,
+    region: *const c_char,
+    key_id: *const c_char,
+    secret: *const c_char,
+    session_token: *const c_char,
+    use_ssl: i32,
+    virtual_host_style: i32,
+}
 
 pub struct LanceConversionWriter {
     sink: LanceWriter,
     runtime: tokio::runtime::Runtime,
+}
+
+unsafe fn optional_string(value: *const c_char) -> Result<Option<String>> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = CStr::from_ptr(value).to_str()?.to_owned();
+    Ok((!value.is_empty()).then_some(value))
+}
+
+unsafe fn s3_config(config: *const LanceS3Config) -> Result<Option<S3StorageConfig>> {
+    if config.is_null() {
+        return Ok(None);
+    }
+    let config = &*config;
+    Ok(Some(S3StorageConfig {
+        endpoint: optional_string(config.endpoint)?,
+        region: optional_string(config.region)?,
+        key_id: optional_string(config.key_id)?,
+        secret: optional_string(config.secret)?,
+        session_token: optional_string(config.session_token)?,
+        use_ssl: config.use_ssl != 0,
+        virtual_host_style: config.virtual_host_style != 0,
+    }))
 }
 
 fn call(operation: impl FnOnce() -> Result<()>) -> *mut c_char {
@@ -38,6 +73,7 @@ pub unsafe extern "C" fn lance_conversion_open(
     path: *const c_char,
     schema: *const FFI_ArrowSchema,
     overwrite: i32,
+    s3: *const LanceS3Config,
     output: *mut *mut LanceConversionWriter,
 ) -> *mut c_char {
     call(|| {
@@ -50,6 +86,7 @@ pub unsafe extern "C" fn lance_conversion_open(
         let schema = Arc::new(Schema::try_from(&*schema)?);
         let options = WriteOptions {
             overwrite: overwrite != 0,
+            s3_config: s3_config(s3)?,
         };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

@@ -57,9 +57,16 @@ async fn overwrite_replaces_rows_and_can_commit_an_empty_dataset() {
     let output = temp.path().join("overwrite.lance");
     for (rows, overwrite) in [(10, false), (3, true), (0, true)] {
         let batch = fixture(rows);
-        let mut writer = LanceWriter::create(&output, batch.schema(), WriteOptions { overwrite })
-            .await
-            .unwrap();
+        let mut writer = LanceWriter::create(
+            &output,
+            batch.schema(),
+            WriteOptions {
+                overwrite,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         if rows != 0 {
             writer.write_batch(batch.clone()).await.unwrap();
         }
