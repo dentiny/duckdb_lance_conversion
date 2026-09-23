@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 struct ArrowSchema;
@@ -7,11 +8,11 @@ struct ArrowArray;
 struct LanceConversionWriter;
 
 struct LanceS3Config {
-	const char *endpoint = nullptr;
-	const char *region = nullptr;
-	const char *key_id = nullptr;
-	const char *secret = nullptr;
-	const char *session_token = nullptr;
+	const char *endpoint = NULL;
+	const char *region = NULL;
+	const char *key_id = NULL;
+	const char *secret = NULL;
+	const char *session_token = NULL;
 	int32_t use_ssl = 0;
 	int32_t virtual_host_style = 0;
 };
