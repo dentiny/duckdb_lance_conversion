@@ -6,23 +6,15 @@ struct ArrowSchema;
 struct ArrowArray;
 struct LanceConversionWriter;
 
-#ifdef __cplusplus
-#define LANCE_CONVERSION_DEFAULT(value) = value
-#else
-#define LANCE_CONVERSION_DEFAULT(value)
-#endif
-
 struct LanceS3Config {
-	const char *endpoint LANCE_CONVERSION_DEFAULT(nullptr);
-	const char *region LANCE_CONVERSION_DEFAULT(nullptr);
-	const char *key_id LANCE_CONVERSION_DEFAULT(nullptr);
-	const char *secret LANCE_CONVERSION_DEFAULT(nullptr);
-	const char *session_token LANCE_CONVERSION_DEFAULT(nullptr);
-	int32_t use_ssl LANCE_CONVERSION_DEFAULT(1);
-	int32_t virtual_host_style LANCE_CONVERSION_DEFAULT(0);
+	const char *endpoint = nullptr;
+	const char *region = nullptr;
+	const char *key_id = nullptr;
+	const char *secret = nullptr;
+	const char *session_token = nullptr;
+	int32_t use_ssl = 0;
+	int32_t virtual_host_style = 0;
 };
-
-#undef LANCE_CONVERSION_DEFAULT
 
 #ifdef __cplusplus
 extern "C" {
