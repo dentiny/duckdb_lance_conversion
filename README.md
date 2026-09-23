@@ -1,13 +1,35 @@
 # DuckDB Lance Conversion
 
-Convert data into Lance datasets through DuckDB `COPY TO`, with the conversion
-core implemented in Rust. The native adapter converts a Parquet file or a
-directory of Parquet files into a Lance dataset, preserving supported column
-values and writing top-level binary columns as Lance Blob v2 columns.
+DuckDB Lance Conversion adds Lance as a native DuckDB `COPY` destination:
+
+```sql
+COPY (SELECT ...) TO 'dataset.lance' (FORMAT LANCE);
+```
+
+This is a DuckDB `CopyFunction`, not a standalone import command. DuckDB reads,
+filters, joins, casts, and projects the source data using its normal execution
+engine, then streams the result into the Rust Lance writer. There is no
+intermediate Parquet export, and the complete input is not materialized in
+memory.
+
+Because the source is an ordinary DuckDB query, the extension works with any
+format or data source that DuckDB can query, including:
+
+- Parquet files, file lists, globs, and partitioned directories
+- CSV and JSON
+- DuckDB tables and views
+- Results of joins, filters, aggregations, and expressions
+- S3-compatible object storage through DuckDB filesystem extensions
+- Hugging Face Parquet datasets through `read_huggingface`
+- Local and S3 WARC/WARC.GZ files through `read_warc`
+
+The Lance sink supports local and S3-compatible destinations, Create/Append/
+Overwrite modes, Blob v2 storage policies, target file sizing, and scalar,
+vector, full-text, and Bloom filter indexes.
 
 ## Usage
 
-Use a compatible DuckDB v1.5.4 shell with the extension loaded. For an unsigned
+Use a compatible DuckDB v1.5.5 shell with the extension loaded. For an unsigned
 local extension, start DuckDB with `-unsigned` and load it:
 
 ```sql
@@ -19,12 +41,101 @@ COPY (
 TO '/absolute/path/output.lance' (FORMAT LANCE);
 ```
 
-The COPY query can select columns, filter rows, and cast types before conversion.
+### Source examples
+
+`COPY` can consume a table, a view, or any DuckDB query. The source does not
+need to be Parquet:
+
+```sql
+-- DuckDB table or view
+COPY events TO 'events.lance' (FORMAT LANCE);
+COPY active_users TO 'active_users.lance' (FORMAT LANCE);
+
+-- One Parquet file
+COPY (SELECT * FROM read_parquet('events.parquet'))
+TO 'events.lance' (FORMAT LANCE);
+
+-- A partitioned directory or glob of Parquet files
+COPY (SELECT * FROM read_parquet('events/**/*.parquet', hive_partitioning = true))
+TO 'partitioned_events.lance' (FORMAT LANCE);
+
+-- An explicit list of Parquet files
+COPY (SELECT * FROM read_parquet(['part-0.parquet', 'part-1.parquet']))
+TO 'combined.lance' (FORMAT LANCE);
+
+-- CSV
+COPY (SELECT * FROM read_csv('events.csv'))
+TO 'events_from_csv.lance' (FORMAT LANCE);
+
+-- JSON or NDJSON
+COPY (SELECT * FROM read_json_auto('events.json'))
+TO 'events_from_json.lance' (FORMAT LANCE);
+
+-- S3 through DuckDB's filesystem support
+COPY (SELECT * FROM read_parquet('s3://bucket/events/*.parquet'))
+TO 'events_from_s3.lance' (FORMAT LANCE);
+
+-- Multiple sources and relational operations can participate in one query
+COPY (
+    SELECT e.id, e.timestamp, u.name
+    FROM read_parquet('events/*.parquet') e
+    JOIN users u USING (user_id)
+    WHERE e.timestamp >= DATE '2026-01-01'
+)
+TO 'recent_events.lance' (FORMAT LANCE);
+```
+
+The same pattern applies to other DuckDB readers and extensions: if a source
+can appear in a DuckDB `SELECT`, its supported result types can be written to
+Lance.
+
 The statement returns the number of rows written. Empty input creates a dataset
 with the query's schema and zero rows.
 
 The output is a **dataset directory**. Its parent must exist, and by default the
 output path must not exist, even as an empty directory.
+
+### Extension readers
+
+`read_huggingface` reads the Parquet representation published for a Hugging
+Face dataset. `config` and `split` default to `default` and `train`:
+
+```sql
+COPY (
+    SELECT * FROM read_huggingface(
+        'lhoestq/demo1',
+        config = 'default',
+        split = 'train'
+    )
+)
+TO 'demo1.lance' (FORMAT LANCE);
+```
+
+If a matching DuckDB `huggingface` secret is available, its token is passed to
+the reader.
+
+`read_warc` streams records from an uncompressed or gzip-compressed WARC file.
+It exposes WARC metadata fields, parsed date and length values, and the record
+body:
+
+```sql
+COPY (
+    SELECT id, type, date, content_type, body
+    FROM read_warc('archive.warc.gz')
+)
+TO 'archive.lance' (FORMAT LANCE);
+```
+
+Local and `s3://` paths are supported. Projection pushdown avoids constructing
+and copying WARC bodies when the query does not select `body`.
+
+```sql
+COPY (
+    SELECT id, date, body
+    FROM read_warc('s3://bucket/crawl/archive.warc.gz')
+)
+TO 's3://bucket/datasets/archive.lance' (FORMAT LANCE);
+```
 
 ### Write modes
 
@@ -51,7 +162,7 @@ the default `Create` mode. The two options cannot be specified together.
 Other DuckDB file-layout options, including `PARTITION_BY`,
 `PER_THREAD_OUTPUT`, and `USE_TMP_FILE`, are rejected.
 
-### Lance writer options
+### File and Blob configuration
 
 Size options are specified in bytes:
 
@@ -92,6 +203,8 @@ TO 'media.lance' (
 Every named column must exist and have type `VARCHAR`. A failed object read
 fails the COPY.
 
+### Indexes
+
 Index options create indexes after writing the dataset. Users select the
 purpose; the Rust writer chooses the corresponding Lance implementation:
 
@@ -120,6 +233,44 @@ require `VARCHAR`, and vector indexes require fixed-size numeric arrays. A
 column may appear in only one index option per COPY. Unsupported combinations
 are rejected before data is written. Index creation publishes additional Lance
 dataset versions and can fail after the data version has committed.
+
+### Complete write configuration
+
+The write options can be combined in one native `COPY` statement:
+
+```sql
+COPY (
+    SELECT
+        id,
+        event_id,
+        category,
+        description,
+        embedding,
+        asset_uri
+    FROM read_parquet('catalog/**/*.parquet')
+)
+TO 'catalog.lance' (
+    FORMAT LANCE,
+
+    -- Omit both flags for Create mode; use APPEND instead to add rows.
+    OVERWRITE,
+
+    -- Lance data and Blob v2 layout.
+    TARGET_FILE_SIZE 536870912,
+    BLOB_INLINE_SIZE_THRESHOLD 2097152,
+    BLOB_DEDICATED_SIZE_THRESHOLD 16777216,
+    BLOB_COLUMNS (asset_uri),
+
+    -- Lance indexes.
+    SCALAR_INDEX_COLUMNS (id, category),
+    VECTOR_INDEX_COLUMNS (embedding),
+    TEXT_INDEX_COLUMNS (description),
+    BLOOM_FILTER_INDEX_COLUMNS (event_id)
+);
+```
+
+`APPEND` and `OVERWRITE` are mutually exclusive. Blob columns cannot also be
+index columns. Indexes are created after the data write succeeds.
 
 ### Types and conversion limits
 
@@ -150,9 +301,9 @@ feature metadata. Rust allocations are not accounted for by DuckDB's
 
 ### S3-compatible storage
 
-An `s3://bucket/prefix.lance` destination uses the best matching DuckDB S3
-secret. The extension passes its credentials and connection settings directly
-to OpenDAL:
+An `s3://bucket/prefix.lance` destination uses the best matching scoped DuckDB
+S3 secret. The extension passes its credentials and connection settings to
+OpenDAL, which backs the Lance object store:
 
 ```sql
 CREATE SECRET lance_s3 (
@@ -229,8 +380,7 @@ than `Decimal128`. It does not automatically cast them.
 
 ## TODO
 
-- Add Hugging Face input resolution and authentication.
-- Add WARC input conversion.
+- Add conversion metrics and runtime observability.
 - Expand round-trip coverage for decimal, temporal, and nested types, including
   nested arrays.
 - Add crash recovery and resumable conversions.
