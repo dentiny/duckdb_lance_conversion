@@ -2,7 +2,8 @@ use std::io::{BufRead, BufReader};
 use std::sync::{Arc, LazyLock};
 
 use arrow_array::{
-    ArrayRef, BinaryArray, RecordBatch, StringArray, TimestampMillisecondArray, UInt32Array,
+    builder::{BinaryViewBuilder, StringBuilder, TimestampMillisecondBuilder, UInt32Builder},
+    ArrayRef, RecordBatch,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use futures::stream;
@@ -17,7 +18,8 @@ use crate::storage::OpendalStorage;
 use crate::{Error, Result, S3StorageConfig};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
-const CHANNEL_CAPACITY: usize = 2;
+const MAX_BATCH_BODY_BYTES: usize = 64 * 1024 * 1024;
+const CHANNEL_CAPACITY: usize = 1;
 const READ_BUFFER_SIZE: usize = 1024 * 1024;
 
 static WARC_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
@@ -45,7 +47,7 @@ static WARC_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
         Field::new("segment_number", DataType::UInt32, true),
         Field::new("segment_origin_id", DataType::Utf8, true),
         Field::new("segment_total_length", DataType::UInt32, true),
-        Field::new("body", DataType::Binary, false),
+        Field::new("body", DataType::BinaryView, false),
     ]))
 });
 
@@ -129,31 +131,40 @@ fn stream_records(
     sender: &mpsc::Sender<Result<RecordBatch>>,
 ) -> Result<()> {
     let mut reader = WarcReader::new(reader);
-    let mut records = Vec::with_capacity(batch_size);
+    let mut batch = WarcBatchBuilder::new(batch_size);
     let mut stream = reader.stream_records();
     while let Some(record) = stream.next_item() {
         let record = record
             .map_err(|error| Error::message(format!("WARC parse error: {error}")))?
             .into_buffered()
             .map_err(|error| Error::message(format!("WARC body error: {error}")))?;
-        records.push(record);
-        if records.len() == batch_size && !send_batch(&mut records, sender)? {
+        if !batch.is_empty()
+            && batch.would_exceed_body_limit(record.body().len())
+            && !send_batch(
+                std::mem::replace(&mut batch, WarcBatchBuilder::new(batch_size)),
+                sender,
+            )?
+        {
+            return Ok(());
+        }
+        batch.append(record)?;
+        if (batch.len() == batch_size || batch.body_bytes() >= MAX_BATCH_BODY_BYTES)
+            && !send_batch(
+                std::mem::replace(&mut batch, WarcBatchBuilder::new(batch_size)),
+                sender,
+            )?
+        {
             return Ok(());
         }
     }
-    if !records.is_empty() {
-        send_batch(&mut records, sender)?;
+    if !batch.is_empty() {
+        send_batch(batch, sender)?;
     }
     Ok(())
 }
 
-fn send_batch(
-    records: &mut Vec<Record<BufferedBody>>,
-    sender: &mpsc::Sender<Result<RecordBatch>>,
-) -> Result<bool> {
-    let batch = build_record_batch(records)?;
-    records.clear();
-    Ok(sender.blocking_send(Ok(batch)).is_ok())
+fn send_batch(batch: WarcBatchBuilder, sender: &mpsc::Sender<Result<RecordBatch>>) -> Result<bool> {
+    Ok(sender.blocking_send(Ok(batch.finish()?)).is_ok())
 }
 
 fn optional_header(record: &Record<BufferedBody>, header: WarcHeader) -> Option<String> {
@@ -174,73 +185,127 @@ fn optional_u32(
         .transpose()
 }
 
-fn build_record_batch(records: &[Record<BufferedBody>]) -> Result<RecordBatch> {
-    let content_lengths = records
-        .iter()
-        .map(|record| {
-            u32::try_from(record.body().len())
-                .map_err(|_| Error::message("WARC record body exceeds UInt32"))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let segment_numbers = records
-        .iter()
-        .map(|record| optional_u32(record, WarcHeader::SegmentNumber, "segment number"))
-        .collect::<Result<Vec<_>>>()?;
-    let segment_total_lengths = records
-        .iter()
-        .map(|record| {
-            optional_u32(
-                record,
-                WarcHeader::SegmentTotalLength,
-                "segment total length",
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
+struct WarcBatchBuilder {
+    len: usize,
+    body_bytes: usize,
+    id: StringBuilder,
+    content_length: UInt32Builder,
+    date: TimestampMillisecondBuilder,
+    record_type: StringBuilder,
+    optional_strings: Vec<StringBuilder>,
+    segment_number: UInt32Builder,
+    segment_total_length: UInt32Builder,
+    body: BinaryViewBuilder,
+}
 
-    macro_rules! strings {
-        ($header:expr) => {
-            Arc::new(StringArray::from(
-                records
-                    .iter()
-                    .map(|record| optional_header(record, $header))
-                    .collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
+impl WarcBatchBuilder {
+    fn new(capacity: usize) -> Self {
+        Self {
+            len: 0,
+            body_bytes: 0,
+            id: StringBuilder::with_capacity(capacity, capacity * 32),
+            content_length: UInt32Builder::with_capacity(capacity),
+            date: TimestampMillisecondBuilder::with_capacity(capacity),
+            record_type: StringBuilder::with_capacity(capacity, capacity * 8),
+            optional_strings: (0..13)
+                .map(|_| StringBuilder::with_capacity(capacity, capacity * 16))
+                .collect(),
+            segment_number: UInt32Builder::with_capacity(capacity),
+            segment_total_length: UInt32Builder::with_capacity(capacity),
+            body: BinaryViewBuilder::with_capacity(capacity),
+        }
     }
 
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(StringArray::from_iter_values(
-            records.iter().map(|record| record.warc_id()),
-        )),
-        Arc::new(UInt32Array::from(content_lengths)),
-        Arc::new(TimestampMillisecondArray::from_iter_values(
-            records
-                .iter()
-                .map(|record| record.date().timestamp_millis()),
-        )),
-        Arc::new(StringArray::from_iter_values(
-            records.iter().map(|record| record.warc_type().to_string()),
-        )),
-        strings!(WarcHeader::ContentType),
-        strings!(WarcHeader::ConcurrentTo),
-        strings!(WarcHeader::BlockDigest),
-        strings!(WarcHeader::PayloadDigest),
-        strings!(WarcHeader::IPAddress),
-        strings!(WarcHeader::RefersTo),
-        strings!(WarcHeader::TargetURI),
-        strings!(WarcHeader::Truncated),
-        strings!(WarcHeader::WarcInfoID),
-        strings!(WarcHeader::Filename),
-        strings!(WarcHeader::Profile),
-        strings!(WarcHeader::IdentifiedPayloadType),
-        Arc::new(UInt32Array::from(segment_numbers)),
-        strings!(WarcHeader::SegmentOriginID),
-        Arc::new(UInt32Array::from(segment_total_lengths)),
-        Arc::new(BinaryArray::from_iter_values(
-            records.iter().map(|record| record.body()),
-        )),
-    ];
-    Ok(RecordBatch::try_new(warc_schema(), columns)?)
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn body_bytes(&self) -> usize {
+        self.body_bytes
+    }
+
+    fn would_exceed_body_limit(&self, body_len: usize) -> bool {
+        self.body_bytes.saturating_add(body_len) > MAX_BATCH_BODY_BYTES
+    }
+
+    fn append(&mut self, record: Record<BufferedBody>) -> Result<()> {
+        let body_len = record.body().len();
+        let body_len_u32 = u32::try_from(body_len)
+            .map_err(|_| Error::message("WARC record body exceeds UInt32"))?;
+
+        self.id.append_value(record.warc_id());
+        self.content_length.append_value(body_len_u32);
+        self.date.append_value(record.date().timestamp_millis());
+        self.record_type
+            .append_value(record.warc_type().to_string());
+
+        let string_headers = [
+            WarcHeader::ContentType,
+            WarcHeader::ConcurrentTo,
+            WarcHeader::BlockDigest,
+            WarcHeader::PayloadDigest,
+            WarcHeader::IPAddress,
+            WarcHeader::RefersTo,
+            WarcHeader::TargetURI,
+            WarcHeader::Truncated,
+            WarcHeader::WarcInfoID,
+            WarcHeader::Filename,
+            WarcHeader::Profile,
+            WarcHeader::IdentifiedPayloadType,
+            WarcHeader::SegmentOriginID,
+        ];
+        for (builder, header) in self.optional_strings.iter_mut().zip(string_headers) {
+            builder.append_option(optional_header(&record, header));
+        }
+        self.segment_number.append_option(optional_u32(
+            &record,
+            WarcHeader::SegmentNumber,
+            "segment number",
+        )?);
+        self.segment_total_length.append_option(optional_u32(
+            &record,
+            WarcHeader::SegmentTotalLength,
+            "segment total length",
+        )?);
+
+        let (_, body) = record.into_raw_parts();
+        let block = self.body.append_block(body.into());
+        self.body.try_append_view(block, 0, body_len_u32)?;
+        self.len += 1;
+        self.body_bytes += body_len;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<RecordBatch> {
+        let mut strings = self.optional_strings.into_iter();
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(self.id.finish()),
+            Arc::new(self.content_length.finish()),
+            Arc::new(self.date.finish()),
+            Arc::new(self.record_type.finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(self.segment_number.finish()),
+            Arc::new(strings.next().unwrap().finish()),
+            Arc::new(self.segment_total_length.finish()),
+            Arc::new(self.body.finish()),
+        ];
+        Ok(RecordBatch::try_new(warc_schema(), columns)?)
+    }
 }
 
 #[cfg(test)]
@@ -248,7 +313,7 @@ mod tests {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use arrow_array::BinaryArray;
+    use arrow_array::BinaryViewArray;
     use futures::TryStreamExt;
     use libflate::gzip::Encoder;
 
@@ -292,7 +357,7 @@ mod tests {
             &DataType::Timestamp(TimeUnit::Millisecond, None)
         );
         assert_eq!(schema.field(19).name(), "body");
-        assert_eq!(schema.field(19).data_type(), &DataType::Binary);
+        assert_eq!(schema.field(19).data_type(), &DataType::BinaryView);
     }
 
     #[tokio::test]
@@ -314,7 +379,7 @@ mod tests {
                 .column_by_name("body")
                 .unwrap()
                 .as_any()
-                .downcast_ref::<BinaryArray>()
+                .downcast_ref::<BinaryViewArray>()
                 .unwrap()
                 .value(0),
             b"first"
