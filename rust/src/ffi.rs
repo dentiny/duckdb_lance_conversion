@@ -1,7 +1,7 @@
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow_array::{
     ffi::{from_ffi_and_data_type, FFI_ArrowArray},
@@ -12,9 +12,23 @@ use arrow_schema::{ffi::FFI_ArrowSchema, ArrowError, DataType, Schema, SchemaRef
 use futures::TryStreamExt;
 
 use crate::{
-    BatchSource, BatchStream, Error, HuggingFaceSource, LanceWriter, Result, S3StorageConfig,
-    WriteOptions,
+    warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceWriter, Result,
+    S3StorageConfig, WarcSource, WriteOptions,
 };
+
+static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
+    LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("failed to create source runtime: {error}"))
+    });
+
+fn source_runtime() -> Result<&'static tokio::runtime::Runtime> {
+    SOURCE_RUNTIME
+        .as_ref()
+        .map_err(|error| Error::message(error.clone()))
+}
 
 #[repr(C)]
 pub struct LanceS3Config {
@@ -32,13 +46,13 @@ pub struct LanceConversionWriter {
     runtime: tokio::runtime::Runtime,
 }
 
-struct HuggingFaceBatchReader {
+struct ArrowBatchReader {
     schema: SchemaRef,
     stream: BatchStream,
-    runtime: tokio::runtime::Runtime,
+    runtime: &'static tokio::runtime::Runtime,
 }
 
-impl Iterator for HuggingFaceBatchReader {
+impl Iterator for ArrowBatchReader {
     type Item = std::result::Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -49,7 +63,7 @@ impl Iterator for HuggingFaceBatchReader {
     }
 }
 
-impl RecordBatchReader for HuggingFaceBatchReader {
+impl RecordBatchReader for ArrowBatchReader {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -61,27 +75,40 @@ pub struct HuggingFaceStreamFactory {
     split: String,
     token: Option<String>,
     schema: SchemaRef,
-    reader: Option<HuggingFaceBatchReader>,
+    reader: Option<ArrowBatchReader>,
 }
 
 impl HuggingFaceStreamFactory {
-    fn open_reader(&self) -> Result<HuggingFaceBatchReader> {
+    fn open_reader(&self) -> Result<ArrowBatchReader> {
         let mut source = HuggingFaceSource::new(&self.dataset)
             .with_config(&self.config)
             .with_split(&self.split);
         if let Some(token) = &self.token {
             source = source.with_token(token);
         }
-        open_huggingface_reader(source)
+        open_batch_reader(source)
     }
 }
 
-fn open_huggingface_reader(source: HuggingFaceSource) -> Result<HuggingFaceBatchReader> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+pub struct WarcStreamFactory {
+    path: String,
+    s3_config: Option<S3StorageConfig>,
+}
+
+impl WarcStreamFactory {
+    fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
+        let mut source = WarcSource::new(&self.path).with_projection(projection);
+        if let Some(config) = &self.s3_config {
+            source = source.with_s3_config(config.clone());
+        }
+        open_batch_reader(source)
+    }
+}
+
+fn open_batch_reader(source: impl BatchSource) -> Result<ArrowBatchReader> {
+    let runtime = source_runtime()?;
     let (schema, stream) = runtime.block_on(source.open())?;
-    Ok(HuggingFaceBatchReader {
+    Ok(ArrowBatchReader {
         schema,
         stream,
         runtime,
@@ -224,7 +251,7 @@ pub unsafe extern "C" fn lance_huggingface_open(
         if let Some(token) = &token {
             source = source.with_token(token);
         }
-        let reader = open_huggingface_reader(source)?;
+        let reader = open_batch_reader(source)?;
         let schema = reader.schema();
         *output = Box::into_raw(Box::new(HuggingFaceStreamFactory {
             dataset,
@@ -277,6 +304,87 @@ pub unsafe extern "C" fn lance_huggingface_get_stream(
 
 #[no_mangle]
 pub unsafe extern "C" fn lance_huggingface_destroy(factory: *mut HuggingFaceStreamFactory) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !factory.is_null() {
+            drop(Box::from_raw(factory));
+        }
+    }));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_warc_open(
+    path: *const c_char,
+    s3: *const LanceS3Config,
+    output: *mut *mut WarcStreamFactory,
+) -> *mut c_char {
+    call(|| {
+        if path.is_null() || output.is_null() {
+            return Err(Error::message("null WARC reader argument"));
+        }
+        *output = ptr::null_mut();
+        let path = CStr::from_ptr(path).to_str()?.to_owned();
+        *output = Box::into_raw(Box::new(WarcStreamFactory {
+            path,
+            s3_config: s3_config(s3)?,
+        }));
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_warc_get_schema(
+    factory: *const WarcStreamFactory,
+    output: *mut FFI_ArrowSchema,
+) -> *mut c_char {
+    call(|| {
+        if factory.is_null() || output.is_null() {
+            return Err(Error::message("null WARC schema argument"));
+        }
+        ptr::write(output, FFI_ArrowSchema::try_from(warc_schema().as_ref())?);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_warc_get_stream(
+    factory: *const WarcStreamFactory,
+    columns: *const *const c_char,
+    column_count: usize,
+    output: *mut FFI_ArrowArrayStream,
+) -> *mut c_char {
+    call(|| {
+        if factory.is_null() || output.is_null() {
+            return Err(Error::message("null WARC stream argument"));
+        }
+        if column_count != 0 && columns.is_null() {
+            return Err(Error::message("null WARC projection"));
+        }
+        let schema = warc_schema();
+        let columns = if column_count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(columns, column_count)
+        };
+        let projection = columns
+            .iter()
+            .map(|&column| {
+                if column.is_null() {
+                    return Err(Error::message("null WARC column name"));
+                }
+                let name = CStr::from_ptr(column).to_str()?;
+                schema
+                    .index_of(name)
+                    .map_err(|_| Error::message(format!("unknown WARC column: {name}")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let reader = (&*factory).open_reader(projection)?;
+        ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_warc_destroy(factory: *mut WarcStreamFactory) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if !factory.is_null() {
             drop(Box::from_raw(factory));

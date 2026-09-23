@@ -1,5 +1,6 @@
 #include "huggingface_scan.hpp"
 
+#include "lance_ffi.hpp"
 #include "lance_conversion.h"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/exception.hpp"
@@ -9,24 +10,8 @@
 #include "duckdb/main/external_dependencies.hpp"
 #include "duckdb/main/secret/secret.hpp"
 
-#include <memory>
-
 namespace duckdb {
 namespace {
-
-struct LanceErrorDeleter {
-	void operator()(char *error) const {
-		lance_conversion_error_free(error);
-	}
-};
-
-using LanceError = std::unique_ptr<char, LanceErrorDeleter>;
-
-void ThrowIfLanceError(LanceError error) {
-	if (error) {
-		throw IOException("Hugging Face reader: %s", error.get());
-	}
-}
 
 class HuggingFaceDependency : public DependencyItem {
 public:
@@ -42,8 +27,9 @@ public:
 
 unique_ptr<ArrowArrayStreamWrapper> ProduceHuggingFaceStream(uintptr_t factory_ptr, ArrowStreamParameters &) {
 	auto result = make_uniq<ArrowArrayStreamWrapper>();
-	ThrowIfLanceError(LanceError(lance_huggingface_get_stream(reinterpret_cast<HuggingFaceStreamFactory *>(factory_ptr),
-	                                                          &result->arrow_array_stream)));
+	ThrowIfLanceError(lance_huggingface_get_stream(reinterpret_cast<HuggingFaceStreamFactory *>(factory_ptr),
+	                                               &result->arrow_array_stream),
+	                  "Hugging Face reader");
 	return result;
 }
 
@@ -66,12 +52,13 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	secret_reader.TryGetSecretKey("token", token);
 
 	HuggingFaceStreamFactory *factory = nullptr;
-	ThrowIfLanceError(LanceError(lance_huggingface_open(dataset.c_str(), config.c_str(), split.c_str(),
-	                                                    token.empty() ? nullptr : token.c_str(), &factory)));
+	ThrowIfLanceError(lance_huggingface_open(dataset.c_str(), config.c_str(), split.c_str(),
+	                                         token.empty() ? nullptr : token.c_str(), &factory),
+	                  "Hugging Face reader");
 	auto dependency = make_shared_ptr<HuggingFaceDependency>(factory);
 	auto result =
 	    make_uniq<ArrowScanFunctionData>(ProduceHuggingFaceStream, reinterpret_cast<uintptr_t>(factory), dependency);
-	ThrowIfLanceError(LanceError(lance_huggingface_get_schema(factory, &result->schema_root.arrow_schema)));
+	ThrowIfLanceError(lance_huggingface_get_schema(factory, &result->schema_root.arrow_schema), "Hugging Face reader");
 	ArrowTableFunction::PopulateArrowTableSchema(context, result->arrow_table, result->schema_root.arrow_schema);
 	names = result->arrow_table.GetNames();
 	return_types = result->arrow_table.GetTypes();

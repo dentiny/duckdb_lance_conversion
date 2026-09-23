@@ -9,8 +9,10 @@ use crate::Result;
 
 mod huggingface;
 mod parquet;
+mod warc;
 pub use huggingface::HuggingFaceSource;
 pub use parquet::ParquetFileSource;
+pub use warc::{warc_schema, WarcSource};
 
 pub type BatchStream = Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send + 'static>>;
 

@@ -1,0 +1,57 @@
+# name: test/sql/warc_conversion.test
+# description: WARC and compressed WARC to Lance datasets
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT * FROM read_warc('test/data/records.warc')
+) TO '__TEST_DIR__/warc.lance' (FORMAT LANCE);
+----
+2
+
+query I
+COPY (
+    SELECT * FROM read_warc('test/data/records.warc.gz')
+) TO '__TEST_DIR__/warc_gzip.lance' (FORMAT LANCE);
+----
+2
+
+statement ok
+PREPARE warc_scan AS SELECT count(*) FROM read_warc('test/data/records.warc');
+
+query I
+EXECUTE warc_scan;
+----
+2
+
+query I
+EXECUTE warc_scan;
+----
+2
+
+query TTI rowsort
+SELECT type, id, epoch_ms(date)
+FROM read_warc('test/data/records.warc');
+----
+response	<urn:uuid:1>	1704164645000
+response	<urn:uuid:2>	1704164646000
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query TIITTT rowsort
+SELECT id, content_length, epoch_ms(date), type, content_type, decode(body)
+FROM '__TEST_DIR__/warc.lance';
+----
+<urn:uuid:1>	5	1704164645000	response	application/octet-stream	first
+<urn:uuid:2>	6	1704164646000	response	application/octet-stream	second
+
+query T rowsort
+SELECT decode(body) FROM '__TEST_DIR__/warc_gzip.lance';
+----
+first
+second
