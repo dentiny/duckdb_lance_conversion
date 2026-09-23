@@ -32,10 +32,9 @@ unique_ptr<ArrowArrayStreamWrapper> ProduceWarcStream(uintptr_t factory_ptr, Arr
 	for (const auto &column : parameters.projected_columns.columns) {
 		columns.push_back(column.c_str());
 	}
-	ThrowIfLanceError(
-	    lance_warc_get_stream(reinterpret_cast<WarcStreamFactory *>(factory_ptr), columns.data(), columns.size(),
-	                          &result->arrow_array_stream),
-	    "WARC reader");
+	ThrowIfLanceError(lance_warc_get_stream(reinterpret_cast<WarcStreamFactory *>(factory_ptr), columns.data(),
+	                                        columns.size(), &result->arrow_array_stream),
+	                  "WARC reader");
 	return result;
 }
 

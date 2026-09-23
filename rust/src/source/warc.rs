@@ -3,7 +3,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, LazyLock};
 
 use arrow_array::{
-    builder::{BinaryViewBuilder, StringBuilder, TimestampMillisecondBuilder, UInt32Builder},
+    builder::{BinaryViewBuilder, StringBuilder, TimestampMillisecondBuilder, UInt64Builder},
     ArrayRef, RecordBatch,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
@@ -26,7 +26,7 @@ const READ_BUFFER_SIZE: usize = 1024 * 1024;
 static WARC_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
-        Field::new("content_length", DataType::UInt32, false),
+        Field::new("content_length", DataType::UInt64, false),
         Field::new(
             "date",
             DataType::Timestamp(TimeUnit::Millisecond, None),
@@ -45,9 +45,9 @@ static WARC_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
         Field::new("filename", DataType::Utf8, true),
         Field::new("profile", DataType::Utf8, true),
         Field::new("identified_payload_type", DataType::Utf8, true),
-        Field::new("segment_number", DataType::UInt32, true),
+        Field::new("segment_number", DataType::UInt64, true),
         Field::new("segment_origin_id", DataType::Utf8, true),
-        Field::new("segment_total_length", DataType::UInt32, true),
+        Field::new("segment_total_length", DataType::UInt64, true),
         Field::new("body", DataType::BinaryView, false),
     ]))
 });
@@ -58,15 +58,15 @@ pub fn warc_schema() -> SchemaRef {
 
 struct WarcMetadata {
     id: String,
-    content_length: u32,
+    content_length: u64,
     date: i64,
     record_type: String,
     optional_strings: [Option<String>; 13],
-    segment_number: Option<u32>,
-    segment_total_length: Option<u32>,
+    segment_number: Option<u64>,
+    segment_total_length: Option<u64>,
 }
 
-fn optional_u32(value: Option<String>, name: &str) -> Result<Option<u32>> {
+fn optional_u64(value: Option<String>, name: &str) -> Result<Option<u64>> {
     value
         .map(|value| {
             value
@@ -79,8 +79,8 @@ fn optional_u32(value: Option<String>, name: &str) -> Result<Option<u32>> {
 fn record_metadata<R: Read>(record: &Record<StreamingBody<'_, R>>) -> Result<WarcMetadata> {
     let optional_header = |header| record.header(header).map(|value| value.into_owned());
     let segment_number =
-        optional_u32(optional_header(WarcHeader::SegmentNumber), "segment number")?;
-    let segment_total_length = optional_u32(
+        optional_u64(optional_header(WarcHeader::SegmentNumber), "segment number")?;
+    let segment_total_length = optional_u64(
         optional_header(WarcHeader::SegmentTotalLength),
         "segment total length",
     )?;
@@ -102,8 +102,7 @@ fn record_metadata<R: Read>(record: &Record<StreamingBody<'_, R>>) -> Result<War
     .map(optional_header);
     Ok(WarcMetadata {
         id: record.warc_id().to_owned(),
-        content_length: u32::try_from(record.content_length())
-            .map_err(|_| Error::message("WARC record body exceeds UInt32"))?,
+        content_length: record.content_length(),
         date: record.date().timestamp_millis(),
         record_type: record.warc_type().to_string(),
         optional_strings,
@@ -272,12 +271,12 @@ struct WarcBatchBuilder {
     body_bytes: usize,
     projection: Vec<usize>,
     id: StringBuilder,
-    content_length: UInt32Builder,
+    content_length: UInt64Builder,
     date: TimestampMillisecondBuilder,
     record_type: StringBuilder,
     optional_strings: Vec<StringBuilder>,
-    segment_number: UInt32Builder,
-    segment_total_length: UInt32Builder,
+    segment_number: UInt64Builder,
+    segment_total_length: UInt64Builder,
     body: Option<BinaryViewBuilder>,
 }
 
@@ -289,14 +288,14 @@ impl WarcBatchBuilder {
             body_bytes: 0,
             projection,
             id: StringBuilder::with_capacity(capacity, capacity * 32),
-            content_length: UInt32Builder::with_capacity(capacity),
+            content_length: UInt64Builder::with_capacity(capacity),
             date: TimestampMillisecondBuilder::with_capacity(capacity),
             record_type: StringBuilder::with_capacity(capacity, capacity * 8),
             optional_strings: (0..13)
                 .map(|_| StringBuilder::with_capacity(capacity, capacity * 16))
                 .collect(),
-            segment_number: UInt32Builder::with_capacity(capacity),
-            segment_total_length: UInt32Builder::with_capacity(capacity),
+            segment_number: UInt64Builder::with_capacity(capacity),
+            segment_total_length: UInt64Builder::with_capacity(capacity),
             body: include_body.then(|| BinaryViewBuilder::with_capacity(capacity)),
         }
     }
@@ -338,7 +337,8 @@ impl WarcBatchBuilder {
         self.segment_total_length
             .append_option(metadata.segment_total_length);
         if let (Some(builder), Some(body)) = (&mut self.body, body) {
-            let body_len = metadata.content_length;
+            let body_len = u32::try_from(metadata.content_length)
+                .map_err(|_| Error::message("WARC body exceeds Arrow BinaryView limit"))?;
             let block = builder.append_block(body.into());
             builder.try_append_view(block, 0, body_len)?;
             self.body_bytes += body_len as usize;
@@ -437,10 +437,13 @@ mod tests {
         let schema = warc_schema();
         assert_eq!(schema.fields().len(), 20);
         assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).data_type(), &DataType::UInt64);
         assert_eq!(
             schema.field(2).data_type(),
             &DataType::Timestamp(TimeUnit::Millisecond, None)
         );
+        assert_eq!(schema.field(16).data_type(), &DataType::UInt64);
+        assert_eq!(schema.field(18).data_type(), &DataType::UInt64);
         assert_eq!(schema.field(19).name(), "body");
         assert_eq!(schema.field(19).data_type(), &DataType::BinaryView);
     }

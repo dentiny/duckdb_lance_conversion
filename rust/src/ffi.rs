@@ -1,7 +1,7 @@
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow_array::{
     ffi::{from_ffi_and_data_type, FFI_ArrowArray},
@@ -15,6 +15,20 @@ use crate::{
     warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceWriter, Result,
     S3StorageConfig, WarcSource, WriteOptions,
 };
+
+static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
+    LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("failed to create source runtime: {error}"))
+    });
+
+fn source_runtime() -> Result<&'static tokio::runtime::Runtime> {
+    SOURCE_RUNTIME
+        .as_ref()
+        .map_err(|error| Error::message(error.clone()))
+}
 
 #[repr(C)]
 pub struct LanceS3Config {
@@ -35,7 +49,7 @@ pub struct LanceConversionWriter {
 struct ArrowBatchReader {
     schema: SchemaRef,
     stream: BatchStream,
-    runtime: tokio::runtime::Runtime,
+    runtime: &'static tokio::runtime::Runtime,
 }
 
 impl Iterator for ArrowBatchReader {
@@ -92,9 +106,7 @@ impl WarcStreamFactory {
 }
 
 fn open_batch_reader(source: impl BatchSource) -> Result<ArrowBatchReader> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    let runtime = source_runtime()?;
     let (schema, stream) = runtime.block_on(source.open())?;
     Ok(ArrowBatchReader {
         schema,
