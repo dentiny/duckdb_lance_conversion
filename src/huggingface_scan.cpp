@@ -1,5 +1,6 @@
 #include "huggingface_scan.hpp"
 
+#include "function_metadata.hpp"
 #include "lance_ffi.hpp"
 #include "lance_conversion.h"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
@@ -78,7 +79,11 @@ void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
 	                       ArrowTableFunction::ArrowScanInitLocal);
 	function.named_parameters["config"] = LogicalType::VARCHAR;
 	function.named_parameters["split"] = LogicalType::VARCHAR;
-	loader.RegisterFunction(function);
+	RegisterTableFunctionWithMetadata(loader, std::move(function),
+	                                  /*parameter_names=*/ {"dataset", "config", "split"},
+	                                  /*description=*/"Reads a Hugging Face dataset's Parquet files.",
+	                                  /*examples=*/ {"SELECT * FROM read_huggingface('lhoestq/demo1');"},
+	                                  /*categories=*/ {"lance_conversion", "reader"});
 }
 
 } // namespace duckdb

@@ -1,5 +1,6 @@
 #include "warc_scan.hpp"
 
+#include "function_metadata.hpp"
 #include "lance_conversion.h"
 #include "lance_ffi.hpp"
 #include "storage_options.hpp"
@@ -74,7 +75,11 @@ void RegisterWarcScanFunction(ExtensionLoader &loader) {
 	TableFunction function("read_warc", {LogicalType::VARCHAR}, ArrowTableFunction::ArrowScanFunction, BindWarc,
 	                       ArrowTableFunction::ArrowScanInitGlobal, ArrowTableFunction::ArrowScanInitLocal);
 	function.projection_pushdown = true;
-	loader.RegisterFunction(function);
+	RegisterTableFunctionWithMetadata(loader, std::move(function),
+	                                  /*parameter_names=*/ {"path"},
+	                                  /*description=*/"Reads records from a local or S3 WARC file.",
+	                                  /*examples=*/ {"SELECT * FROM read_warc('archive.warc.gz');"},
+	                                  /*categories=*/ {"lance_conversion", "reader"});
 }
 
 } // namespace duckdb
