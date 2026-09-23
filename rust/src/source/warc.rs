@@ -1,4 +1,5 @@
 use std::io::{BufRead, BufReader};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, LazyLock};
 
 use arrow_array::{
@@ -103,7 +104,7 @@ impl BatchSource for WarcSource {
         let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
         let batch_size = self.batch_size;
         tokio::task::spawn_blocking(move || {
-            let result = (|| {
+            let result = catch_unwind(AssertUnwindSafe(|| {
                 // `warc` parses `BufRead`; OpenDAL I/O remains async through this bridge.
                 let reader = SyncIoBridge::new_with_handle(reader, runtime);
                 let reader: Box<dyn BufRead> = if gzipped {
@@ -112,8 +113,20 @@ impl BatchSource for WarcSource {
                     Box::new(BufReader::with_capacity(READ_BUFFER_SIZE, reader))
                 };
                 stream_records(reader, batch_size, &sender)
-            })();
-            if let Err(error) = result {
+            }));
+            let error = match result {
+                Ok(Ok(())) => return,
+                Ok(Err(error)) => error,
+                Err(payload) => {
+                    let message = payload
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("unknown panic");
+                    Error::message(format!("panic in WARC parser: {message}"))
+                }
+            };
+            if !sender.is_closed() {
                 let _ = sender.blocking_send(Err(error));
             }
         });
@@ -428,6 +441,38 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("WARC parse error"));
+        tokio::fs::remove_dir_all(temp).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reports_parser_panics_as_stream_errors() {
+        let temp = test_directory().await;
+        let path = temp.join("invalid-header.warc");
+        let mut input = b"WARC/1.0\r\n\
+            WARC-Type: response\r\n\
+            WARC-Record-ID: <urn:uuid:bad-header>\r\n\
+            WARC-Date: 2024-01-02T03:04:05Z\r\n\
+            Content-Type: "
+            .to_vec();
+        input.extend_from_slice(
+            b"\xff\r\n\
+              Content-Length: 4\r\n\
+              \r\n\
+              body\r\n\
+              \r\n",
+        );
+        tokio::fs::write(&path, input).await.unwrap();
+
+        let (_, mut stream) = WarcSource::new(path.to_string_lossy())
+            .open()
+            .await
+            .unwrap();
+        assert!(stream
+            .try_next()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("panic in WARC parser"));
         tokio::fs::remove_dir_all(temp).await.unwrap();
     }
 }
