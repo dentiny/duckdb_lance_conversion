@@ -48,3 +48,28 @@ query I
 COPY (SELECT * FROM read_parquet('__TEST_DIR__/lance_input.parquet') WHERE false) TO '__TEST_DIR__/empty_conversion.lance' (FORMAT LANCE);
 ----
 0
+
+# Load the official Lance reader only after exercising our FORMAT LANCE writer.
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query IT
+SELECT i, text FROM '__TEST_DIR__/conversion.lance' ORDER BY i;
+----
+0	NULL
+1	row-1
+2	row-2
+3	row-3
+4	row-4
+5	row-5
+6	row-6
+7	NULL
+8	row-8
+9	row-9
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/empty_conversion.lance';
+----
+0

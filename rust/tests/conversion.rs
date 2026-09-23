@@ -1,11 +1,25 @@
 mod common;
 
+use std::path::Path;
+
+use arrow_array::RecordBatch;
+use arrow_select::concat::concat_batches;
 use lance_conversion::{convert, LanceSink, LanceWriter, ParquetFileSource, WriteOptions};
 use parquet::arrow::async_writer::AsyncArrowWriter;
 use tempfile::tempdir;
-use tokio::{fs::File, task::spawn_blocking};
+use tokio::{
+    fs::{self, File},
+    task::spawn_blocking,
+};
 
 use common::{assert_values, fixture, read_lance};
+
+async fn write_parquet(path: &Path, batch: &RecordBatch) {
+    let file = File::create(path).await.unwrap();
+    let mut writer = AsyncArrowWriter::try_new(file, batch.schema(), None).unwrap();
+    writer.write(batch).await.unwrap();
+    writer.close().await.unwrap();
+}
 
 #[tokio::test]
 async fn single_parquet_streams_multiple_batches_into_lance() {
@@ -24,6 +38,35 @@ async fn single_parquet_streams_multiple_batches_into_lance() {
     .await
     .unwrap();
     assert_eq!(result.rows_written, 10_001);
+    assert_values(&read_lance(&output).await, &expected);
+    spawn_blocking(move || temp.close()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn parquet_directory_streams_files_recursively() {
+    let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
+    let input = temp.path().join("input");
+    let nested = input.join("nested");
+    let output = temp.path().join("output.lance");
+    fs::create_dir_all(&nested).await.unwrap();
+
+    let first = fixture(11);
+    let second = fixture(7);
+    write_parquet(&input.join("a.parquet"), &first).await;
+    write_parquet(&nested.join("b.PARQUET"), &second).await;
+    fs::write(input.join("ignored.txt"), b"not parquet")
+        .await
+        .unwrap();
+
+    let expected = concat_batches(&first.schema(), [&first, &second]).unwrap();
+    let result = convert(
+        ParquetFileSource::new(input).with_batch_size(3),
+        LanceSink::new(&output, WriteOptions::default()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.rows_written, 18);
     assert_values(&read_lance(&output).await, &expected);
     spawn_blocking(move || temp.close()).await.unwrap().unwrap();
 }

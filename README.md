@@ -1,9 +1,9 @@
 # DuckDB Lance Conversion
 
 Convert data into Lance datasets through DuckDB `COPY TO`, with the conversion
-core implemented in Rust. The first supported workflow converts a single local
-Parquet file into a local Lance dataset, preserving supported column values
-without special blob or media processing.
+core implemented in Rust. The native adapter converts a Parquet file or a
+directory of Parquet files into a Lance dataset, preserving supported column
+values without special blob or media processing.
 
 ## Usage
 
@@ -114,7 +114,8 @@ println!("{} rows written", result.rows_written);
 For standalone S3 input/output, attach the same `S3StorageConfig` to
 `ParquetFileSource::with_s3_config` and `WriteOptions::s3_config`. This API does
 not read DuckDB secrets; the DuckDB extension resolves those before crossing
-the FFI boundary.
+the FFI boundary. Directory inputs are scanned recursively for `.parquet` files
+and require all files to have the same Arrow schema.
 
 `convert(source, sink)` connects any `BatchSource` to any `BatchSink`. A source
 returns `(SchemaRef, BatchStream)`, where each stream item is an
@@ -144,7 +145,6 @@ than `Decimal128`. It does not automatically cast them.
 
 ## TODO
 
-- Support directories of Parquet files in the native input adapter.
 - Add Hugging Face input resolution and authentication.
 - Add WARC input conversion.
 - Expand round-trip coverage for decimal, temporal, and nested types, including
