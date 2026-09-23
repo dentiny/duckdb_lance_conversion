@@ -12,7 +12,7 @@ use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordB
 use futures::{stream, FutureExt, Stream, TryStreamExt};
 use lance::{
     dataset::{write::InsertBuilder, WriteMode, WriteParams},
-    io::ObjectStoreParams,
+    session::Session,
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use tokio::{
@@ -22,7 +22,7 @@ use tokio::{
 
 use super::{BatchSink, WriteSummary};
 use crate::schema::validate_schema;
-use crate::storage::OpendalStorage;
+use crate::storage::{OpendalStorage, OpendalStoreProvider};
 use crate::S3StorageConfig;
 
 #[derive(Clone, Debug, Default)]
@@ -226,15 +226,12 @@ async fn write_dataset(
         },
         ..Default::default()
     };
-    #[allow(deprecated)]
-    let store_params = ObjectStoreParams {
-        object_store: Some((
-            destination.object_store.clone(),
-            destination.location.clone(),
-        )),
-        ..Default::default()
-    };
-    params.store_params = Some(store_params);
+    let session = Session::default();
+    session.store_registry().insert(
+        destination.location.scheme(),
+        Arc::new(OpendalStoreProvider::new(destination.object_store.clone())),
+    );
+    params.session = Some(Arc::new(session));
     params.commit_handler = Some(Arc::new(ConditionalPutCommitHandler));
     let uri = destination.location.as_str();
     InsertBuilder::new(uri)

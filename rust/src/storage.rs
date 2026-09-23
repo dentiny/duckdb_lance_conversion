@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::{ensure, Context, Result};
-use object_store::ObjectStore;
+use lance_io::object_store::{
+    ObjectStore as LanceObjectStore, ObjectStoreParams, ObjectStoreProvider,
+    DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_DOWNLOAD_RETRY_COUNT, DEFAULT_LOCAL_IO_PARALLELISM,
+};
+use object_store::ObjectStore as ArrowObjectStore;
 use object_store_opendal::OpendalStore;
 use opendal::{
     services::{Fs, S3},
@@ -37,9 +41,46 @@ impl Default for S3StorageConfig {
 #[derive(Clone)]
 pub(crate) struct OpendalStorage {
     pub operator: Operator,
-    pub object_store: Arc<dyn ObjectStore>,
+    pub object_store: Arc<dyn ArrowObjectStore>,
     pub object_path: object_store::path::Path,
     pub location: Url,
+}
+
+#[derive(Debug)]
+pub(crate) struct OpendalStoreProvider {
+    object_store: Arc<dyn ArrowObjectStore>,
+}
+
+impl OpendalStoreProvider {
+    pub fn new(object_store: Arc<dyn ArrowObjectStore>) -> Self {
+        Self { object_store }
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStoreProvider for OpendalStoreProvider {
+    async fn new_store(
+        &self,
+        base_path: Url,
+        params: &ObjectStoreParams,
+    ) -> lance::Result<LanceObjectStore> {
+        let io_parallelism = if base_path.scheme() == "file" {
+            DEFAULT_LOCAL_IO_PARALLELISM
+        } else {
+            DEFAULT_CLOUD_IO_PARALLELISM
+        };
+        Ok(LanceObjectStore::new(
+            self.object_store.clone(),
+            base_path,
+            params.resolved_block_size()?,
+            params.object_store_wrapper.clone(),
+            params.use_constant_size_upload_parts,
+            params.list_is_lexically_ordered.unwrap_or(false),
+            io_parallelism,
+            DEFAULT_DOWNLOAD_RETRY_COUNT,
+            params.storage_options(),
+        ))
+    }
 }
 
 impl OpendalStorage {

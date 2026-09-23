@@ -7,7 +7,9 @@ use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use futures::{future::BoxFuture, FutureExt, TryStreamExt};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
-use parquet::arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder};
+use parquet::arrow::async_reader::{
+    AsyncFileReader, MetadataSuffixFetch, ParquetRecordBatchStreamBuilder,
+};
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 
@@ -20,7 +22,10 @@ const DEFAULT_BATCH_SIZE: usize = 8192;
 struct OpendalParquetReader {
     operator: opendal::Operator,
     path: String,
-    size: u64,
+}
+
+fn opendal_error(error: opendal::Error) -> ParquetError {
+    ParquetError::External(Box::new(error))
 }
 
 impl AsyncFileReader for OpendalParquetReader {
@@ -31,7 +36,7 @@ impl AsyncFileReader for OpendalParquetReader {
                 .range(range)
                 .await
                 .map(|buffer| buffer.to_bytes())
-                .map_err(|error| ParquetError::External(Box::new(error)))
+                .map_err(opendal_error)
         }
         .boxed()
     }
@@ -41,13 +46,26 @@ impl AsyncFileReader for OpendalParquetReader {
         options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
         async move {
-            let size = self.size;
             let metadata_options = options.map(|options| options.metadata_options().clone());
             let metadata = ParquetMetaDataReader::new()
                 .with_metadata_options(metadata_options)
-                .load_and_finish(self, size)
+                .load_via_suffix_and_finish(self)
                 .await?;
             Ok(Arc::new(metadata))
+        }
+        .boxed()
+    }
+}
+
+impl MetadataSuffixFetch for &mut OpendalParquetReader {
+    fn fetch_suffix(&mut self, suffix: usize) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+        async move {
+            self.operator
+                .read_with(&self.path)
+                .range(opendal::BytesRange::suffix(suffix as u64))
+                .await
+                .map(|buffer| buffer.to_bytes())
+                .map_err(opendal_error)
         }
         .boxed()
     }
@@ -88,12 +106,9 @@ impl BatchSource for ParquetFileSource {
             .context("Parquet input path must be valid UTF-8")?;
         let storage = OpendalStorage::from_path(path, self.s3_config.as_ref())?;
         let object_path = storage.object_path.to_string();
-        let metadata = storage.operator.stat(&object_path).await?;
-        ensure!(metadata.is_file(), "input must be a single Parquet file");
         let object_reader = OpendalParquetReader {
             operator: storage.operator,
             path: object_path,
-            size: metadata.content_length(),
         };
         let reader = ParquetRecordBatchStreamBuilder::new(object_reader)
             .await?
