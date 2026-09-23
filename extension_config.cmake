@@ -12,6 +12,7 @@ endif()
 
 duckdb_extension_load(lance_conversion SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
                       EXTENSION_VERSION ${LANCE_CONVERSION_VERSION})
+duckdb_extension_load(json)
 duckdb_extension_load(parquet)
 
 if(BUILD_UNITTESTS)

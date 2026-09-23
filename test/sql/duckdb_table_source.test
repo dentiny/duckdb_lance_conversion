@@ -1,0 +1,35 @@
+# name: test/sql/duckdb_table_source.test
+# description: DuckDB table to a Lance dataset
+# group: [sql]
+
+require lance_conversion
+
+statement ok
+CREATE TABLE source_rows (id INTEGER, name VARCHAR, score DOUBLE);
+
+statement ok
+INSERT INTO source_rows VALUES
+    (1, 'alpha', 1.5),
+    (2, 'beta', NULL),
+    (3, 'gamma', 2.25);
+
+query I
+COPY source_rows
+TO '__TEST_DIR__/table_source.lance' (FORMAT LANCE);
+----
+3
+
+# Load the official Lance reader only after exercising our FORMAT LANCE writer.
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query ITT
+SELECT id, name, score::VARCHAR
+FROM '__TEST_DIR__/table_source.lance'
+ORDER BY id;
+----
+1	alpha	1.5
+2	beta	NULL
+3	gamma	2.25
