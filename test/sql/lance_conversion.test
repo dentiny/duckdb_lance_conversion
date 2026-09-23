@@ -35,11 +35,6 @@ COPY (SELECT 1 AS id) TO '__TEST_DIR__/conversion.lance' (FORMAT LANCE, OVERWRIT
 must not exist
 
 statement error
-COPY (SELECT 1 AS id) TO '__TEST_DIR__/unsupported.lance' (FORMAT LANCE, APPEND);
-----
-Unsupported option
-
-statement error
 COPY (SELECT 1::HUGEINT AS id) TO '__TEST_DIR__/unsupported.lance' (FORMAT LANCE);
 ----
 does not support

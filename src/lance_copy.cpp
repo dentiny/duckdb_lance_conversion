@@ -19,7 +19,7 @@ struct LanceBindData : public FunctionData {
 	vector<string> names;
 	vector<LogicalType> types;
 	ClientProperties properties;
-	bool overwrite = false;
+	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
 	bool s3 = false;
 	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
 	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
@@ -30,7 +30,7 @@ struct LanceBindData : public FunctionData {
 		result->names = names;
 		result->types = types;
 		result->properties = properties;
-		result->overwrite = overwrite;
+		result->mode = mode;
 		result->s3 = s3;
 		result->blob_inline_size_threshold = blob_inline_size_threshold;
 		result->blob_dedicated_size_threshold = blob_dedicated_size_threshold;
@@ -39,7 +39,7 @@ struct LanceBindData : public FunctionData {
 	}
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<LanceBindData>();
-		return names == other.names && types == other.types && overwrite == other.overwrite && s3 == other.s3 &&
+		return names == other.names && types == other.types && mode == other.mode && s3 == other.s3 &&
 		       blob_inline_size_threshold == other.blob_inline_size_threshold &&
 		       blob_dedicated_size_threshold == other.blob_dedicated_size_threshold &&
 		       target_file_size == other.target_file_size;
@@ -119,13 +119,22 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 	for (const auto &type : types) {
 		ValidateDuckDBType(type);
 	}
+	bool has_write_mode = false;
 	for (auto &option : input.info.options) {
-		if (StringUtil::CIEquals(option.first, "overwrite")) {
-			if (option.second.size() > 1 || (!option.second.empty() && option.second[0].IsNull())) {
-				throw BinderException("OVERWRITE requires a boolean");
+		if (StringUtil::CIEquals(option.first, "overwrite") || StringUtil::CIEquals(option.first, "append")) {
+			if (has_write_mode) {
+				throw BinderException("Only one of OVERWRITE or APPEND can be specified");
 			}
-			result->overwrite =
+			has_write_mode = true;
+			if (option.second.size() > 1 || (!option.second.empty() && option.second[0].IsNull())) {
+				throw BinderException("%s requires a boolean", option.first);
+			}
+			auto enabled =
 			    option.second.empty() || option.second[0].CastAs(context, LogicalType::BOOLEAN).GetValue<bool>();
+			if (enabled) {
+				result->mode = StringUtil::CIEquals(option.first, "overwrite") ? LANCE_WRITE_MODE_OVERWRITE
+				                                                             : LANCE_WRITE_MODE_APPEND;
+			}
 		} else if (StringUtil::CIEquals(option.first, "blob_inline_size_threshold")) {
 			result->blob_inline_size_threshold = ParseSizeOption(context, option.first, option.second);
 		} else if (StringUtil::CIEquals(option.first, "blob_dedicated_size_threshold")) {
@@ -150,8 +159,8 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 		result->s3 = true;
 		return std::move(result);
 	}
-	if (fs.FileExists(fs.ExpandPath(input.info.file_path)) ||
-	    (!result->overwrite && fs.DirectoryExists(fs.ExpandPath(input.info.file_path)))) {
+	if (result->mode == LANCE_WRITE_MODE_CREATE &&
+	    (fs.FileExists(fs.ExpandPath(input.info.file_path)) || fs.DirectoryExists(fs.ExpandPath(input.info.file_path)))) {
 		throw IOException("Lance destination must not exist: %s", input.info.file_path);
 	}
 	return std::move(result);
@@ -163,7 +172,7 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	ArrowConverter::ToArrowSchema(&schema.arrow_schema, bind.types, bind.names, bind.properties);
 	auto state = make_uniq<LanceGlobalState>();
 	LanceWriteConfig write_config;
-	write_config.overwrite = bind.overwrite ? 1 : 0;
+	write_config.mode = bind.mode;
 	write_config.blob_inline_size_threshold = bind.blob_inline_size_threshold;
 	write_config.blob_dedicated_size_threshold = bind.blob_dedicated_size_threshold;
 	write_config.target_file_size = bind.target_file_size;

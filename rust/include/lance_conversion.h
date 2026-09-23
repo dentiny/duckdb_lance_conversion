@@ -20,8 +20,14 @@ struct LanceS3Config {
 	int32_t virtual_host_style = 0;
 };
 
+enum LanceWriteMode : int32_t {
+	LANCE_WRITE_MODE_CREATE = 0,
+	LANCE_WRITE_MODE_APPEND = 1,
+	LANCE_WRITE_MODE_OVERWRITE = 2,
+};
+
 struct LanceWriteConfig {
-	int32_t overwrite = 0;
+	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
 	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
 	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
 	int64_t target_file_size = 512 * 1024 * 1024;

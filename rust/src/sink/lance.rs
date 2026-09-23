@@ -11,9 +11,10 @@ use arrow_cast::cast;
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream};
 use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
+pub use lance::dataset::write::WriteMode;
 use lance::{
     blob_field_with_options,
-    dataset::{write::InsertBuilder, WriteMode, WriteParams},
+    dataset::write::{InsertBuilder, WriteParams},
     session::Session,
     BlobFieldOptions,
 };
@@ -34,7 +35,7 @@ const DEFAULT_TARGET_FILE_SIZE: usize = 512 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
-    pub overwrite: bool,
+    pub mode: WriteMode,
     pub s3_config: Option<S3StorageConfig>,
     pub blob_inline_size_threshold: Option<usize>,
     pub blob_dedicated_size_threshold: Option<usize>,
@@ -44,7 +45,7 @@ pub struct WriteOptions {
 impl Default for WriteOptions {
     fn default() -> Self {
         Self {
-            overwrite: false,
+            mode: WriteMode::Create,
             s3_config: None,
             blob_inline_size_threshold: Some(DEFAULT_BLOB_INLINE_SIZE_THRESHOLD),
             blob_dedicated_size_threshold: Some(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
@@ -353,11 +354,7 @@ async fn write_dataset(
         ));
     }
     let mut params = WriteParams {
-        mode: if options.overwrite {
-            WriteMode::Overwrite
-        } else {
-            WriteMode::Create
-        },
+        mode: options.mode,
         max_bytes_per_file: options.target_file_size,
         ..Default::default()
     };
@@ -372,10 +369,10 @@ async fn write_dataset(
         .with_params(&params)
         .execute_stream(stream)
         .await
-        .context(if options.overwrite {
-            "OVERWRITE requires an existing valid Lance dataset"
-        } else {
-            "creating Lance dataset"
+        .context(match options.mode {
+            WriteMode::Create => "creating Lance dataset",
+            WriteMode::Append => "appending to Lance dataset",
+            WriteMode::Overwrite => "overwriting Lance dataset",
         })?;
     Ok(())
 }

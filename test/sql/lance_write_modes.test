@@ -1,0 +1,45 @@
+# name: test/sql/lance_write_modes.test
+# description: Lance create, append, and overwrite write modes
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (SELECT i FROM range(2) t(i)) TO '__TEST_DIR__/append.lance' (FORMAT LANCE);
+----
+2
+
+query I
+COPY (SELECT i FROM range(2, 4) t(i)) TO '__TEST_DIR__/append.lance' (FORMAT LANCE, APPEND);
+----
+2
+
+query I
+COPY (SELECT i FROM range(2) t(i)) TO '__TEST_DIR__/overwrite.lance' (FORMAT LANCE);
+----
+2
+
+query I
+COPY (SELECT i FROM range(10, 13) t(i)) TO '__TEST_DIR__/overwrite.lance' (FORMAT LANCE, OVERWRITE);
+----
+3
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query I
+SELECT i FROM '__TEST_DIR__/append.lance' ORDER BY i;
+----
+0
+1
+2
+3
+
+query I
+SELECT i FROM '__TEST_DIR__/overwrite.lance' ORDER BY i;
+----
+10
+11
+12

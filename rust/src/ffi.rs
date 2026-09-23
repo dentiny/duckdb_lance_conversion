@@ -13,7 +13,7 @@ use futures::TryStreamExt;
 
 use crate::{
     warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceWriter, Result,
-    S3StorageConfig, WarcSource, WriteOptions,
+    S3StorageConfig, WarcSource, WriteMode, WriteOptions,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -43,7 +43,7 @@ pub struct LanceS3Config {
 
 #[repr(C)]
 pub struct LanceWriteConfig {
-    overwrite: i32,
+    mode: i32,
     blob_inline_size_threshold: i64,
     blob_dedicated_size_threshold: i64,
     target_file_size: i64,
@@ -161,6 +161,17 @@ fn optional_threshold(value: i64, name: &str, allow_zero: bool) -> Result<Option
     })?))
 }
 
+fn write_mode(mode: i32) -> Result<WriteMode> {
+    match mode {
+        0 => Ok(WriteMode::Create),
+        1 => Ok(WriteMode::Append),
+        2 => Ok(WriteMode::Overwrite),
+        _ => Err(Error::invalid_argument(format!(
+            "invalid Lance write mode: {mode}"
+        ))),
+    }
+}
+
 fn call(operation: impl FnOnce() -> Result<()>) -> *mut c_char {
     let error = match catch_unwind(AssertUnwindSafe(operation)) {
         Ok(Ok(())) => return ptr::null_mut(),
@@ -194,7 +205,7 @@ pub unsafe extern "C" fn lance_conversion_open(
         let schema = Arc::new(Schema::try_from(&*schema)?);
         let config = &*config;
         let options = WriteOptions {
-            overwrite: config.overwrite != 0,
+            mode: write_mode(config.mode)?,
             s3_config: s3_config(s3)?,
             blob_inline_size_threshold: optional_threshold(
                 config.blob_inline_size_threshold,
