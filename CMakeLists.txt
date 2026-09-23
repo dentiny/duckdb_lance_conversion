@@ -72,7 +72,8 @@ elseif(WIN32)
 endif()
 set(EXTENSION_SOURCES
     src/lance_conversion_extension.cpp src/lance_copy.cpp
-    src/huggingface_scan.cpp src/storage_options.cpp src/warc_scan.cpp)
+    src/function_metadata.cpp src/huggingface_scan.cpp src/storage_options.cpp
+    src/warc_scan.cpp)
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 foreach(target ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
