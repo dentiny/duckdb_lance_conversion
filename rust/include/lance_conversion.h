@@ -20,14 +20,28 @@ struct LanceS3Config {
 	int32_t virtual_host_style = 0;
 };
 
+enum LanceWriteMode : int32_t {
+	LANCE_WRITE_MODE_CREATE = 0,
+	LANCE_WRITE_MODE_APPEND = 1,
+	LANCE_WRITE_MODE_OVERWRITE = 2,
+};
+
+struct LanceWriteConfig {
+	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
+	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
+	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
+	int64_t target_file_size = 512 * 1024 * 1024;
+};
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 // NULL means success. Free each owned error with lance_conversion_error_free.
 void lance_conversion_error_free(char *error);
-char *lance_conversion_open(const char *path, const struct ArrowSchema *schema, int32_t overwrite,
-                            const struct LanceS3Config *s3, struct LanceConversionWriter **output);
+char *lance_conversion_open(const char *path, const struct ArrowSchema *schema,
+                            const struct LanceWriteConfig *config, const struct LanceS3Config *s3,
+                            struct LanceConversionWriter **output);
 // Takes ownership of array on import and clears its release callback.
 char *lance_conversion_push(struct LanceConversionWriter *writer, struct ArrowArray *array);
 char *lance_conversion_finish(struct LanceConversionWriter *writer);

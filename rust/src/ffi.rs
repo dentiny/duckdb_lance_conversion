@@ -13,7 +13,7 @@ use futures::TryStreamExt;
 
 use crate::{
     warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceWriter, Result,
-    S3StorageConfig, WarcSource, WriteOptions,
+    S3StorageConfig, WarcSource, WriteMode, WriteOptions,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -39,6 +39,14 @@ pub struct LanceS3Config {
     session_token: *const c_char,
     use_ssl: i32,
     virtual_host_style: i32,
+}
+
+#[repr(C)]
+pub struct LanceWriteConfig {
+    mode: i32,
+    blob_inline_size_threshold: i64,
+    blob_dedicated_size_threshold: i64,
+    target_file_size: i64,
 }
 
 pub struct LanceConversionWriter {
@@ -139,6 +147,31 @@ unsafe fn s3_config(config: *const LanceS3Config) -> Result<Option<S3StorageConf
     }))
 }
 
+fn optional_threshold(value: i64, name: &str, allow_zero: bool) -> Result<Option<usize>> {
+    if value < 0 {
+        return Ok(None);
+    }
+    if value == 0 && !allow_zero {
+        return Err(Error::invalid_argument(format!(
+            "{name} must be greater than zero"
+        )));
+    }
+    Ok(Some(usize::try_from(value).map_err(|_| {
+        Error::invalid_argument(format!("{name} exceeds the platform size limit"))
+    })?))
+}
+
+fn write_mode(mode: i32) -> Result<WriteMode> {
+    match mode {
+        0 => Ok(WriteMode::Create),
+        1 => Ok(WriteMode::Append),
+        2 => Ok(WriteMode::Overwrite),
+        _ => Err(Error::invalid_argument(format!(
+            "invalid Lance write mode: {mode}"
+        ))),
+    }
+}
+
 fn call(operation: impl FnOnce() -> Result<()>) -> *mut c_char {
     let error = match catch_unwind(AssertUnwindSafe(operation)) {
         Ok(Ok(())) => return ptr::null_mut(),
@@ -159,20 +192,37 @@ pub unsafe extern "C" fn lance_conversion_error_free(error: *mut c_char) {
 pub unsafe extern "C" fn lance_conversion_open(
     path: *const c_char,
     schema: *const FFI_ArrowSchema,
-    overwrite: i32,
+    config: *const LanceWriteConfig,
     s3: *const LanceS3Config,
     output: *mut *mut LanceConversionWriter,
 ) -> *mut c_char {
     call(|| {
-        if path.is_null() || schema.is_null() || output.is_null() {
+        if path.is_null() || schema.is_null() || config.is_null() || output.is_null() {
             return Err(Error::message("null writer argument"));
         }
         *output = ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?;
         let schema = Arc::new(Schema::try_from(&*schema)?);
+        let config = &*config;
         let options = WriteOptions {
-            overwrite: overwrite != 0,
+            mode: write_mode(config.mode)?,
             s3_config: s3_config(s3)?,
+            blob_inline_size_threshold: optional_threshold(
+                config.blob_inline_size_threshold,
+                "blob inline size threshold",
+                true,
+            )?,
+            blob_dedicated_size_threshold: optional_threshold(
+                config.blob_dedicated_size_threshold,
+                "blob dedicated size threshold",
+                false,
+            )?,
+            target_file_size: optional_threshold(
+                config.target_file_size,
+                "target file size",
+                false,
+            )?
+            .unwrap_or_else(|| WriteOptions::default().target_file_size),
         };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

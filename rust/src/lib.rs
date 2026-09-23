@@ -13,7 +13,7 @@ mod storage;
 pub use converter::convert;
 pub use error::{Error, Result};
 pub use error_struct::{ErrorStatus, ErrorStruct};
-pub use sink::{BatchSink, LanceSink, LanceWriter, WriteOptions, WriteSummary};
+pub use sink::{BatchSink, LanceSink, LanceWriter, WriteMode, WriteOptions, WriteSummary};
 pub use source::{
     warc_schema, BatchSource, BatchStream, HuggingFaceSource, ParquetFileSource, WarcSource,
 };

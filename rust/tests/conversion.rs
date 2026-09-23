@@ -4,7 +4,9 @@ use std::path::Path;
 
 use arrow_array::RecordBatch;
 use arrow_select::concat::concat_batches;
-use lance_conversion::{convert, LanceSink, LanceWriter, ParquetFileSource, WriteOptions};
+use lance_conversion::{
+    convert, LanceSink, LanceWriter, ParquetFileSource, WriteMode, WriteOptions,
+};
 use parquet::arrow::async_writer::AsyncArrowWriter;
 use tempfile::tempdir;
 use tokio::{
@@ -104,7 +106,11 @@ async fn overwrite_replaces_rows_and_can_commit_an_empty_dataset() {
             &output,
             batch.schema(),
             WriteOptions {
-                overwrite,
+                mode: if overwrite {
+                    WriteMode::Overwrite
+                } else {
+                    WriteMode::Create
+                },
                 ..Default::default()
             },
         )

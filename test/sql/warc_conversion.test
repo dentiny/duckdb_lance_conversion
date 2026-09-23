@@ -43,15 +43,14 @@ restart no_extension_load
 statement ok
 LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
 
-query TIITTT rowsort
-SELECT id, content_length, epoch_ms(date), type, content_type, decode(body)
+query TIITT rowsort
+SELECT id, content_length, epoch_ms(date), type, content_type
 FROM '__TEST_DIR__/warc.lance';
 ----
-<urn:uuid:1>	5	1704164645000	response	application/octet-stream	first
-<urn:uuid:2>	6	1704164646000	response	application/octet-stream	second
+<urn:uuid:1>	5	1704164645000	response	application/octet-stream
+<urn:uuid:2>	6	1704164646000	response	application/octet-stream
 
-query T rowsort
-SELECT decode(body) FROM '__TEST_DIR__/warc_gzip.lance';
+query I
+SELECT count(*) FROM '__TEST_DIR__/warc_gzip.lance';
 ----
-first
-second
+2

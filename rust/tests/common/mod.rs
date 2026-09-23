@@ -2,9 +2,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, BinaryArray, BooleanArray, Int64Array, RecordBatch, StringArray};
+use arrow_cast::cast;
+use arrow_schema::DataType;
 use arrow_select::concat::concat_batches;
 use futures::TryStreamExt;
-use lance::Dataset;
+use lance::{io::RecordBatchStream, Dataset};
 
 pub fn fixture(rows: usize) -> RecordBatch {
     let batch = RecordBatch::try_from_iter(vec![
@@ -56,18 +58,51 @@ pub fn fixture(rows: usize) -> RecordBatch {
 }
 
 pub async fn read_lance(path: &Path) -> RecordBatch {
-    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    let dataset = Arc::new(Dataset::open(path.to_str().unwrap()).await.unwrap());
     let mut scanner = dataset.scan();
     scanner.scan_in_order(true);
-    let batches: Vec<RecordBatch> = scanner
-        .try_into_stream()
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
-    let schema = Arc::new(arrow_schema::Schema::from(dataset.schema()));
-    concat_batches(&schema, &batches).unwrap()
+    let stream = scanner.try_into_stream().await.unwrap();
+    let schema = stream.schema();
+    let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    let batch = concat_batches(&schema, &batches).unwrap();
+    let logical_schema = arrow_schema::Schema::from(dataset.schema());
+    let blob_columns = logical_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| {
+            field
+                .metadata()
+                .get("ARROW:extension:name")
+                .is_some_and(|name| name == "lance.blob.v2")
+        })
+        .map(|(index, field)| (index, field.name().clone()))
+        .collect::<Vec<_>>();
+    if blob_columns.is_empty() {
+        return batch;
+    }
+
+    let row_indices = (0..batch.num_rows() as u64).collect::<Vec<_>>();
+    let mut fields = schema.fields().to_vec();
+    let mut columns = batch.columns().to_vec();
+    for (index, name) in blob_columns {
+        let blobs = dataset
+            .take_blobs_by_indices(&row_indices, &name)
+            .await
+            .unwrap();
+        let mut values = Vec::with_capacity(blobs.len());
+        for blob in blobs {
+            values.push(match blob {
+                Some(blob) => Some(blob.read().await.unwrap().to_vec()),
+                None => None,
+            });
+        }
+        fields[index] = Arc::new(arrow_schema::Field::new(name, DataType::Binary, true));
+        columns[index] = Arc::new(BinaryArray::from_iter(
+            values.iter().map(|value| value.as_deref()),
+        ));
+    }
+    RecordBatch::try_new(Arc::new(arrow_schema::Schema::new(fields)), columns).unwrap()
 }
 
 pub fn assert_values(actual: &RecordBatch, expected: &RecordBatch) {
@@ -78,10 +113,13 @@ pub fn assert_values(actual: &RecordBatch, expected: &RecordBatch) {
             actual.schema().field(i).name(),
             expected.schema().field(i).name()
         );
-        assert_eq!(
-            actual.column(i).to_data(),
-            expected.column(i).to_data(),
-            "column {i}"
-        );
+        let actual = if expected.schema().field(i).data_type() == &DataType::Binary
+            && actual.schema().field(i).data_type() != &DataType::Binary
+        {
+            cast(actual.column(i), &DataType::Binary).unwrap()
+        } else {
+            actual.column(i).clone()
+        };
+        assert_eq!(actual.to_data(), expected.column(i).to_data(), "column {i}");
     }
 }

@@ -13,6 +13,7 @@ crate-type = ["staticlib", "rlib"]
 anyhow = "1"
 async-trait = "0.1"
 arrow-array = { version = "58", features = ["ffi"] }
+arrow-cast = "58"
 arrow-schema = { version = "58", features = ["ffi"] }
 bytes = "1"
 datafusion-physical-plan = "54"

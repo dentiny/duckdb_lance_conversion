@@ -3,7 +3,7 @@
 Convert data into Lance datasets through DuckDB `COPY TO`, with the conversion
 core implemented in Rust. The native adapter converts a Parquet file or a
 directory of Parquet files into a Lance dataset, preserving supported column
-values without special blob or media processing.
+values and writing top-level binary columns as Lance Blob v2 columns.
 
 ## Usage
 
@@ -26,22 +26,51 @@ with the query's schema and zero rows.
 The output is a **dataset directory**. Its parent must exist, and by default the
 output path must not exist, even as an empty directory.
 
-### Overwrite
+### Write modes
 
-`OVERWRITE` is the only optional COPY parameter:
+The default mode is `Create`: the destination must not already exist. Use
+`APPEND` to add rows to an existing compatible dataset:
+
+```sql
+COPY (SELECT * FROM read_parquet('next.parquet'))
+TO 'output.lance' (FORMAT LANCE, APPEND);
+```
+
+Use `OVERWRITE` to replace the current contents:
 
 ```sql
 COPY (SELECT * FROM read_parquet('input.parquet'))
 TO 'output.lance' (FORMAT LANCE, OVERWRITE);
 ```
 
-It creates a new dataset or publishes a new version of an existing valid Lance
-dataset after successful conversion. Previous versions remain in Lance storage.
-Ordinary files and non-dataset directories are rejected. `OVERWRITE false`
-retains the default existing-path protection.
+`APPEND` and `OVERWRITE` publish a new Lance dataset version after a successful
+write. `OVERWRITE` also creates the dataset when it does not exist. Previous
+versions remain in Lance storage. `APPEND false` and `OVERWRITE false` select
+the default `Create` mode. The two options cannot be specified together.
 
-Other COPY options, including `APPEND`, `PARTITION_BY`, `PER_THREAD_OUTPUT`, and
-`USE_TMP_FILE`, are rejected. Lance's default writer settings are used.
+Other DuckDB file-layout options, including `PARTITION_BY`,
+`PER_THREAD_OUTPUT`, and `USE_TMP_FILE`, are rejected.
+
+### Lance writer options
+
+Size options are specified in bytes:
+
+- `BLOB_INLINE_SIZE_THRESHOLD` defaults to 2 MiB.
+- `BLOB_DEDICATED_SIZE_THRESHOLD` defaults to 16 MiB. Values above it use
+  dedicated storage; values between the two thresholds use packed storage.
+- `TARGET_FILE_SIZE` defaults to 512 MiB and is a soft maximum data-file size.
+
+For example:
+
+```sql
+COPY (SELECT id, body FROM source)
+TO 'output.lance' (
+    FORMAT LANCE,
+    BLOB_INLINE_SIZE_THRESHOLD 1048576,
+    BLOB_DEDICATED_SIZE_THRESHOLD 8388608,
+    TARGET_FILE_SIZE 268435456
+);
+```
 
 ### Types and conversion limits
 
@@ -63,9 +92,12 @@ Explicitly cast unsupported columns to a supported type before exporting,
 for example `uuid_column::VARCHAR` or `NULL::INTEGER`. NULL values within
 supported typed columns are allowed.
 
-Binary values remain ordinary binary columns. Conversion does not preserve
-original Parquet encodings, field IDs, key/value metadata, or Hugging Face feature
-metadata. Rust allocations are not accounted for by DuckDB's `memory_limit`.
+Top-level `BLOB` columns use Lance Blob v2 storage. Depending on the reader,
+they may be exposed as a logical struct containing `data` and `uri`. Nested
+binary fields remain ordinary binary columns. Conversion does not preserve
+original Parquet encodings, field IDs, key/value metadata, or Hugging Face
+feature metadata. Rust allocations are not accounted for by DuckDB's
+`memory_limit`.
 
 ### S3-compatible storage
 
@@ -102,11 +134,14 @@ output. A subsequent DuckDB transaction rollback does not roll back Lance writes
 The standalone core can convert Parquet without DuckDB:
 
 ```rust
-use lance_conversion::{convert, LanceSink, ParquetFileSource, WriteOptions};
+use lance_conversion::{convert, LanceSink, ParquetFileSource, WriteMode, WriteOptions};
 
 let result = convert(
     ParquetFileSource::new("input.parquet").with_batch_size(8192),
-    LanceSink::new("output.lance", WriteOptions::default()),
+    LanceSink::new("output.lance", WriteOptions {
+        mode: WriteMode::Create,
+        ..WriteOptions::default()
+    }),
 ).await?;
 println!("{} rows written", result.rows_written);
 ```
