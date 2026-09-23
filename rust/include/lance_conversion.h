@@ -31,6 +31,8 @@ struct LanceWriteConfig {
 	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
 	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
 	int64_t target_file_size = 512 * 1024 * 1024;
+	const char *const *blob_columns = NULL;
+	size_t blob_column_count = 0;
 };
 
 #ifdef __cplusplus

@@ -24,6 +24,7 @@ struct LanceBindData : public FunctionData {
 	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
 	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
 	int64_t target_file_size = 512 * 1024 * 1024;
+	vector<string> blob_columns;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<LanceBindData>();
@@ -35,6 +36,7 @@ struct LanceBindData : public FunctionData {
 		result->blob_inline_size_threshold = blob_inline_size_threshold;
 		result->blob_dedicated_size_threshold = blob_dedicated_size_threshold;
 		result->target_file_size = target_file_size;
+		result->blob_columns = blob_columns;
 		return std::move(result);
 	}
 	bool Equals(const FunctionData &other_p) const override {
@@ -42,7 +44,7 @@ struct LanceBindData : public FunctionData {
 		return names == other.names && types == other.types && mode == other.mode && s3 == other.s3 &&
 		       blob_inline_size_threshold == other.blob_inline_size_threshold &&
 		       blob_dedicated_size_threshold == other.blob_dedicated_size_threshold &&
-		       target_file_size == other.target_file_size;
+		       target_file_size == other.target_file_size && blob_columns == other.blob_columns;
 	}
 };
 
@@ -105,6 +107,39 @@ int64_t ParseSizeOption(ClientContext &context, const string &name, const vector
 	return value;
 }
 
+vector<string> ParseBlobColumns(ClientContext &context, const vector<Value> &values, const vector<string> &names,
+                                const vector<LogicalType> &types) {
+	if (values.empty()) {
+		throw BinderException("BLOB_COLUMNS requires at least one column");
+	}
+	vector<string> result;
+	for (const auto &value : values) {
+		if (value.IsNull()) {
+			throw BinderException("BLOB_COLUMNS cannot contain NULL");
+		}
+		auto requested = value.CastAs(context, LogicalType::VARCHAR).GetValue<string>();
+		idx_t index;
+		for (index = 0; index < names.size(); index++) {
+			if (StringUtil::CIEquals(names[index], requested)) {
+				break;
+			}
+		}
+		if (index == names.size()) {
+			throw BinderException("BLOB_COLUMNS column not found: %s", requested);
+		}
+		if (types[index].id() != LogicalTypeId::VARCHAR) {
+			throw BinderException("BLOB_COLUMNS column must be VARCHAR: %s", names[index]);
+		}
+		for (const auto &column : result) {
+			if (StringUtil::CIEquals(column, names[index])) {
+				throw BinderException("Duplicate BLOB_COLUMNS column: %s", names[index]);
+			}
+		}
+		result.push_back(names[index]);
+	}
+	return result;
+}
+
 unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput &input, const vector<string> &names,
                                    const vector<LogicalType> &types) {
 	auto result = make_uniq<LanceBindData>();
@@ -133,7 +168,7 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			    option.second.empty() || option.second[0].CastAs(context, LogicalType::BOOLEAN).GetValue<bool>();
 			if (enabled) {
 				result->mode = StringUtil::CIEquals(option.first, "overwrite") ? LANCE_WRITE_MODE_OVERWRITE
-				                                                             : LANCE_WRITE_MODE_APPEND;
+				                                                               : LANCE_WRITE_MODE_APPEND;
 			}
 		} else if (StringUtil::CIEquals(option.first, "blob_inline_size_threshold")) {
 			result->blob_inline_size_threshold = ParseSizeOption(context, option.first, option.second);
@@ -147,6 +182,8 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			if (result->target_file_size == 0) {
 				throw BinderException("TARGET_FILE_SIZE must be greater than zero");
 			}
+		} else if (StringUtil::CIEquals(option.first, "blob_columns")) {
+			result->blob_columns = ParseBlobColumns(context, option.second, names, types);
 		} else {
 			throw BinderException("Unsupported option for FORMAT LANCE: %s", option.first);
 		}
@@ -159,8 +196,8 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 		result->s3 = true;
 		return std::move(result);
 	}
-	if (result->mode == LANCE_WRITE_MODE_CREATE &&
-	    (fs.FileExists(fs.ExpandPath(input.info.file_path)) || fs.DirectoryExists(fs.ExpandPath(input.info.file_path)))) {
+	if (result->mode == LANCE_WRITE_MODE_CREATE && (fs.FileExists(fs.ExpandPath(input.info.file_path)) ||
+	                                                fs.DirectoryExists(fs.ExpandPath(input.info.file_path)))) {
 		throw IOException("Lance destination must not exist: %s", input.info.file_path);
 	}
 	return std::move(result);
@@ -176,6 +213,12 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	write_config.blob_inline_size_threshold = bind.blob_inline_size_threshold;
 	write_config.blob_dedicated_size_threshold = bind.blob_dedicated_size_threshold;
 	write_config.target_file_size = bind.target_file_size;
+	vector<const char *> blob_columns;
+	for (const auto &column : bind.blob_columns) {
+		blob_columns.push_back(column.c_str());
+	}
+	write_config.blob_columns = blob_columns.data();
+	write_config.blob_column_count = blob_columns.size();
 	LanceS3Config s3;
 	const LanceS3Config *s3_ptr = nullptr;
 	LanceS3Options options;

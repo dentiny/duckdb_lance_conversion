@@ -47,6 +47,8 @@ pub struct LanceWriteConfig {
     blob_inline_size_threshold: i64,
     blob_dedicated_size_threshold: i64,
     target_file_size: i64,
+    blob_columns: *const *const c_char,
+    blob_column_count: usize,
 }
 
 pub struct LanceConversionWriter {
@@ -129,6 +131,24 @@ unsafe fn optional_string(value: *const c_char) -> Result<Option<String>> {
     }
     let value = CStr::from_ptr(value).to_str()?.to_owned();
     Ok((!value.is_empty()).then_some(value))
+}
+
+unsafe fn string_list(values: *const *const c_char, count: usize) -> Result<Vec<String>> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if values.is_null() {
+        return Err(Error::message("null string list"));
+    }
+    std::slice::from_raw_parts(values, count)
+        .iter()
+        .map(|value| {
+            if value.is_null() {
+                return Err(Error::message("null string list value"));
+            }
+            Ok(CStr::from_ptr(*value).to_str()?.to_owned())
+        })
+        .collect()
 }
 
 unsafe fn s3_config(config: *const LanceS3Config) -> Result<Option<S3StorageConfig>> {
@@ -223,6 +243,7 @@ pub unsafe extern "C" fn lance_conversion_open(
                 false,
             )?
             .unwrap_or_else(|| WriteOptions::default().target_file_size),
+            blob_columns: string_list(config.blob_columns, config.blob_column_count)?,
         };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

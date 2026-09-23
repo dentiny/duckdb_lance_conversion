@@ -14,7 +14,7 @@ use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
 pub use lance::dataset::write::WriteMode;
 use lance::{
     blob_field_with_options,
-    dataset::write::{InsertBuilder, WriteParams},
+    dataset::write::{ExternalBlobMode, InsertBuilder, WriteParams},
     session::Session,
     BlobFieldOptions,
 };
@@ -40,6 +40,7 @@ pub struct WriteOptions {
     pub blob_inline_size_threshold: Option<usize>,
     pub blob_dedicated_size_threshold: Option<usize>,
     pub target_file_size: usize,
+    pub blob_columns: Vec<String>,
 }
 
 impl Default for WriteOptions {
@@ -50,6 +51,7 @@ impl Default for WriteOptions {
             blob_inline_size_threshold: Some(DEFAULT_BLOB_INLINE_SIZE_THRESHOLD),
             blob_dedicated_size_threshold: Some(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
             target_file_size: DEFAULT_TARGET_FILE_SIZE,
+            blob_columns: Vec::new(),
         }
     }
 }
@@ -221,11 +223,14 @@ impl LanceWriter {
 fn transform_blob_batch(
     batch: RecordBatch,
     schema: SchemaRef,
-    blob_columns: &[usize],
+    binary_blob_columns: &[usize],
+    uri_blob_columns: &[usize],
 ) -> std::result::Result<RecordBatch, ArrowError> {
     let mut columns = Vec::with_capacity(batch.num_columns());
     for (index, column) in batch.columns().iter().enumerate() {
-        if blob_columns.binary_search(&index).is_err() {
+        let is_binary = binary_blob_columns.binary_search(&index).is_ok();
+        let is_uri = uri_blob_columns.binary_search(&index).is_ok();
+        if !is_binary && !is_uri {
             columns.push(column.clone());
             continue;
         }
@@ -236,8 +241,17 @@ fn transform_blob_batch(
                 field.name()
             )));
         };
-        let data = cast(column, &DataType::LargeBinary)?;
-        let uri = new_null_array(&DataType::Utf8, column.len());
+        let (data, uri) = if is_uri {
+            (
+                new_null_array(&DataType::LargeBinary, column.len()),
+                cast(column, &DataType::Utf8)?,
+            )
+        } else {
+            (
+                cast(column, &DataType::LargeBinary)?,
+                new_null_array(&DataType::Utf8, column.len()),
+            )
+        };
         columns.push(Arc::new(StructArray::try_new(
             children.clone(),
             vec![data, uri],
@@ -253,6 +267,7 @@ fn configure_blob_storage(
 ) -> Result<SendableRecordBatchStream> {
     if options.blob_inline_size_threshold.is_none()
         && options.blob_dedicated_size_threshold.is_none()
+        && options.blob_columns.is_empty()
     {
         return Ok(stream);
     }
@@ -269,7 +284,7 @@ fn configure_blob_storage(
     }
 
     let input_schema = stream.schema();
-    let blob_columns = input_schema
+    let binary_blob_columns = input_schema
         .fields()
         .iter()
         .enumerate()
@@ -281,6 +296,29 @@ fn configure_blob_storage(
             .then_some(index)
         })
         .collect::<Vec<_>>();
+    let mut uri_blob_columns = options
+        .blob_columns
+        .iter()
+        .map(|name| {
+            let index = input_schema.index_of(name).map_err(|_| {
+                Error::invalid_argument(format!("BLOB_COLUMNS column not found: {name}"))
+            })?;
+            ensure_uri_column(input_schema.field(index).data_type(), name)?;
+            Ok(index)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    uri_blob_columns.sort_unstable();
+    if uri_blob_columns
+        .windows(2)
+        .any(|indices| indices[0] == indices[1])
+    {
+        return Err(Error::invalid_argument(
+            "BLOB_COLUMNS cannot contain duplicate columns",
+        ));
+    }
+    let mut blob_columns = binary_blob_columns.clone();
+    blob_columns.extend_from_slice(&uri_blob_columns);
+    blob_columns.sort_unstable();
     if blob_columns.is_empty() {
         return Ok(stream);
     }
@@ -311,13 +349,27 @@ fn configure_blob_storage(
         Ok(transform_blob_batch(
             batch,
             batch_schema.clone(),
-            &blob_columns,
+            &binary_blob_columns,
+            &uri_blob_columns,
         )?)
     });
     Ok(Box::pin(RecordBatchStreamAdapter::new(
         output_schema,
         batches,
     )))
+}
+
+fn ensure_uri_column(data_type: &DataType, name: &str) -> Result<()> {
+    if matches!(
+        data_type,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+    ) {
+        Ok(())
+    } else {
+        Err(Error::invalid_argument(format!(
+            "BLOB_COLUMNS column must be a string: {name}"
+        )))
+    }
 }
 
 async fn write_stream(
@@ -356,6 +408,11 @@ async fn write_dataset(
     let mut params = WriteParams {
         mode: options.mode,
         max_bytes_per_file: options.target_file_size,
+        external_blob_mode: if options.blob_columns.is_empty() {
+            ExternalBlobMode::Reference
+        } else {
+            ExternalBlobMode::Ingest
+        },
         ..Default::default()
     };
     let session = Session::default();
