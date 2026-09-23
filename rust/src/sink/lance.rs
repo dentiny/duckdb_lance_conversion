@@ -196,22 +196,21 @@ async fn reserve_destination(destination: &OpendalStorage, overwrite: bool) -> R
         !destination.object_path.as_ref().is_empty(),
         "Lance destination must not be a storage root"
     );
+    if !destination.is_local {
+        return Ok(!overwrite);
+    }
+
     let prefix = format!("{}/", destination.object_path);
-    let exists = if destination.is_local {
-        destination
-            .operator
-            .exists(destination.object_path.as_ref())
-            .await?
-    } else {
-        let mut entries = destination.operator.lister(&prefix).await?;
-        entries.try_next().await?.is_some()
-    };
+    let exists = destination
+        .operator
+        .exists(destination.object_path.as_ref())
+        .await?;
     ensure!(
         !exists || overwrite,
         "Lance destination must not exist: {}",
         destination.location
     );
-    if !exists && destination.is_local {
+    if !exists {
         destination.operator.create_dir(&prefix).await?;
     }
     Ok(!exists)
@@ -233,7 +232,7 @@ async fn write_reserved_stream(
         .catch_unwind()
         .await
         .unwrap_or_else(|_| Err(anyhow!("Lance writer task panicked")));
-    if result.is_err() && owns_destination {
+    if result.is_err() && owns_destination && destination.is_local {
         let _ = destination
             .operator
             .delete_with(&format!("{}/", destination.object_path))
