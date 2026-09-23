@@ -1,0 +1,45 @@
+# name: test/sql/lance_blob_columns.test
+# description: Ingest URI strings as Lance Blob v2 columns
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT *
+    FROM (VALUES
+        (1, 'test/data/records.warc'),
+        (2, NULL)
+    ) t(id, uri)
+) TO '__TEST_DIR__/blob_columns.lance' (
+    FORMAT LANCE,
+    BLOB_COLUMNS (uri)
+);
+----
+2
+
+statement error
+COPY (SELECT 'test/data/records.warc' AS uri) TO '__TEST_DIR__/missing_blob_column.lance' (
+    FORMAT LANCE,
+    BLOB_COLUMNS (missing)
+);
+----
+BLOB_COLUMNS column not found
+
+statement error
+COPY (SELECT 1 AS uri) TO '__TEST_DIR__/invalid_blob_column.lance' (
+    FORMAT LANCE,
+    BLOB_COLUMNS (uri)
+);
+----
+BLOB_COLUMNS column must be VARCHAR
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/blob_columns.lance';
+----
+2

@@ -72,6 +72,26 @@ TO 'output.lance' (
 );
 ```
 
+`BLOB_COLUMNS` converts selected top-level `VARCHAR` columns containing local
+paths or URIs into Lance Blob v2 columns. Lance asynchronously reads each
+referenced object during the write and stores its bytes using the thresholds
+above; it does not retain the source URI as an external reference. NULL values
+remain NULL.
+
+```sql
+COPY (
+    SELECT id, image_url, audio_url
+    FROM read_parquet('metadata.parquet')
+)
+TO 'media.lance' (
+    FORMAT LANCE,
+    BLOB_COLUMNS (image_url, audio_url)
+);
+```
+
+Every named column must exist and have type `VARCHAR`. A failed object read
+fails the COPY.
+
 ### Types and conversion limits
 
 Supported DuckDB types are booleans, signed/unsigned integers through 64 bits,
