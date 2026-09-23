@@ -380,6 +380,7 @@ than `Decimal128`. It does not automatically cast them.
 
 ## TODO
 
+- Add conversion metrics and runtime observability.
 - Expand round-trip coverage for decimal, temporal, and nested types, including
   nested arrays.
 - Add crash recovery and resumable conversions.
