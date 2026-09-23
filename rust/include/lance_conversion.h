@@ -36,7 +36,7 @@ void lance_conversion_destroy(struct LanceConversionWriter *writer);
 char *lance_huggingface_open(const char *dataset, const char *config, const char *split, const char *token,
                              struct HuggingFaceStreamFactory **output);
 char *lance_huggingface_get_schema(const struct HuggingFaceStreamFactory *factory, struct ArrowSchema *output);
-char *lance_huggingface_get_stream(const struct HuggingFaceStreamFactory *factory, struct ArrowArrayStream *output);
+char *lance_huggingface_get_stream(struct HuggingFaceStreamFactory *factory, struct ArrowArrayStream *output);
 void lance_huggingface_destroy(struct HuggingFaceStreamFactory *factory);
 
 #ifdef __cplusplus

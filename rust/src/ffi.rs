@@ -1,7 +1,7 @@
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use arrow_array::{
     ffi::{from_ffi_and_data_type, FFI_ArrowArray},
@@ -61,7 +61,7 @@ pub struct HuggingFaceStreamFactory {
     split: String,
     token: Option<String>,
     schema: SchemaRef,
-    reader: Mutex<Option<HuggingFaceBatchReader>>,
+    reader: Option<HuggingFaceBatchReader>,
 }
 
 impl HuggingFaceStreamFactory {
@@ -232,7 +232,7 @@ pub unsafe extern "C" fn lance_huggingface_open(
             split,
             token,
             schema,
-            reader: Mutex::new(Some(reader)),
+            reader: Some(reader),
         }));
         Ok(())
     })
@@ -257,19 +257,15 @@ pub unsafe extern "C" fn lance_huggingface_get_schema(
 
 #[no_mangle]
 pub unsafe extern "C" fn lance_huggingface_get_stream(
-    factory: *const HuggingFaceStreamFactory,
+    factory: *mut HuggingFaceStreamFactory,
     output: *mut FFI_ArrowArrayStream,
 ) -> *mut c_char {
     call(|| {
         if factory.is_null() || output.is_null() {
             return Err(Error::message("null Hugging Face stream argument"));
         }
-        let factory = &*factory;
-        let reader = factory
-            .reader
-            .lock()
-            .map_err(|_| Error::message("Hugging Face stream factory lock was poisoned"))?
-            .take();
+        let factory = &mut *factory;
+        let reader = factory.reader.take();
         let reader = match reader {
             Some(reader) => reader,
             None => factory.open_reader()?,
