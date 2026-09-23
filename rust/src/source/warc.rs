@@ -108,6 +108,7 @@ impl BatchSource for WarcSource {
                 // `warc` parses `BufRead`; OpenDAL I/O remains async through this bridge.
                 let reader = SyncIoBridge::new_with_handle(reader, runtime);
                 let reader: Box<dyn BufRead> = if gzipped {
+                    let reader = BufReader::with_capacity(READ_BUFFER_SIZE, reader);
                     Box::new(BufReader::new(MultiDecoder::new(reader)?))
                 } else {
                     Box::new(BufReader::with_capacity(READ_BUFFER_SIZE, reader))
