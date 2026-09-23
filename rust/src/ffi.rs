@@ -5,11 +5,16 @@ use std::sync::Arc;
 
 use arrow_array::{
     ffi::{from_ffi_and_data_type, FFI_ArrowArray},
-    RecordBatch, StructArray,
+    ffi_stream::FFI_ArrowArrayStream,
+    RecordBatch, RecordBatchReader, StructArray,
 };
-use arrow_schema::{ffi::FFI_ArrowSchema, DataType, Schema};
+use arrow_schema::{ffi::FFI_ArrowSchema, ArrowError, DataType, Schema, SchemaRef};
+use futures::TryStreamExt;
 
-use crate::{Error, LanceWriter, Result, S3StorageConfig, WriteOptions};
+use crate::{
+    BatchSource, BatchStream, Error, HuggingFaceSource, LanceWriter, Result, S3StorageConfig,
+    WriteOptions,
+};
 
 #[repr(C)]
 pub struct LanceS3Config {
@@ -25,6 +30,34 @@ pub struct LanceS3Config {
 pub struct LanceConversionWriter {
     sink: LanceWriter,
     runtime: tokio::runtime::Runtime,
+}
+
+struct HuggingFaceBatchReader {
+    schema: SchemaRef,
+    stream: BatchStream,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl Iterator for HuggingFaceBatchReader {
+    type Item = std::result::Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.runtime
+            .block_on(self.stream.try_next())
+            .transpose()
+            .map(|result| result.map_err(|error| ArrowError::ExternalError(Box::new(error))))
+    }
+}
+
+impl RecordBatchReader for HuggingFaceBatchReader {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
+
+pub struct HuggingFaceStreamFactory {
+    schema: SchemaRef,
+    reader: Option<HuggingFaceBatchReader>,
 }
 
 unsafe fn optional_string(value: *const c_char) -> Result<Option<String>> {
@@ -136,6 +169,90 @@ pub unsafe extern "C" fn lance_conversion_destroy(writer: *mut LanceConversionWr
             let mut writer = Box::from_raw(writer);
             let LanceConversionWriter { sink, runtime } = &mut *writer;
             runtime.block_on(sink.abort());
+        }
+    }));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_huggingface_open(
+    dataset: *const c_char,
+    config: *const c_char,
+    split: *const c_char,
+    token: *const c_char,
+    output: *mut *mut HuggingFaceStreamFactory,
+) -> *mut c_char {
+    call(|| {
+        if dataset.is_null() || config.is_null() || split.is_null() || output.is_null() {
+            return Err(Error::message("null Hugging Face reader argument"));
+        }
+        *output = ptr::null_mut();
+        let dataset = CStr::from_ptr(dataset).to_str()?;
+        let config = CStr::from_ptr(config).to_str()?;
+        let split = CStr::from_ptr(split).to_str()?;
+        let token = optional_string(token)?;
+        let mut source = HuggingFaceSource::new(dataset)
+            .with_config(config)
+            .with_split(split);
+        if let Some(token) = token {
+            source = source.with_token(token);
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let (schema, stream) = runtime.block_on(source.open())?;
+        let reader = HuggingFaceBatchReader {
+            schema: schema.clone(),
+            stream,
+            runtime,
+        };
+        *output = Box::into_raw(Box::new(HuggingFaceStreamFactory {
+            schema,
+            reader: Some(reader),
+        }));
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_huggingface_get_schema(
+    factory: *const HuggingFaceStreamFactory,
+    output: *mut FFI_ArrowSchema,
+) -> *mut c_char {
+    call(|| {
+        if factory.is_null() || output.is_null() {
+            return Err(Error::message("null Hugging Face schema argument"));
+        }
+        ptr::write(
+            output,
+            FFI_ArrowSchema::try_from((&*factory).schema.as_ref())?,
+        );
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_huggingface_get_stream(
+    factory: *mut HuggingFaceStreamFactory,
+    output: *mut FFI_ArrowArrayStream,
+) -> *mut c_char {
+    call(|| {
+        if factory.is_null() || output.is_null() {
+            return Err(Error::message("null Hugging Face stream argument"));
+        }
+        let reader = (&mut *factory)
+            .reader
+            .take()
+            .ok_or_else(|| Error::message("Hugging Face stream was already opened"))?;
+        ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_huggingface_destroy(factory: *mut HuggingFaceStreamFactory) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !factory.is_null() {
+            drop(Box::from_raw(factory));
         }
     }));
 }

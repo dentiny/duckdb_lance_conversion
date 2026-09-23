@@ -7,7 +7,9 @@ use futures::Stream;
 
 use crate::Result;
 
+mod huggingface;
 mod parquet;
+pub use huggingface::HuggingFaceSource;
 pub use parquet::ParquetFileSource;
 
 pub type BatchStream = Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send + 'static>>;

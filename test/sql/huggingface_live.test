@@ -1,0 +1,17 @@
+# name: test/sql/huggingface_live.test
+# description: Live Hugging Face reader to Lance COPY
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT * FROM read_huggingface('lhoestq/demo1')
+) TO '__TEST_DIR__/huggingface.lance' (FORMAT LANCE);
+----
+5
+
+query I
+SELECT count(*) > 0 FROM glob('__TEST_DIR__/huggingface.lance/_versions/*');
+----
+true
