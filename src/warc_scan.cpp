@@ -25,10 +25,16 @@ public:
 	WarcStreamFactory *factory;
 };
 
-unique_ptr<ArrowArrayStreamWrapper> ProduceWarcStream(uintptr_t factory_ptr, ArrowStreamParameters &) {
+unique_ptr<ArrowArrayStreamWrapper> ProduceWarcStream(uintptr_t factory_ptr, ArrowStreamParameters &parameters) {
 	auto result = make_uniq<ArrowArrayStreamWrapper>();
+	vector<const char *> columns;
+	columns.reserve(parameters.projected_columns.columns.size());
+	for (const auto &column : parameters.projected_columns.columns) {
+		columns.push_back(column.c_str());
+	}
 	ThrowIfLanceError(
-	    lance_warc_get_stream(reinterpret_cast<WarcStreamFactory *>(factory_ptr), &result->arrow_array_stream),
+	    lance_warc_get_stream(reinterpret_cast<WarcStreamFactory *>(factory_ptr), columns.data(), columns.size(),
+	                          &result->arrow_array_stream),
 	    "WARC reader");
 	return result;
 }
@@ -60,7 +66,6 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 	names = result->arrow_table.GetNames();
 	return_types = result->arrow_table.GetTypes();
 	result->all_types = return_types;
-	result->projection_pushdown_enabled = false;
 	return std::move(result);
 }
 
@@ -69,6 +74,7 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 void RegisterWarcScanFunction(ExtensionLoader &loader) {
 	TableFunction function("read_warc", {LogicalType::VARCHAR}, ArrowTableFunction::ArrowScanFunction, BindWarc,
 	                       ArrowTableFunction::ArrowScanInitGlobal, ArrowTableFunction::ArrowScanInitLocal);
+	function.projection_pushdown = true;
 	loader.RegisterFunction(function);
 }
 

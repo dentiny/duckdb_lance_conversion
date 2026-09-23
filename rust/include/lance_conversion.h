@@ -42,7 +42,8 @@ void lance_huggingface_destroy(struct HuggingFaceStreamFactory *factory);
 
 char *lance_warc_open(const char *path, const struct LanceS3Config *s3, struct WarcStreamFactory **output);
 char *lance_warc_get_schema(const struct WarcStreamFactory *factory, struct ArrowSchema *output);
-char *lance_warc_get_stream(const struct WarcStreamFactory *factory, struct ArrowArrayStream *output);
+char *lance_warc_get_stream(const struct WarcStreamFactory *factory, const char *const *columns, size_t column_count,
+                            struct ArrowArrayStream *output);
 void lance_warc_destroy(struct WarcStreamFactory *factory);
 
 #ifdef __cplusplus

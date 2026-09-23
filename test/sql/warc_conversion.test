@@ -31,6 +31,13 @@ EXECUTE warc_scan;
 ----
 2
 
+query TTI rowsort
+SELECT type, id, epoch_ms(date)
+FROM read_warc('test/data/records.warc');
+----
+response	<urn:uuid:1>	1704164645000
+response	<urn:uuid:2>	1704164646000
+
 restart no_extension_load
 
 statement ok

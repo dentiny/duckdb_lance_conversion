@@ -82,8 +82,8 @@ pub struct WarcStreamFactory {
 }
 
 impl WarcStreamFactory {
-    fn open_reader(&self) -> Result<ArrowBatchReader> {
-        let mut source = WarcSource::new(&self.path);
+    fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
+        let mut source = WarcSource::new(&self.path).with_projection(projection);
         if let Some(config) = &self.s3_config {
             source = source.with_s3_config(config.clone());
         }
@@ -336,13 +336,36 @@ pub unsafe extern "C" fn lance_warc_get_schema(
 #[no_mangle]
 pub unsafe extern "C" fn lance_warc_get_stream(
     factory: *const WarcStreamFactory,
+    columns: *const *const c_char,
+    column_count: usize,
     output: *mut FFI_ArrowArrayStream,
 ) -> *mut c_char {
     call(|| {
         if factory.is_null() || output.is_null() {
             return Err(Error::message("null WARC stream argument"));
         }
-        let reader = (&*factory).open_reader()?;
+        if column_count != 0 && columns.is_null() {
+            return Err(Error::message("null WARC projection"));
+        }
+        let schema = warc_schema();
+        let columns = if column_count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(columns, column_count)
+        };
+        let projection = columns
+            .iter()
+            .map(|&column| {
+                if column.is_null() {
+                    return Err(Error::message("null WARC column name"));
+                }
+                let name = CStr::from_ptr(column).to_str()?;
+                schema
+                    .index_of(name)
+                    .map_err(|_| Error::message(format!("unknown WARC column: {name}")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let reader = (&*factory).open_reader(projection)?;
         ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
         Ok(())
     })

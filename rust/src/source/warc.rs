@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, LazyLock};
 
@@ -12,7 +12,7 @@ use libflate::gzip::MultiDecoder;
 use tokio::sync::mpsc;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tokio_util::io::SyncIoBridge;
-use warc::{BufferedBody, Record, WarcHeader, WarcReader};
+use warc::{Record, StreamingBody, WarcHeader, WarcReader};
 
 use super::{BatchSource, BatchStream};
 use crate::storage::OpendalStorage;
@@ -56,10 +56,67 @@ pub fn warc_schema() -> SchemaRef {
     WARC_SCHEMA.clone()
 }
 
+struct WarcMetadata {
+    id: String,
+    content_length: u32,
+    date: i64,
+    record_type: String,
+    optional_strings: [Option<String>; 13],
+    segment_number: Option<u32>,
+    segment_total_length: Option<u32>,
+}
+
+fn optional_u32(value: Option<String>, name: &str) -> Result<Option<u32>> {
+    value
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| Error::message(format!("invalid WARC {name}: {value}")))
+        })
+        .transpose()
+}
+
+fn record_metadata<R: Read>(record: &Record<StreamingBody<'_, R>>) -> Result<WarcMetadata> {
+    let optional_header = |header| record.header(header).map(|value| value.into_owned());
+    let segment_number =
+        optional_u32(optional_header(WarcHeader::SegmentNumber), "segment number")?;
+    let segment_total_length = optional_u32(
+        optional_header(WarcHeader::SegmentTotalLength),
+        "segment total length",
+    )?;
+    let optional_strings = [
+        WarcHeader::ContentType,
+        WarcHeader::ConcurrentTo,
+        WarcHeader::BlockDigest,
+        WarcHeader::PayloadDigest,
+        WarcHeader::IPAddress,
+        WarcHeader::RefersTo,
+        WarcHeader::TargetURI,
+        WarcHeader::Truncated,
+        WarcHeader::WarcInfoID,
+        WarcHeader::Filename,
+        WarcHeader::Profile,
+        WarcHeader::IdentifiedPayloadType,
+        WarcHeader::SegmentOriginID,
+    ]
+    .map(optional_header);
+    Ok(WarcMetadata {
+        id: record.warc_id().to_owned(),
+        content_length: u32::try_from(record.content_length())
+            .map_err(|_| Error::message("WARC record body exceeds UInt32"))?,
+        date: record.date().timestamp_millis(),
+        record_type: record.warc_type().to_string(),
+        optional_strings,
+        segment_number,
+        segment_total_length,
+    })
+}
+
 pub struct WarcSource {
     path: String,
     batch_size: usize,
     s3_config: Option<S3StorageConfig>,
+    projection: Option<Vec<usize>>,
 }
 
 impl WarcSource {
@@ -68,6 +125,7 @@ impl WarcSource {
             path: path.into(),
             batch_size: DEFAULT_BATCH_SIZE,
             s3_config: None,
+            projection: None,
         }
     }
 
@@ -80,6 +138,11 @@ impl WarcSource {
         self.s3_config = Some(config);
         self
     }
+
+    pub fn with_projection(mut self, projection: Vec<usize>) -> Self {
+        self.projection = Some(projection);
+        self
+    }
 }
 
 impl BatchSource for WarcSource {
@@ -87,6 +150,20 @@ impl BatchSource for WarcSource {
         if self.batch_size == 0 {
             return Err(Error::message("batch_size must be positive"));
         }
+        let full_schema = warc_schema();
+        let projection = self
+            .projection
+            .unwrap_or_else(|| (0..full_schema.fields().len()).collect());
+        let fields =
+            projection
+                .iter()
+                .map(|&index| {
+                    full_schema.fields().get(index).cloned().ok_or_else(|| {
+                        Error::message(format!("invalid WARC column index: {index}"))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+        let schema = Arc::new(Schema::new(fields));
         let storage = OpendalStorage::from_path(&self.path, self.s3_config.as_ref())?;
         let path = storage.object_path.to_string();
         if path.is_empty() {
@@ -103,6 +180,7 @@ impl BatchSource for WarcSource {
         let runtime = tokio::runtime::Handle::current();
         let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
         let batch_size = self.batch_size;
+        let stream_projection = projection;
         tokio::task::spawn_blocking(move || {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 // `warc` parses `BufRead`; OpenDAL I/O remains async through this bridge.
@@ -113,7 +191,7 @@ impl BatchSource for WarcSource {
                 } else {
                     Box::new(BufReader::with_capacity(READ_BUFFER_SIZE, reader))
                 };
-                stream_records(reader, batch_size, &sender)
+                stream_records(reader, batch_size, stream_projection, &sender)
             }));
             let error = match result {
                 Ok(Ok(())) => return,
@@ -135,38 +213,46 @@ impl BatchSource for WarcSource {
         let batches = stream::unfold(receiver, |mut receiver| async {
             receiver.recv().await.map(|batch| (batch, receiver))
         });
-        Ok((warc_schema(), Box::pin(batches)))
+        Ok((schema, Box::pin(batches)))
     }
 }
 
 fn stream_records(
     reader: Box<dyn BufRead>,
     batch_size: usize,
+    projection: Vec<usize>,
     sender: &mpsc::Sender<Result<RecordBatch>>,
 ) -> Result<()> {
+    let include_body = projection.contains(&19);
     let mut reader = WarcReader::new(reader);
-    let mut batch = WarcBatchBuilder::new(batch_size);
+    let mut batch = WarcBatchBuilder::new(batch_size, projection);
     let mut stream = reader.stream_records();
     while let Some(record) = stream.next_item() {
-        let record = record
-            .map_err(|error| Error::message(format!("WARC parse error: {error}")))?
-            .into_buffered()
-            .map_err(|error| Error::message(format!("WARC body error: {error}")))?;
+        let record =
+            record.map_err(|error| Error::message(format!("WARC parse error: {error}")))?;
+        let body_len = usize::try_from(record.content_length())
+            .map_err(|_| Error::message("WARC record body exceeds usize"))?;
         if !batch.is_empty()
-            && batch.would_exceed_body_limit(record.body().len())
-            && !send_batch(
-                std::mem::replace(&mut batch, WarcBatchBuilder::new(batch_size)),
-                sender,
-            )?
+            && batch.would_exceed_body_limit(body_len)
+            && !send_batch(batch.take_empty(batch_size), sender)?
         {
             return Ok(());
         }
-        batch.append(record)?;
+        let metadata = record_metadata(&record)?;
+        let body = if include_body {
+            Some(
+                record
+                    .into_buffered()
+                    .map_err(|error| Error::message(format!("WARC body error: {error}")))?
+                    .into_raw_parts()
+                    .1,
+            )
+        } else {
+            None
+        };
+        batch.append(metadata, body)?;
         if (batch.len() == batch_size || batch.body_bytes() >= MAX_BATCH_BODY_BYTES)
-            && !send_batch(
-                std::mem::replace(&mut batch, WarcBatchBuilder::new(batch_size)),
-                sender,
-            )?
+            && !send_batch(batch.take_empty(batch_size), sender)?
         {
             return Ok(());
         }
@@ -181,27 +267,10 @@ fn send_batch(batch: WarcBatchBuilder, sender: &mpsc::Sender<Result<RecordBatch>
     Ok(sender.blocking_send(Ok(batch.finish()?)).is_ok())
 }
 
-fn optional_header(record: &Record<BufferedBody>, header: WarcHeader) -> Option<String> {
-    record.header(header).map(|value| value.into_owned())
-}
-
-fn optional_u32(
-    record: &Record<BufferedBody>,
-    header: WarcHeader,
-    name: &str,
-) -> Result<Option<u32>> {
-    optional_header(record, header)
-        .map(|value| {
-            value
-                .parse()
-                .map_err(|_| Error::message(format!("invalid WARC {name}: {value}")))
-        })
-        .transpose()
-}
-
 struct WarcBatchBuilder {
     len: usize,
     body_bytes: usize,
+    projection: Vec<usize>,
     id: StringBuilder,
     content_length: UInt32Builder,
     date: TimestampMillisecondBuilder,
@@ -209,14 +278,16 @@ struct WarcBatchBuilder {
     optional_strings: Vec<StringBuilder>,
     segment_number: UInt32Builder,
     segment_total_length: UInt32Builder,
-    body: BinaryViewBuilder,
+    body: Option<BinaryViewBuilder>,
 }
 
 impl WarcBatchBuilder {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, projection: Vec<usize>) -> Self {
+        let include_body = projection.contains(&19);
         Self {
             len: 0,
             body_bytes: 0,
+            projection,
             id: StringBuilder::with_capacity(capacity, capacity * 32),
             content_length: UInt32Builder::with_capacity(capacity),
             date: TimestampMillisecondBuilder::with_capacity(capacity),
@@ -226,7 +297,7 @@ impl WarcBatchBuilder {
                 .collect(),
             segment_number: UInt32Builder::with_capacity(capacity),
             segment_total_length: UInt32Builder::with_capacity(capacity),
-            body: BinaryViewBuilder::with_capacity(capacity),
+            body: include_body.then(|| BinaryViewBuilder::with_capacity(capacity)),
         }
     }
 
@@ -243,82 +314,82 @@ impl WarcBatchBuilder {
     }
 
     fn would_exceed_body_limit(&self, body_len: usize) -> bool {
-        self.body_bytes.saturating_add(body_len) > MAX_BATCH_BODY_BYTES
+        self.body.is_some() && self.body_bytes.saturating_add(body_len) > MAX_BATCH_BODY_BYTES
     }
 
-    fn append(&mut self, record: Record<BufferedBody>) -> Result<()> {
-        let body_len = record.body().len();
-        let body_len_u32 = u32::try_from(body_len)
-            .map_err(|_| Error::message("WARC record body exceeds UInt32"))?;
+    fn take_empty(&mut self, capacity: usize) -> Self {
+        let projection = self.projection.clone();
+        std::mem::replace(self, Self::new(capacity, projection))
+    }
 
-        self.id.append_value(record.warc_id());
-        self.content_length.append_value(body_len_u32);
-        self.date.append_value(record.date().timestamp_millis());
-        self.record_type
-            .append_value(record.warc_type().to_string());
-
-        let string_headers = [
-            WarcHeader::ContentType,
-            WarcHeader::ConcurrentTo,
-            WarcHeader::BlockDigest,
-            WarcHeader::PayloadDigest,
-            WarcHeader::IPAddress,
-            WarcHeader::RefersTo,
-            WarcHeader::TargetURI,
-            WarcHeader::Truncated,
-            WarcHeader::WarcInfoID,
-            WarcHeader::Filename,
-            WarcHeader::Profile,
-            WarcHeader::IdentifiedPayloadType,
-            WarcHeader::SegmentOriginID,
-        ];
-        for (builder, header) in self.optional_strings.iter_mut().zip(string_headers) {
-            builder.append_option(optional_header(&record, header));
+    fn append(&mut self, metadata: WarcMetadata, body: Option<Vec<u8>>) -> Result<()> {
+        self.id.append_value(metadata.id);
+        self.content_length.append_value(metadata.content_length);
+        self.date.append_value(metadata.date);
+        self.record_type.append_value(metadata.record_type);
+        for (builder, value) in self
+            .optional_strings
+            .iter_mut()
+            .zip(metadata.optional_strings)
+        {
+            builder.append_option(value);
         }
-        self.segment_number.append_option(optional_u32(
-            &record,
-            WarcHeader::SegmentNumber,
-            "segment number",
-        )?);
-        self.segment_total_length.append_option(optional_u32(
-            &record,
-            WarcHeader::SegmentTotalLength,
-            "segment total length",
-        )?);
-
-        let (_, body) = record.into_raw_parts();
-        let block = self.body.append_block(body.into());
-        self.body.try_append_view(block, 0, body_len_u32)?;
+        self.segment_number.append_option(metadata.segment_number);
+        self.segment_total_length
+            .append_option(metadata.segment_total_length);
+        if let (Some(builder), Some(body)) = (&mut self.body, body) {
+            let body_len = metadata.content_length;
+            let block = builder.append_block(body.into());
+            builder.try_append_view(block, 0, body_len)?;
+            self.body_bytes += body_len as usize;
+        }
         self.len += 1;
-        self.body_bytes += body_len;
         Ok(())
     }
 
     fn finish(mut self) -> Result<RecordBatch> {
         let mut strings = self.optional_strings.into_iter();
-        let columns: Vec<ArrayRef> = vec![
-            Arc::new(self.id.finish()),
-            Arc::new(self.content_length.finish()),
-            Arc::new(self.date.finish()),
-            Arc::new(self.record_type.finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(self.segment_number.finish()),
-            Arc::new(strings.next().unwrap().finish()),
-            Arc::new(self.segment_total_length.finish()),
-            Arc::new(self.body.finish()),
+        let all_columns: Vec<Option<ArrayRef>> = vec![
+            Some(Arc::new(self.id.finish())),
+            Some(Arc::new(self.content_length.finish())),
+            Some(Arc::new(self.date.finish())),
+            Some(Arc::new(self.record_type.finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(self.segment_number.finish())),
+            Some(Arc::new(strings.next().unwrap().finish())),
+            Some(Arc::new(self.segment_total_length.finish())),
+            self.body
+                .map(|mut body| Arc::new(body.finish()) as ArrayRef),
         ];
-        Ok(RecordBatch::try_new(warc_schema(), columns)?)
+        let columns = self
+            .projection
+            .iter()
+            .map(|&index| {
+                all_columns[index]
+                    .clone()
+                    .ok_or_else(|| Error::message("projected WARC column was not built"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let fields = self
+            .projection
+            .iter()
+            .map(|&index| warc_schema().field(index).clone())
+            .collect::<Vec<_>>();
+        Ok(RecordBatch::try_new(
+            Arc::new(Schema::new(fields)),
+            columns,
+        )?)
     }
 }
 
@@ -419,6 +490,19 @@ mod tests {
                 .sum::<usize>(),
             2
         );
+
+        let (schema, stream) = WarcSource::new(plain_path.to_string_lossy())
+            .with_projection(vec![0, 2])
+            .open()
+            .await
+            .unwrap();
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "date");
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert!(batches[0].column_by_name("body").is_none());
+
         tokio::fs::remove_dir_all(temp).await.unwrap();
     }
 
