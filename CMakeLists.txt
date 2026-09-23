@@ -8,7 +8,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include_directories(src/include rust/include)
 
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
-find_program(PROTOC_EXECUTABLE protoc REQUIRED)
 set(LANCE_CARGO_PROFILE
     "release"
     CACHE STRING "Cargo profile: dev or release")
@@ -38,8 +37,8 @@ add_custom_command(
   OUTPUT "${RUST_LIB}"
   COMMAND
     ${CMAKE_COMMAND} -E env --unset=CC --unset=CXX --unset=LD
-    "PROTOC=${PROTOC_EXECUTABLE}" ${CARGO_EXECUTABLE} build --locked --lib
-    --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml" --target-dir
+    ${CARGO_EXECUTABLE} build --locked --lib --manifest-path
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml" --target-dir
     "${RUST_TARGET_DIR}" --profile ${LANCE_CARGO_PROFILE} ${RUST_TARGET_FLAG}
   DEPENDS ${RUST_SOURCES}
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/rust"
