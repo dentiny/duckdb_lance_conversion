@@ -21,6 +21,9 @@ struct LanceBindData : public FunctionData {
 	ClientProperties properties;
 	bool overwrite = false;
 	bool s3 = false;
+	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
+	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
+	int64_t target_file_size = 512 * 1024 * 1024;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<LanceBindData>();
@@ -29,11 +32,17 @@ struct LanceBindData : public FunctionData {
 		result->properties = properties;
 		result->overwrite = overwrite;
 		result->s3 = s3;
+		result->blob_inline_size_threshold = blob_inline_size_threshold;
+		result->blob_dedicated_size_threshold = blob_dedicated_size_threshold;
+		result->target_file_size = target_file_size;
 		return std::move(result);
 	}
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<LanceBindData>();
-		return names == other.names && types == other.types && overwrite == other.overwrite && s3 == other.s3;
+		return names == other.names && types == other.types && overwrite == other.overwrite && s3 == other.s3 &&
+		       blob_inline_size_threshold == other.blob_inline_size_threshold &&
+		       blob_dedicated_size_threshold == other.blob_dedicated_size_threshold &&
+		       target_file_size == other.target_file_size;
 	}
 };
 
@@ -85,6 +94,17 @@ void ValidateDuckDBType(const LogicalType &type) {
 	}
 }
 
+int64_t ParseSizeOption(ClientContext &context, const string &name, const vector<Value> &values) {
+	if (values.size() != 1 || values[0].IsNull()) {
+		throw BinderException("%s requires one non-negative integer", name);
+	}
+	auto value = values[0].CastAs(context, LogicalType::BIGINT).GetValue<int64_t>();
+	if (value < 0) {
+		throw BinderException("%s must be non-negative", name);
+	}
+	return value;
+}
+
 unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput &input, const vector<string> &names,
                                    const vector<LogicalType> &types) {
 	auto result = make_uniq<LanceBindData>();
@@ -100,14 +120,27 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 		ValidateDuckDBType(type);
 	}
 	for (auto &option : input.info.options) {
-		if (!StringUtil::CIEquals(option.first, "overwrite")) {
+		if (StringUtil::CIEquals(option.first, "overwrite")) {
+			if (option.second.size() > 1 || (!option.second.empty() && option.second[0].IsNull())) {
+				throw BinderException("OVERWRITE requires a boolean");
+			}
+			result->overwrite =
+			    option.second.empty() || option.second[0].CastAs(context, LogicalType::BOOLEAN).GetValue<bool>();
+		} else if (StringUtil::CIEquals(option.first, "blob_inline_size_threshold")) {
+			result->blob_inline_size_threshold = ParseSizeOption(context, option.first, option.second);
+		} else if (StringUtil::CIEquals(option.first, "blob_dedicated_size_threshold")) {
+			result->blob_dedicated_size_threshold = ParseSizeOption(context, option.first, option.second);
+			if (result->blob_dedicated_size_threshold == 0) {
+				throw BinderException("BLOB_DEDICATED_SIZE_THRESHOLD must be greater than zero");
+			}
+		} else if (StringUtil::CIEquals(option.first, "target_file_size")) {
+			result->target_file_size = ParseSizeOption(context, option.first, option.second);
+			if (result->target_file_size == 0) {
+				throw BinderException("TARGET_FILE_SIZE must be greater than zero");
+			}
+		} else {
 			throw BinderException("Unsupported option for FORMAT LANCE: %s", option.first);
 		}
-		if (option.second.size() > 1 || (!option.second.empty() && option.second[0].IsNull())) {
-			throw BinderException("OVERWRITE requires a boolean");
-		}
-		result->overwrite =
-		    option.second.empty() || option.second[0].CastAs(context, LogicalType::BOOLEAN).GetValue<bool>();
 	}
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (FileSystem::IsRemoteFile(input.info.file_path)) {
@@ -129,6 +162,11 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	ArrowSchemaWrapper schema;
 	ArrowConverter::ToArrowSchema(&schema.arrow_schema, bind.types, bind.names, bind.properties);
 	auto state = make_uniq<LanceGlobalState>();
+	LanceWriteConfig write_config;
+	write_config.overwrite = bind.overwrite ? 1 : 0;
+	write_config.blob_inline_size_threshold = bind.blob_inline_size_threshold;
+	write_config.blob_dedicated_size_threshold = bind.blob_dedicated_size_threshold;
+	write_config.target_file_size = bind.target_file_size;
 	LanceS3Config s3;
 	const LanceS3Config *s3_ptr = nullptr;
 	LanceS3Options options;
@@ -137,9 +175,8 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 		s3 = options.ToConfig();
 		s3_ptr = &s3;
 	}
-	ThrowIfLanceError(
-	    lance_conversion_open(path.c_str(), &schema.arrow_schema, bind.overwrite ? 1 : 0, s3_ptr, &state->writer),
-	    "Lance conversion");
+	ThrowIfLanceError(lance_conversion_open(path.c_str(), &schema.arrow_schema, &write_config, s3_ptr, &state->writer),
+	                  "Lance conversion");
 	return std::move(state);
 }
 

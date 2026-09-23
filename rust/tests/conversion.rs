@@ -118,3 +118,4 @@ async fn overwrite_replaces_rows_and_can_commit_an_empty_dataset() {
     }
     spawn_blocking(move || temp.close()).await.unwrap().unwrap();
 }
+

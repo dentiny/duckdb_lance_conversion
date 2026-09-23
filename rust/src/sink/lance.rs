@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -5,13 +6,16 @@ use std::sync::{
     Arc,
 };
 
-use arrow_array::RecordBatch;
-use arrow_schema::{ArrowError, SchemaRef};
+use arrow_array::{new_null_array, ArrayRef, RecordBatch, StructArray};
+use arrow_cast::cast;
+use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream};
-use futures::{stream, FutureExt, Stream, TryStreamExt};
+use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
 use lance::{
+    blob_field_with_options,
     dataset::{write::InsertBuilder, WriteMode, WriteParams},
     session::Session,
+    BlobFieldOptions,
 };
 use tokio::{
     sync::mpsc::{channel, Receiver, Sender},
@@ -24,10 +28,29 @@ use crate::schema::validate_schema;
 use crate::storage::{OpendalStorage, OpendalStoreProvider};
 use crate::{Error, Result, S3StorageConfig};
 
-#[derive(Clone, Debug, Default)]
+const DEFAULT_BLOB_INLINE_SIZE_THRESHOLD: usize = 2 * 1024 * 1024;
+const DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD: usize = 16 * 1024 * 1024;
+const DEFAULT_TARGET_FILE_SIZE: usize = 512 * 1024 * 1024;
+
+#[derive(Clone, Debug)]
 pub struct WriteOptions {
     pub overwrite: bool,
     pub s3_config: Option<S3StorageConfig>,
+    pub blob_inline_size_threshold: Option<usize>,
+    pub blob_dedicated_size_threshold: Option<usize>,
+    pub target_file_size: usize,
+}
+
+impl Default for WriteOptions {
+    fn default() -> Self {
+        Self {
+            overwrite: false,
+            s3_config: None,
+            blob_inline_size_threshold: Some(DEFAULT_BLOB_INLINE_SIZE_THRESHOLD),
+            blob_dedicated_size_threshold: Some(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
+            target_file_size: DEFAULT_TARGET_FILE_SIZE,
+        }
+    }
 }
 
 pub struct LanceSink {
@@ -194,11 +217,114 @@ impl LanceWriter {
     }
 }
 
+fn transform_blob_batch(
+    batch: RecordBatch,
+    schema: SchemaRef,
+    blob_columns: &[usize],
+) -> std::result::Result<RecordBatch, ArrowError> {
+    let mut columns = Vec::with_capacity(batch.num_columns());
+    for (index, column) in batch.columns().iter().enumerate() {
+        if blob_columns.binary_search(&index).is_err() {
+            columns.push(column.clone());
+            continue;
+        }
+        let field = schema.field(index);
+        let DataType::Struct(children) = field.data_type() else {
+            return Err(ArrowError::SchemaError(format!(
+                "blob field '{}' is not a struct",
+                field.name()
+            )));
+        };
+        let data = cast(column, &DataType::LargeBinary)?;
+        let uri = new_null_array(&DataType::Utf8, column.len());
+        columns.push(Arc::new(StructArray::try_new(
+            children.clone(),
+            vec![data, uri],
+            column.nulls().cloned(),
+        )?) as ArrayRef);
+    }
+    RecordBatch::try_new(schema, columns)
+}
+
+fn configure_blob_storage(
+    stream: SendableRecordBatchStream,
+    options: &WriteOptions,
+) -> Result<SendableRecordBatchStream> {
+    if options.blob_inline_size_threshold.is_none()
+        && options.blob_dedicated_size_threshold.is_none()
+    {
+        return Ok(stream);
+    }
+
+    let mut blob_options = BlobFieldOptions::default();
+    if let Some(threshold) = options.blob_inline_size_threshold {
+        blob_options = blob_options.with_inline_size_threshold(threshold);
+    }
+    if let Some(threshold) = options.blob_dedicated_size_threshold {
+        let threshold = NonZeroUsize::new(threshold).ok_or_else(|| {
+            Error::invalid_argument("blob dedicated size threshold must be greater than zero")
+        })?;
+        blob_options = blob_options.with_dedicated_size_threshold(threshold);
+    }
+
+    let input_schema = stream.schema();
+    let blob_columns = input_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| {
+            matches!(
+                field.data_type(),
+                DataType::Binary | DataType::LargeBinary | DataType::BinaryView
+            )
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if blob_columns.is_empty() {
+        return Ok(stream);
+    }
+
+    let fields = input_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            if blob_columns.binary_search(&index).is_ok() {
+                Arc::new(blob_field_with_options(
+                    field.name(),
+                    field.is_nullable(),
+                    blob_options.clone(),
+                ))
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    let output_schema = Arc::new(Schema::new_with_metadata(
+        fields,
+        input_schema.metadata().clone(),
+    ));
+    let batch_schema = output_schema.clone();
+    let batches = stream.map(move |batch| {
+        let batch = batch?;
+        Ok(transform_blob_batch(
+            batch,
+            batch_schema.clone(),
+            &blob_columns,
+        )?)
+    });
+    Ok(Box::pin(RecordBatchStreamAdapter::new(
+        output_schema,
+        batches,
+    )))
+}
+
 async fn write_stream(
     destination: &OpendalStorage,
     stream: SendableRecordBatchStream,
     options: WriteOptions,
 ) -> Result<WriteSummary> {
+    let stream = configure_blob_storage(stream, &options)?;
     let rows_written = Arc::new(AtomicU64::new(0));
     let count = rows_written.clone();
     let schema = stream.schema();
@@ -232,6 +358,7 @@ async fn write_dataset(
         } else {
             WriteMode::Create
         },
+        max_bytes_per_file: options.target_file_size,
         ..Default::default()
     };
     let session = Session::default();
