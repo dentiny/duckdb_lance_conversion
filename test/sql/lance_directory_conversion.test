@@ -1,0 +1,41 @@
+# name: test/sql/lance_directory_conversion.test
+# description: Parquet directory to a Lance dataset
+# group: [sql]
+
+require lance_conversion
+
+require parquet
+
+statement ok
+COPY (
+    SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE 'row-' || i END AS text, i % 2 AS part
+    FROM range(10) t(i)
+) TO '__TEST_DIR__/parquet_directory' (FORMAT PARQUET, PARTITION_BY (part));
+
+query I
+COPY (
+    SELECT i, text
+    FROM read_parquet('__TEST_DIR__/parquet_directory/**/*.parquet')
+) TO '__TEST_DIR__/directory_conversion.lance' (FORMAT LANCE);
+----
+10
+
+# Load the official Lance reader only after exercising our FORMAT LANCE writer.
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query IT
+SELECT i, text FROM '__TEST_DIR__/directory_conversion.lance' ORDER BY i;
+----
+0	NULL
+1	row-1
+2	row-2
+3	row-3
+4	row-4
+5	row-5
+6	row-6
+7	NULL
+8	row-8
+9	row-9

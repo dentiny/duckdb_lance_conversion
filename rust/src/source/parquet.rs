@@ -7,7 +7,7 @@ use bytes::Bytes;
 use futures::{future::BoxFuture, stream, FutureExt, StreamExt, TryStreamExt};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::{
-    AsyncFileReader, MetadataSuffixFetch, ParquetRecordBatchStreamBuilder,
+    AsyncFileReader, MetadataSuffixFetch, ParquetRecordBatchStream, ParquetRecordBatchStreamBuilder,
 };
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
@@ -91,6 +91,64 @@ impl MetadataSuffixFetch for &mut OpendalParquetReader {
     }
 }
 
+async fn open_parquet(
+    operator: opendal::Operator,
+    path: String,
+    batch_size: usize,
+) -> Result<ParquetRecordBatchStream<OpendalParquetReader>> {
+    Ok(
+        ParquetRecordBatchStreamBuilder::new(OpendalParquetReader { operator, path })
+            .await?
+            .with_batch_size(batch_size)
+            .build()?,
+    )
+}
+
+async fn parquet_paths(storage: &OpendalStorage) -> Result<Vec<String>> {
+    let path = storage.object_path.to_string();
+    if !path.ends_with('/') {
+        match storage.operator.stat(&path).await {
+            Ok(metadata) if metadata.is_file() => return Ok(vec![path]),
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(Error::message("Parquet input must be a file or directory"));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == opendal::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    let prefix = if path.is_empty() || path.ends_with('/') {
+        path
+    } else {
+        format!("{path}/")
+    };
+    let mut entries = storage
+        .operator
+        .lister_with(&prefix)
+        .recursive(true)
+        .await?;
+    let mut paths = Vec::new();
+    while let Some(entry) = entries.try_next().await? {
+        if entry.metadata().is_file()
+            && entry
+                .path()
+                .rsplit_once('.')
+                .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("parquet"))
+        {
+            paths.push(entry.path().to_owned());
+        }
+    }
+    paths.sort_unstable();
+    if paths.is_empty() {
+        return Err(Error::message(format!(
+            "Parquet directory contains no .parquet files: {}",
+            storage.location
+        )));
+    }
+    Ok(paths)
+}
+
 pub struct ParquetFileSource {
     path: PathBuf,
     batch_size: usize,
@@ -127,17 +185,31 @@ impl BatchSource for ParquetFileSource {
             .to_str()
             .ok_or_else(|| Error::message("Parquet input path must be valid UTF-8"))?;
         let storage = OpendalStorage::from_path(path, self.s3_config.as_ref())?;
-        let object_path = storage.object_path.to_string();
-        let object_reader = OpendalParquetReader {
-            operator: storage.operator,
-            path: object_path,
-        };
-        let reader = ParquetRecordBatchStreamBuilder::new(object_reader)
-            .await?
-            .with_batch_size(self.batch_size)
-            .build()?;
+        let mut paths = parquet_paths(&storage).await?.into_iter();
+        let first_path = paths
+            .next()
+            .expect("parquet_paths returns at least one path");
+        let reader = open_parquet(storage.operator.clone(), first_path, self.batch_size).await?;
         let schema = reader.schema().clone();
-        let batches = reader.map_err(Error::from);
+        let expected_schema = schema.clone();
+        let operator = storage.operator;
+        let batch_size = self.batch_size;
+        let remaining = stream::iter(paths)
+            .then(move |path| {
+                let operator = operator.clone();
+                let expected_schema = expected_schema.clone();
+                async move {
+                    let reader = open_parquet(operator, path.clone(), batch_size).await?;
+                    if reader.schema() != &expected_schema {
+                        return Err(Error::message(format!(
+                            "Parquet schema does not match the first file: {path}"
+                        )));
+                    }
+                    Ok(reader.map_err(Error::from))
+                }
+            })
+            .try_flatten();
+        let batches = reader.map_err(Error::from).chain(remaining);
         Ok((schema, Box::pin(batches)))
     }
 }
