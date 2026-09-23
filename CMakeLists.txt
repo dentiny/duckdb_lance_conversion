@@ -8,14 +8,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include_directories(src/include rust/include)
 
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
-set(PROTOC_HINTS)
-foreach(triplet_var VCPKG_HOST_TRIPLET VCPKG_TARGET_TRIPLET)
-  if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED ${triplet_var})
-    list(APPEND PROTOC_HINTS
-         "${VCPKG_INSTALLED_DIR}/${${triplet_var}}/tools/protobuf")
-  endif()
-endforeach()
-find_program(PROTOC_EXECUTABLE protoc HINTS ${PROTOC_HINTS} REQUIRED)
 set(LANCE_CARGO_PROFILE
     "release"
     CACHE STRING "Cargo profile: dev or release")
@@ -45,8 +37,8 @@ add_custom_command(
   OUTPUT "${RUST_LIB}"
   COMMAND
     ${CMAKE_COMMAND} -E env --unset=CC --unset=CXX --unset=LD
-    "PROTOC=${PROTOC_EXECUTABLE}" ${CARGO_EXECUTABLE} build --locked --lib
-    --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml" --target-dir
+    ${CARGO_EXECUTABLE} build --locked --lib --manifest-path
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml" --target-dir
     "${RUST_TARGET_DIR}" --profile ${LANCE_CARGO_PROFILE} ${RUST_TARGET_FLAG}
   DEPENDS ${RUST_SOURCES}
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/rust"
