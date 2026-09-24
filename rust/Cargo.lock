@@ -1860,6 +1860,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
+ "libz-ng-sys",
  "miniz_oxide",
  "zlib-rs",
 ]
@@ -2917,12 +2918,12 @@ dependencies = [
  "async-trait",
  "bytes",
  "datafusion-physical-plan",
+ "flate2",
  "futures",
  "lance",
  "lance-index",
  "lance-io",
  "lance-linalg",
- "libflate",
  "object_store 0.14.2",
  "object_store_opendal",
  "opendal",
@@ -3435,6 +3436,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00777f770949ecbe5524eb6630699a501c9c27e4d18493705a7dad49c9bdfbd1"
 dependencies = [
  "rayon",
+]
+
+[[package]]
+name = "libz-ng-sys"
+version = "1.1.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879917b256f6317769b9f374b435805a8697013098aacce5a38ac106cd6a9469"
+dependencies = [
+ "cmake",
+ "libc",
 ]
 
 [[package]]
