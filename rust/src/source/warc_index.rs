@@ -15,7 +15,7 @@ use crate::{Error, Result, S3StorageConfig};
 
 const INDEX_WORK_UNIT_COMPRESSED_BYTES: u64 = 16 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WarcIndexEntry {
     offset: u64,
     length: u64,
@@ -85,6 +85,14 @@ fn parse_warc_index(
     Ok(entries)
 }
 
+/// Sorts index entries by archive offset and converts them into range-read
+/// workloads.
+///
+/// Exactly adjacent entries are coalesced up to
+/// `INDEX_WORK_UNIT_COMPRESSED_BYTES`, reducing request overhead without
+/// reading unindexed gaps. Overlapping entries are rejected because they would
+/// decode the same compressed bytes more than once. Returned ranges remain in
+/// physical archive order.
 fn index_work_units(mut entries: Vec<WarcIndexEntry>) -> Result<Vec<Range<u64>>> {
     entries.sort_unstable_by_key(|entry| entry.offset);
     let mut units: Vec<Range<u64>> = Vec::new();
@@ -142,6 +150,18 @@ fn parse_indexed_warc_bytes(
     }
 }
 
+/// Opens a WARC file through an external JSON or CDXJ index.
+///
+/// The index is loaded from `index_path`, optionally decompressed when its
+/// filename ends in `.gz`, and filtered to entries matching `path`. Indexed
+/// offsets are converted into ordered range-read workloads. Up to
+/// `max_read_parallelism` workloads are fetched and parsed concurrently, while
+/// `buffered` preserves physical archive order in the returned batch stream.
+/// `gzipped` controls whether each WARC range is decoded as concatenated gzip
+/// members before record parsing.
+///
+/// Returns an error for unreadable or malformed indexes, invalid or
+/// overlapping ranges, storage failures, and WARC decode failures.
 pub(super) async fn open_indexed_warc(
     operator: opendal::Operator,
     path: String,
@@ -194,4 +214,70 @@ pub(super) async fn open_indexed_warc(
         .map_ok(|batches| stream::iter(batches.into_iter().map(Ok::<_, Error>)))
         .try_flatten();
     Ok((schema, Box::pin(batches)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use bytes::Bytes;
+    use flate2::{write::GzEncoder, Compression};
+
+    use super::*;
+
+    #[test]
+    fn parses_json_and_cdxj_entries_for_the_source_file() {
+        let index = concat!(
+            "# comment\n",
+            "{\"filename\":\"archive.warc.gz\",\"offset\":10,\"length\":\"20\"}\n",
+            "com,example)/ 20240102030405 ",
+            "{\"filename\":\"other.warc.gz\",\"offset\":\"30\",\"length\":40}\n",
+            "com,example)/ 20240102030406 ",
+            "{\"filename\":\"archive.warc.gz\",\"offset\":\"50\",\"length\":60}\n",
+        );
+
+        let entries = parse_warc_index(
+            Bytes::from_static(index.as_bytes()),
+            false,
+            "crawl-data/archive.warc.gz",
+        )
+        .unwrap();
+
+        assert_eq!(
+            entries,
+            [
+                WarcIndexEntry {
+                    offset: 10,
+                    length: 20
+                },
+                WarcIndexEntry {
+                    offset: 50,
+                    length: 60
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_gzipped_index() {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(b"{\"offset\":\"7\",\"length\":\"11\"}\n")
+            .unwrap();
+
+        let entries = parse_warc_index(
+            Bytes::from(encoder.finish().unwrap()),
+            true,
+            "archive.warc.gz",
+        )
+        .unwrap();
+
+        assert_eq!(
+            entries,
+            [WarcIndexEntry {
+                offset: 7,
+                length: 11
+            }]
+        );
+    }
 }
