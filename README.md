@@ -331,27 +331,6 @@ output. A subsequent DuckDB transaction rollback does not roll back Lance writes
 
 ### Rust usage
 
-The standalone core can convert Parquet without DuckDB:
-
-```rust
-use lance_conversion::{convert, LanceSink, ParquetFileSource, WriteMode, WriteOptions};
-
-let result = convert(
-    ParquetFileSource::new("input.parquet").with_batch_size(8192),
-    LanceSink::new("output.lance", WriteOptions {
-        mode: WriteMode::Create,
-        ..WriteOptions::default()
-    }),
-).await?;
-println!("{} rows written", result.rows_written);
-```
-
-For standalone S3 input/output, attach the same `S3StorageConfig` to
-`ParquetFileSource::with_s3_config` and `WriteOptions::s3_config`. This API does
-not read DuckDB secrets; the DuckDB extension resolves those before crossing
-the FFI boundary. Directory inputs are scanned recursively for `.parquet` files
-and require all files to have the same Arrow schema.
-
 `convert(source, sink)` connects any `BatchSource` to any `BatchSink`. A source
 returns `(SchemaRef, BatchStream)`, where each stream item is an
 `anyhow::Result<RecordBatch>`. A sink consumes the schema and stream through its
