@@ -13,8 +13,6 @@ use super::BatchStream;
 use crate::storage::OpendalStorage;
 use crate::{Error, Result, S3StorageConfig};
 
-const INDEX_WORK_UNIT_COMPRESSED_BYTES: u64 = 16 * 1024 * 1024;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WarcIndexEntry {
     offset: u64,
@@ -88,12 +86,33 @@ fn parse_warc_index(
 /// Sorts index entries by archive offset and converts them into range-read
 /// workloads.
 ///
-/// Exactly adjacent entries are coalesced up to
-/// `INDEX_WORK_UNIT_COMPRESSED_BYTES`, reducing request overhead without
-/// reading unindexed gaps. Overlapping entries are rejected because they would
-/// decode the same compressed bytes more than once. Returned ranges remain in
-/// physical archive order.
-fn index_work_units(mut entries: Vec<WarcIndexEntry>) -> Result<Vec<Range<u64>>> {
+/// The target compressed size is the total indexed length divided by
+/// `max_read_parallelism`, rounded up. Exactly adjacent entries are greedily
+/// coalesced until a workload reaches that target. Record boundaries and
+/// unindexed gaps can prevent exact balancing, and gaps always start a new
+/// workload. Overlapping entries are rejected because they would decode the
+/// same compressed bytes more than once. Returned ranges remain in physical
+/// archive order.
+///
+/// For example, entries `(offset, length)` of `(20, 5)`, `(0, 8)`, `(8, 4)`
+/// with parallelism `2` have a target of 9 bytes and become `0..12` and
+/// `20..25`: the first two sorted entries are adjacent, while the gap from 12
+/// to 20 starts a new workload.
+fn build_index_work_units(
+    mut entries: Vec<WarcIndexEntry>,
+    max_read_parallelism: usize,
+) -> Result<Vec<Range<u64>>> {
+    if max_read_parallelism == 0 {
+        return Err(Error::message("max_read_parallelism must be positive"));
+    }
+    let total_length = entries.iter().try_fold(0_u64, |total, entry| {
+        total
+            .checked_add(entry.length)
+            .ok_or_else(|| Error::message("WARC index total length overflows u64"))
+    })?;
+    let parallelism = u64::try_from(max_read_parallelism).unwrap_or(u64::MAX);
+    let target_length = total_length.div_ceil(parallelism);
+
     entries.sort_unstable_by_key(|entry| entry.offset);
     let mut units: Vec<Range<u64>> = Vec::new();
     for entry in entries {
@@ -105,9 +124,7 @@ fn index_work_units(mut entries: Vec<WarcIndexEntry>) -> Result<Vec<Range<u64>>>
             if entry.offset < unit.end {
                 return Err(Error::message("WARC index entries overlap"));
             }
-            if entry.offset == unit.end
-                && end.saturating_sub(unit.start) <= INDEX_WORK_UNIT_COMPRESSED_BYTES
-            {
+            if entry.offset == unit.end && unit.end - unit.start < target_length {
                 unit.end = end;
                 continue;
             }
@@ -190,7 +207,7 @@ pub(super) async fn open_indexed_warc(
     })
     .await
     .map_err(|error| Error::message(format!("WARC index parser task failed: {error}")))??;
-    let work_units = index_work_units(entries)?;
+    let work_units = build_index_work_units(entries, max_read_parallelism)?;
     let parallelism = work_units.len().min(max_read_parallelism).max(1);
     let stream_schema = schema.clone();
     let batches = stream::iter(work_units)
@@ -224,6 +241,50 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
 
     use super::*;
+
+    #[test]
+    fn balances_contiguous_entries_across_parallelism() {
+        let entries = vec![
+            WarcIndexEntry {
+                offset: 30,
+                length: 10,
+            },
+            WarcIndexEntry {
+                offset: 0,
+                length: 10,
+            },
+            WarcIndexEntry {
+                offset: 20,
+                length: 10,
+            },
+            WarcIndexEntry {
+                offset: 10,
+                length: 10,
+            },
+        ];
+
+        assert_eq!(build_index_work_units(entries, 2).unwrap(), [0..20, 20..40]);
+    }
+
+    #[test]
+    fn gaps_start_new_workloads() {
+        let entries = vec![
+            WarcIndexEntry {
+                offset: 20,
+                length: 5,
+            },
+            WarcIndexEntry {
+                offset: 0,
+                length: 8,
+            },
+            WarcIndexEntry {
+                offset: 8,
+                length: 4,
+            },
+        ];
+
+        assert_eq!(build_index_work_units(entries, 2).unwrap(), [0..12, 20..25]);
+    }
 
     #[test]
     fn parses_json_and_cdxj_entries_for_the_source_file() {
