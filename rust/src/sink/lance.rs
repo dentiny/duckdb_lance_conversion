@@ -18,6 +18,7 @@ use lance::{
     session::Session,
     BlobFieldOptions,
 };
+use lance_io::{object_store::WrappingObjectStore, utils::tracking_store::IOTracker};
 use tokio::{
     sync::mpsc::{channel, Receiver, Sender},
     task::JoinHandle,
@@ -398,9 +399,11 @@ async fn write_stream(
         .catch_unwind()
         .await
         .unwrap_or_else(|_| Err(Error::message("Lance writer task panicked")));
-    result?;
+    let (bytes_read, bytes_written) = result?;
     Ok(WriteSummary {
         rows_written: rows_written.load(Ordering::Relaxed),
+        bytes_read,
+        bytes_written,
     })
 }
 
@@ -408,7 +411,7 @@ async fn write_dataset(
     destination: &OpendalStorage,
     stream: SendableRecordBatchStream,
     options: &WriteOptions,
-) -> Result<()> {
+) -> Result<(u64, u64)> {
     if destination.object_path.as_ref().is_empty() {
         return Err(Error::message(
             "Lance destination must not be a storage root",
@@ -426,9 +429,14 @@ async fn write_dataset(
         ..Default::default()
     };
     let session = Session::default();
+    let io_tracker = Arc::new(IOTracker::default());
+    let tracked_store = io_tracker.wrap(
+        destination.location.as_str(),
+        destination.object_store.clone(),
+    );
     session.store_registry().insert(
         destination.location.scheme(),
-        Arc::new(OpendalStoreProvider::new(destination.object_store.clone())),
+        Arc::new(OpendalStoreProvider::new(tracked_store)),
     );
     params.session = Some(Arc::new(session));
     let uri = destination.location.as_str();
@@ -442,5 +450,6 @@ async fn write_dataset(
             WriteMode::Overwrite => "overwriting Lance dataset",
         })?;
     indexes.create(&mut dataset).await?;
-    Ok(())
+    let stats = io_tracker.stats();
+    Ok((stats.read_bytes, stats.written_bytes))
 }

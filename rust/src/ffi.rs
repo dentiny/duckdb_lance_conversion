@@ -11,9 +11,10 @@ use arrow_array::{
 use arrow_schema::{ffi::FFI_ArrowSchema, ArrowError, DataType, Schema, SchemaRef};
 use futures::TryStreamExt;
 
+use crate::source::ReadMetrics;
 use crate::{
     warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceWriter, Result,
-    S3StorageConfig, WarcSource, WriteMode, WriteOptions,
+    S3StorageConfig, WarcSource, WriteMode, WriteOptions, WriteSummary,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -59,9 +60,25 @@ pub struct LanceWriteConfig {
     bloom_filter_index_column_count: usize,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LanceReadMetrics {
+    bytes_read: u64,
+    total_bytes: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LanceWriteMetrics {
+    rows_written: u64,
+    bytes_read: u64,
+    bytes_written: u64,
+}
+
 pub struct LanceConversionWriter {
     sink: LanceWriter,
     runtime: tokio::runtime::Runtime,
+    summary: Option<WriteSummary>,
 }
 
 struct ArrowBatchReader {
@@ -96,6 +113,7 @@ pub struct HuggingFaceStreamFactory {
     max_read_parallelism: usize,
     schema: SchemaRef,
     reader: Option<ArrowBatchReader>,
+    metrics: Arc<ReadMetrics>,
 }
 
 impl HuggingFaceStreamFactory {
@@ -104,7 +122,8 @@ impl HuggingFaceStreamFactory {
             .with_config(&self.config)
             .with_split(&self.split)
             .with_preserve_insertion_order(self.preserve_insertion_order)
-            .with_max_read_parallelism(self.max_read_parallelism);
+            .with_max_read_parallelism(self.max_read_parallelism)
+            .with_metrics(self.metrics.clone());
         if let Some(token) = &self.token {
             source = source.with_token(token);
         }
@@ -117,13 +136,15 @@ pub struct WarcStreamFactory {
     index_path: Option<String>,
     s3_config: Option<S3StorageConfig>,
     max_read_parallelism: usize,
+    metrics: Arc<ReadMetrics>,
 }
 
 impl WarcStreamFactory {
     fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
         let mut source = WarcSource::new(&self.path)
             .with_projection(projection)
-            .with_max_read_parallelism(self.max_read_parallelism);
+            .with_max_read_parallelism(self.max_read_parallelism)
+            .with_metrics(self.metrics.clone());
         if let Some(index_path) = &self.index_path {
             source = source.with_index_path(index_path);
         }
@@ -284,7 +305,11 @@ pub unsafe extern "C" fn lance_conversion_open(
             .enable_all()
             .build()?;
         let sink = runtime.block_on(LanceWriter::create(path, schema, options))?;
-        *output = Box::into_raw(Box::new(LanceConversionWriter { sink, runtime }));
+        *output = Box::into_raw(Box::new(LanceConversionWriter {
+            sink,
+            runtime,
+            summary: None,
+        }));
         Ok(())
     })
 }
@@ -318,9 +343,28 @@ pub unsafe extern "C" fn lance_conversion_finish(
             return Err(Error::message("null writer"));
         }
         let writer = &mut *writer;
-        writer.runtime.block_on(writer.sink.finish())?;
+        writer.summary = Some(writer.runtime.block_on(writer.sink.finish())?);
         Ok(())
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_conversion_get_metrics(
+    writer: *const LanceConversionWriter,
+    output: *mut LanceWriteMetrics,
+) {
+    if writer.is_null() || output.is_null() {
+        return;
+    }
+    let metrics = match &(*writer).summary {
+        Some(summary) => LanceWriteMetrics {
+            rows_written: summary.rows_written,
+            bytes_read: summary.bytes_read,
+            bytes_written: summary.bytes_written,
+        },
+        None => LanceWriteMetrics::default(),
+    };
+    ptr::write(output, metrics);
 }
 
 #[no_mangle]
@@ -328,7 +372,7 @@ pub unsafe extern "C" fn lance_conversion_destroy(writer: *mut LanceConversionWr
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if !writer.is_null() {
             let mut writer = Box::from_raw(writer);
-            let LanceConversionWriter { sink, runtime } = &mut *writer;
+            let LanceConversionWriter { sink, runtime, .. } = &mut *writer;
             runtime.block_on(sink.abort());
         }
     }));
@@ -355,11 +399,13 @@ pub unsafe extern "C" fn lance_huggingface_open(
         let token = optional_string(token)?;
         let max_read_parallelism = usize::try_from(max_read_parallelism)
             .map_err(|_| Error::message("max_read_parallelism is too large"))?;
+        let metrics = Arc::new(ReadMetrics::default());
         let mut source = HuggingFaceSource::new(&dataset)
             .with_config(&config)
             .with_split(&split)
             .with_preserve_insertion_order(preserve_insertion_order != 0)
-            .with_max_read_parallelism(max_read_parallelism);
+            .with_max_read_parallelism(max_read_parallelism)
+            .with_metrics(metrics.clone());
         if let Some(token) = &token {
             source = source.with_token(token);
         }
@@ -374,9 +420,28 @@ pub unsafe extern "C" fn lance_huggingface_open(
             max_read_parallelism,
             schema,
             reader: Some(reader),
+            metrics,
         }));
         Ok(())
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_huggingface_get_metrics(
+    factory: *const HuggingFaceStreamFactory,
+    output: *mut LanceReadMetrics,
+) {
+    if factory.is_null() || output.is_null() {
+        return;
+    }
+    let snapshot = (*factory).metrics.snapshot();
+    ptr::write(
+        output,
+        LanceReadMetrics {
+            bytes_read: snapshot.bytes_read,
+            total_bytes: snapshot.total_bytes,
+        },
+    );
 }
 
 #[no_mangle]
@@ -445,14 +510,34 @@ pub unsafe extern "C" fn lance_warc_open(
         if max_read_parallelism == 0 {
             return Err(Error::message("max_read_parallelism must be positive"));
         }
+        let metrics = Arc::new(ReadMetrics::default());
         *output = Box::into_raw(Box::new(WarcStreamFactory {
             path,
             index_path,
             s3_config: s3_config(s3)?,
             max_read_parallelism,
+            metrics,
         }));
         Ok(())
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_warc_get_metrics(
+    factory: *const WarcStreamFactory,
+    output: *mut LanceReadMetrics,
+) {
+    if factory.is_null() || output.is_null() {
+        return;
+    }
+    let snapshot = (*factory).metrics.snapshot();
+    ptr::write(
+        output,
+        LanceReadMetrics {
+            bytes_read: snapshot.bytes_read,
+            total_bytes: snapshot.total_bytes,
+        },
+    );
 }
 
 #[no_mangle]

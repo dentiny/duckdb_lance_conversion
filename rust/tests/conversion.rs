@@ -36,7 +36,9 @@ async fn overwrite_replaces_rows_and_can_commit_an_empty_dataset() {
         if rows != 0 {
             writer.write_batch(batch.clone()).await.unwrap();
         }
-        assert_eq!(writer.finish().await.unwrap().rows_written, rows as u64);
+        let summary = writer.finish().await.unwrap();
+        assert_eq!(summary.rows_written, rows as u64);
+        assert!(summary.bytes_written > 0);
         assert_values(&read_lance(&output).await, &batch);
     }
     spawn_blocking(move || temp.close()).await.unwrap().unwrap();

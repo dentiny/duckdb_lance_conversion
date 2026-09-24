@@ -3,6 +3,7 @@
 #include "function_metadata.hpp"
 #include "lance_conversion.h"
 #include "lance_ffi.hpp"
+#include "source_metrics.hpp"
 #include "source_options.hpp"
 #include "storage_options.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
@@ -14,18 +15,6 @@
 
 namespace duckdb {
 namespace {
-
-class WarcDependency : public DependencyItem {
-public:
-	explicit WarcDependency(WarcStreamFactory *factory_p) : factory(factory_p) {
-	}
-
-	~WarcDependency() override {
-		lance_warc_destroy(factory);
-	}
-
-	WarcStreamFactory *factory;
-};
 
 unique_ptr<ArrowArrayStreamWrapper> ProduceWarcStream(uintptr_t factory_ptr, ArrowStreamParameters &parameters) {
 	auto result = make_uniq<ArrowArrayStreamWrapper>();
@@ -69,7 +58,11 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 	ThrowIfLanceError(lance_warc_open(path.c_str(), index_path.empty() ? nullptr : index_path.c_str(), s3_ptr,
 	                                  read_options.max_read_parallelism, &factory),
 	                  "WARC reader");
-	auto dependency = make_shared_ptr<WarcDependency>(factory);
+	auto dependency = make_shared_ptr<SourceMetricsDependency>(
+	    factory, [](void *value) { lance_warc_destroy(static_cast<WarcStreamFactory *>(value)); },
+	    [](const void *value, LanceReadMetrics *metrics) {
+		    lance_warc_get_metrics(static_cast<const WarcStreamFactory *>(value), metrics);
+	    });
 	auto result = make_uniq<ArrowScanFunctionData>(ProduceWarcStream, reinterpret_cast<uintptr_t>(factory), dependency);
 	ThrowIfLanceError(lance_warc_get_schema(factory, &result->schema_root.arrow_schema), "WARC reader");
 	ArrowTableFunction::PopulateArrowTableSchema(context, result->arrow_table, result->schema_root.arrow_schema);
@@ -82,8 +75,10 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 } // namespace
 
 void RegisterWarcScanFunction(ExtensionLoader &loader) {
-	TableFunction function("read_warc", {LogicalType::VARCHAR}, ArrowTableFunction::ArrowScanFunction, BindWarc,
+	TableFunction function("read_warc", {LogicalType::VARCHAR}, SourceMetricsArrowScan, BindWarc,
 	                       ArrowTableFunction::ArrowScanInitGlobal, ArrowTableFunction::ArrowScanInitLocal);
+	function.get_metrics = SourceMetricsGetMetrics;
+	function.table_scan_progress = SourceMetricsProgress;
 	function.projection_pushdown = true;
 	function.named_parameters["index_path"] = LogicalType::VARCHAR;
 	SourceReadOptions::Register(function);

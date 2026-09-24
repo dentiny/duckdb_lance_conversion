@@ -151,6 +151,36 @@ COPY (
 TO 's3://bucket/datasets/archive.lance' (FORMAT LANCE);
 ```
 
+### Profiling
+
+`COPY` returns the number of rows written. DuckDB's JSON profiler also reports
+rows scanned by `read_huggingface` and `read_warc`, bytes transferred by those
+readers, and bytes read or written by the Lance destination:
+
+```sql
+SET profiling_coverage = 'ALL';
+PRAGMA enable_profiling = 'json';
+PRAGMA profiling_output = '/tmp/lance_profile.json';
+PRAGMA custom_profiling_settings = '{
+    "OPERATOR_ROWS_SCANNED": "true",
+    "TOTAL_BYTES_READ": "true",
+    "TOTAL_BYTES_WRITTEN": "true",
+    "OPERATOR_TIMING": "true"
+}';
+
+COPY (
+    SELECT * FROM read_warc('archive.warc.gz')
+) TO 'archive.lance' (FORMAT LANCE);
+
+PRAGMA disable_profiling;
+```
+
+Source readers also provide byte-based progress to DuckDB's progress bar when
+the total source size is known. Byte counters measure compressed/encoded
+storage traffic rather than decoded Arrow memory. Destination reads, such as
+existing Lance metadata loaded by `APPEND`, contribute to
+`TOTAL_BYTES_READ`.
+
 ### Write modes
 
 The default mode is `Create`: the destination must not already exist. Use
@@ -373,7 +403,7 @@ than `Decimal128`. It does not automatically cast them.
 
 ## TODO
 
-- Add conversion metrics and runtime observability.
+- Add per-stage timing for download, decode, Lance write, and index creation.
 - Expand round-trip coverage for decimal, temporal, and nested types, including
   nested arrays.
 - Add crash recovery and resumable conversions.

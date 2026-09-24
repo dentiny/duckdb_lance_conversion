@@ -9,6 +9,7 @@ use parquet::arrow::async_reader::{AsyncFileReader, MetadataSuffixFetch};
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 
+use super::ReadMetrics;
 use crate::{Error, Result};
 
 const MAX_CONCURRENT_RANGE_READS: usize = 8;
@@ -16,11 +17,20 @@ const MAX_CONCURRENT_RANGE_READS: usize = 8;
 pub(super) struct OpendalParquetReader {
     operator: opendal::Operator,
     path: String,
+    metrics: Arc<ReadMetrics>,
 }
 
 impl OpendalParquetReader {
-    pub(super) fn new(operator: opendal::Operator, path: String) -> Self {
-        Self { operator, path }
+    pub(super) fn new(
+        operator: opendal::Operator,
+        path: String,
+        metrics: Arc<ReadMetrics>,
+    ) -> Self {
+        Self {
+            operator,
+            path,
+            metrics,
+        }
     }
 }
 
@@ -31,12 +41,15 @@ fn opendal_error(error: opendal::Error) -> ParquetError {
 impl AsyncFileReader for OpendalParquetReader {
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         async move {
-            self.operator
+            let bytes = self
+                .operator
                 .read_with(&self.path)
                 .range(range)
                 .await
                 .map(|buffer| buffer.to_bytes())
-                .map_err(opendal_error)
+                .map_err(opendal_error)?;
+            self.metrics.add_bytes_read(bytes.len());
+            Ok(bytes)
         }
         .boxed()
     }
@@ -47,14 +60,17 @@ impl AsyncFileReader for OpendalParquetReader {
     ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
         let operator = &self.operator;
         let path = &self.path;
+        let metrics = &self.metrics;
         stream::iter(ranges)
             .map(move |range| async move {
-                operator
+                let bytes = operator
                     .read_with(path)
                     .range(range)
                     .await
                     .map(|buffer| buffer.to_bytes())
-                    .map_err(opendal_error)
+                    .map_err(opendal_error)?;
+                metrics.add_bytes_read(bytes.len());
+                Ok(bytes)
             })
             .buffered(MAX_CONCURRENT_RANGE_READS)
             .try_collect()
@@ -80,12 +96,15 @@ impl AsyncFileReader for OpendalParquetReader {
 impl MetadataSuffixFetch for &mut OpendalParquetReader {
     fn fetch_suffix(&mut self, suffix: usize) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         async move {
-            self.operator
+            let bytes = self
+                .operator
                 .read_with(&self.path)
                 .range(opendal::BytesRange::suffix(suffix as u64))
                 .await
                 .map(|buffer| buffer.to_bytes())
-                .map_err(opendal_error)
+                .map_err(opendal_error)?;
+            self.metrics.add_bytes_read(bytes.len());
+            Ok(bytes)
         }
         .boxed()
     }
@@ -102,13 +121,15 @@ pub(super) async fn load_parquet_metadata(
     operator: opendal::Operator,
     paths: Vec<String>,
     max_read_parallelism: usize,
+    metrics: Arc<ReadMetrics>,
 ) -> Result<(SchemaRef, Vec<ParquetFileMetadata>)> {
     let parallelism = paths.len().min(max_read_parallelism).max(1);
     let files = stream::iter(paths)
         .map(move |path| {
             let operator = operator.clone();
+            let metrics = metrics.clone();
             async move {
-                let mut reader = OpendalParquetReader::new(operator, path.clone());
+                let mut reader = OpendalParquetReader::new(operator, path.clone(), metrics);
                 let metadata =
                     ArrowReaderMetadata::load_async(&mut reader, ArrowReaderOptions::new()).await?;
                 Ok::<_, Error>(ParquetFileMetadata { path, metadata })

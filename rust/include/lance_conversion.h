@@ -50,6 +50,17 @@ struct LanceWriteConfig {
 	size_t bloom_filter_index_column_count = 0;
 };
 
+struct LanceReadMetrics {
+	uint64_t bytes_read = 0;
+	uint64_t total_bytes = 0;
+};
+
+struct LanceWriteMetrics {
+	uint64_t rows_written = 0;
+	uint64_t bytes_read = 0;
+	uint64_t bytes_written = 0;
+};
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -61,6 +72,7 @@ char *lance_conversion_open(const char *path, const struct ArrowSchema *schema, 
 // Takes ownership of array on import and clears its release callback.
 char *lance_conversion_push(struct LanceConversionWriter *writer, struct ArrowArray *array);
 char *lance_conversion_finish(struct LanceConversionWriter *writer);
+void lance_conversion_get_metrics(const struct LanceConversionWriter *writer, struct LanceWriteMetrics *output);
 // Aborts unfinished writes. Never throws across the ABI.
 void lance_conversion_destroy(struct LanceConversionWriter *writer);
 
@@ -69,6 +81,7 @@ char *lance_huggingface_open(const char *dataset, const char *config, const char
                              struct HuggingFaceStreamFactory **output);
 char *lance_huggingface_get_schema(const struct HuggingFaceStreamFactory *factory, struct ArrowSchema *output);
 char *lance_huggingface_get_stream(struct HuggingFaceStreamFactory *factory, struct ArrowArrayStream *output);
+void lance_huggingface_get_metrics(const struct HuggingFaceStreamFactory *factory, struct LanceReadMetrics *output);
 void lance_huggingface_destroy(struct HuggingFaceStreamFactory *factory);
 
 char *lance_warc_open(const char *path, const char *index_path, const struct LanceS3Config *s3,
@@ -76,6 +89,7 @@ char *lance_warc_open(const char *path, const char *index_path, const struct Lan
 char *lance_warc_get_schema(const struct WarcStreamFactory *factory, struct ArrowSchema *output);
 char *lance_warc_get_stream(const struct WarcStreamFactory *factory, const char *const *columns, size_t column_count,
                             struct ArrowArrayStream *output);
+void lance_warc_get_metrics(const struct WarcStreamFactory *factory, struct LanceReadMetrics *output);
 void lance_warc_destroy(struct WarcStreamFactory *factory);
 
 #ifdef __cplusplus

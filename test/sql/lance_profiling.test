@@ -1,0 +1,60 @@
+# name: test/sql/lance_profiling.test
+# description: Source and destination metrics are reported through DuckDB profiling
+# group: [sql]
+
+require lance_conversion
+
+require json
+
+statement ok
+SET profiling_coverage = 'ALL';
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '__TEST_DIR__/lance_profile.json';
+
+statement ok
+PRAGMA custom_profiling_settings = '{
+    "OPERATOR_TYPE": "true",
+    "OPERATOR_ROWS_SCANNED": "true",
+    "TOTAL_BYTES_READ": "true",
+    "TOTAL_BYTES_WRITTEN": "true"
+}';
+
+query I
+COPY (
+    SELECT * FROM read_warc('test/data/records.warc')
+) TO '__TEST_DIR__/profiled.lance' (FORMAT LANCE);
+----
+2
+
+statement ok
+PRAGMA disable_profiling;
+
+query II
+SELECT total_bytes_read > 0, total_bytes_written > 0
+FROM read_json_auto('__TEST_DIR__/lance_profile.json');
+----
+true	true
+
+statement ok
+CREATE VIEW profiled_operators AS
+WITH RECURSIVE operators AS (
+    SELECT unnest(children) AS operator
+    FROM read_json_auto('__TEST_DIR__/lance_profile.json')
+    UNION ALL
+    SELECT unnest(operator.children)
+    FROM operators
+    WHERE len(operator.children) > 0
+)
+SELECT operator.operator_type, operator.operator_rows_scanned
+FROM operators;
+
+query I
+SELECT sum(operator_rows_scanned)
+FROM profiled_operators
+WHERE operator_type = 'TABLE_SCAN';
+----
+2

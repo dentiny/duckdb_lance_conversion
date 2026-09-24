@@ -3,6 +3,7 @@
 #include "function_metadata.hpp"
 #include "lance_ffi.hpp"
 #include "lance_conversion.h"
+#include "source_metrics.hpp"
 #include "source_options.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/exception.hpp"
@@ -14,18 +15,6 @@
 
 namespace duckdb {
 namespace {
-
-class HuggingFaceDependency : public DependencyItem {
-public:
-	explicit HuggingFaceDependency(HuggingFaceStreamFactory *factory_p) : factory(factory_p) {
-	}
-
-	~HuggingFaceDependency() override {
-		lance_huggingface_destroy(factory);
-	}
-
-	HuggingFaceStreamFactory *factory;
-};
 
 unique_ptr<ArrowArrayStreamWrapper> ProduceHuggingFaceStream(uintptr_t factory_ptr, ArrowStreamParameters &) {
 	auto result = make_uniq<ArrowArrayStreamWrapper>();
@@ -64,7 +53,11 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	                                         token.empty() ? nullptr : token.c_str(), preserve_insertion_order,
 	                                         read_options.max_read_parallelism, &factory),
 	                  "Hugging Face reader");
-	auto dependency = make_shared_ptr<HuggingFaceDependency>(factory);
+	auto dependency = make_shared_ptr<SourceMetricsDependency>(
+	    factory, [](void *value) { lance_huggingface_destroy(static_cast<HuggingFaceStreamFactory *>(value)); },
+	    [](const void *value, LanceReadMetrics *metrics) {
+		    lance_huggingface_get_metrics(static_cast<const HuggingFaceStreamFactory *>(value), metrics);
+	    });
 	auto result =
 	    make_uniq<ArrowScanFunctionData>(ProduceHuggingFaceStream, reinterpret_cast<uintptr_t>(factory), dependency);
 	ThrowIfLanceError(lance_huggingface_get_schema(factory, &result->schema_root.arrow_schema), "Hugging Face reader");
@@ -82,9 +75,10 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 } // namespace
 
 void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
-	TableFunction function("read_huggingface", {LogicalType::VARCHAR}, ArrowTableFunction::ArrowScanFunction,
-	                       BindHuggingFace, ArrowTableFunction::ArrowScanInitGlobal,
-	                       ArrowTableFunction::ArrowScanInitLocal);
+	TableFunction function("read_huggingface", {LogicalType::VARCHAR}, SourceMetricsArrowScan, BindHuggingFace,
+	                       ArrowTableFunction::ArrowScanInitGlobal, ArrowTableFunction::ArrowScanInitLocal);
+	function.get_metrics = SourceMetricsGetMetrics;
+	function.table_scan_progress = SourceMetricsProgress;
 	function.named_parameters["config"] = LogicalType::VARCHAR;
 	function.named_parameters["split"] = LogicalType::VARCHAR;
 	function.named_parameters["preserve_insertion_order"] = LogicalType::BOOLEAN;
