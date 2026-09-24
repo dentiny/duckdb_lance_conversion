@@ -2929,6 +2929,7 @@ dependencies = [
  "opendal",
  "opendal-http-transport-reqwest",
  "parquet",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

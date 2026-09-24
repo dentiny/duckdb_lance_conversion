@@ -14,5 +14,5 @@ FROM duckdb_functions()
 WHERE function_name IN ('read_huggingface', 'read_warc')
 ORDER BY function_name;
 ----
-read_huggingface	Reads a Hugging Face dataset's Parquet files.	dataset,config,split	SELECT * FROM read_huggingface('lhoestq/demo1');	lance_conversion,reader
-read_warc	Reads records from a local or S3 WARC file.	path	SELECT * FROM read_warc('archive.warc.gz');	lance_conversion,reader
+read_huggingface	Reads a Hugging Face dataset's Parquet files.	dataset,config,split,preserve_insertion_order,max_read_parallelism	SELECT * FROM read_huggingface('lhoestq/demo1');	lance_conversion,reader
+read_warc	Reads records from a local or S3 WARC file.	path,index_path,max_read_parallelism	SELECT * FROM read_warc('archive.warc.gz');	lance_conversion,reader

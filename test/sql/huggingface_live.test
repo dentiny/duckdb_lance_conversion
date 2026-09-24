@@ -25,6 +25,26 @@ EXECUTE hf_scan;
 5
 
 query I
+SELECT count(*)
+FROM read_huggingface(
+    'lhoestq/demo1',
+    preserve_insertion_order = false,
+    max_read_parallelism = 2
+);
+----
+5
+
+statement error
+SELECT *
+FROM read_huggingface(
+    'lhoestq/demo1',
+    preserve_insertion_order = false,
+    max_read_parallelism = 0
+);
+----
+max_read_parallelism must be positive
+
+query I
 EXECUTE hf_scan;
 ----
 5

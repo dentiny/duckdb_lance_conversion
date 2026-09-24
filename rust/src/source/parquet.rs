@@ -4,7 +4,7 @@ use std::sync::Arc;
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use futures::{future::BoxFuture, stream, FutureExt, StreamExt, TryStreamExt};
-use parquet::arrow::arrow_reader::ArrowReaderOptions;
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use parquet::arrow::async_reader::{
     AsyncFileReader, MetadataSuffixFetch, ParquetRecordBatchStream, ParquetRecordBatchStreamBuilder,
 };
@@ -101,13 +101,86 @@ async fn open_parquet(
     )
 }
 
+async fn open_parquet_row_groups(
+    operator: opendal::Operator,
+    paths: Vec<String>,
+    batch_size: usize,
+    max_read_parallelism: usize,
+) -> Result<(SchemaRef, BatchStream)> {
+    let file_parallelism = paths.len();
+    let metadata_operator = operator.clone();
+    let files = stream::iter(paths)
+        .map(move |path| {
+            let operator = metadata_operator.clone();
+            async move {
+                let mut reader = OpendalParquetReader {
+                    operator,
+                    path: path.clone(),
+                };
+                let metadata =
+                    ArrowReaderMetadata::load_async(&mut reader, ArrowReaderOptions::new()).await?;
+                Ok::<_, Error>((path, metadata))
+            }
+        })
+        .buffered(file_parallelism)
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    let schema = files[0].1.schema().clone();
+    for (path, metadata) in files.iter().skip(1) {
+        if metadata.schema() != &schema {
+            return Err(Error::message(format!(
+                "Parquet schema does not match the first file: {path}"
+            )));
+        }
+    }
+
+    let row_groups = files
+        .into_iter()
+        .flat_map(|(path, metadata)| {
+            let count = metadata.metadata().num_row_groups();
+            (0..count).map(move |index| (path.clone(), metadata.clone(), index))
+        })
+        .collect::<Vec<_>>();
+    let parallelism = row_groups.len().min(max_read_parallelism).max(1);
+    let readers = stream::iter(row_groups).map(move |(path, metadata, row_group)| {
+        ParquetRecordBatchStreamBuilder::new_with_metadata(
+            OpendalParquetReader {
+                operator: operator.clone(),
+                path,
+            },
+            metadata,
+        )
+        .with_batch_size(batch_size)
+        .with_row_groups(vec![row_group])
+        .build()
+        .map(|reader| reader.map_err(Error::from))
+        .map_err(Error::from)
+    });
+    Ok((
+        schema,
+        Box::pin(readers.try_flatten_unordered(Some(parallelism))),
+    ))
+}
+
 pub(crate) async fn open_parquet_paths(
     operator: opendal::Operator,
     paths: Vec<String>,
     batch_size: usize,
+    preserve_insertion_order: bool,
+    max_read_parallelism: usize,
 ) -> Result<(SchemaRef, BatchStream)> {
     if batch_size == 0 {
         return Err(Error::message("batch_size must be positive"));
+    }
+    if paths.is_empty() {
+        return Err(Error::message("Parquet source contains no .parquet files"));
+    }
+    if max_read_parallelism == 0 {
+        return Err(Error::message("max_read_parallelism must be positive"));
+    }
+    if !preserve_insertion_order {
+        return open_parquet_row_groups(operator, paths, batch_size, max_read_parallelism).await;
     }
     let mut paths = paths.into_iter();
     let first_path = paths
@@ -116,21 +189,20 @@ pub(crate) async fn open_parquet_paths(
     let reader = open_parquet(operator.clone(), first_path, batch_size).await?;
     let schema = reader.schema().clone();
     let expected_schema = schema.clone();
-    let remaining = stream::iter(paths)
-        .then(move |path| {
-            let operator = operator.clone();
-            let expected_schema = expected_schema.clone();
-            async move {
-                let reader = open_parquet(operator, path.clone(), batch_size).await?;
-                if reader.schema() != &expected_schema {
-                    return Err(Error::message(format!(
-                        "Parquet schema does not match the first file: {path}"
-                    )));
-                }
-                Ok(reader.map_err(Error::from))
+    let open_remaining = move |path: String| {
+        let operator = operator.clone();
+        let expected_schema = expected_schema.clone();
+        async move {
+            let reader = open_parquet(operator, path.clone(), batch_size).await?;
+            if reader.schema() != &expected_schema {
+                return Err(Error::message(format!(
+                    "Parquet schema does not match the first file: {path}"
+                )));
             }
-        })
-        .try_flatten();
+            Ok(reader.map_err(Error::from))
+        }
+    };
+    let remaining = stream::iter(paths).then(open_remaining).try_flatten();
     let batches = reader.map_err(Error::from).chain(remaining);
     Ok((schema, Box::pin(batches)))
 }

@@ -3,6 +3,7 @@
 #include "function_metadata.hpp"
 #include "lance_ffi.hpp"
 #include "lance_conversion.h"
+#include "source_options.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table/arrow.hpp"
@@ -47,6 +48,12 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	if (split_entry != input.named_parameters.end()) {
 		split = split_entry->second.GetValue<string>();
 	}
+	auto preserve_insertion_order = true;
+	auto preserve_insertion_order_entry = input.named_parameters.find("preserve_insertion_order");
+	if (preserve_insertion_order_entry != input.named_parameters.end()) {
+		preserve_insertion_order = preserve_insertion_order_entry->second.GetValue<bool>();
+	}
+	auto read_options = SourceReadOptions::From(input);
 
 	string token;
 	KeyValueSecretReader secret_reader(*context.db, "huggingface", "hf://datasets/" + dataset);
@@ -54,7 +61,8 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 
 	HuggingFaceStreamFactory *factory = nullptr;
 	ThrowIfLanceError(lance_huggingface_open(dataset.c_str(), config.c_str(), split.c_str(),
-	                                         token.empty() ? nullptr : token.c_str(), &factory),
+	                                         token.empty() ? nullptr : token.c_str(), preserve_insertion_order,
+	                                         read_options.max_read_parallelism, &factory),
 	                  "Hugging Face reader");
 	auto dependency = make_shared_ptr<HuggingFaceDependency>(factory);
 	auto result =
@@ -79,11 +87,15 @@ void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
 	                       ArrowTableFunction::ArrowScanInitLocal);
 	function.named_parameters["config"] = LogicalType::VARCHAR;
 	function.named_parameters["split"] = LogicalType::VARCHAR;
-	RegisterTableFunctionWithMetadata(loader, std::move(function),
-	                                  /*parameter_names=*/ {"dataset", "config", "split"},
-	                                  /*description=*/"Reads a Hugging Face dataset's Parquet files.",
-	                                  /*examples=*/ {"SELECT * FROM read_huggingface('lhoestq/demo1');"},
-	                                  /*categories=*/ {"lance_conversion", "reader"});
+	function.named_parameters["preserve_insertion_order"] = LogicalType::BOOLEAN;
+	SourceReadOptions::Register(function);
+	RegisterTableFunctionWithMetadata(
+	    loader, std::move(function),
+	    /*parameter_names=*/
+	    {"dataset", "config", "split", "preserve_insertion_order", "max_read_parallelism"},
+	    /*description=*/"Reads a Hugging Face dataset's Parquet files.",
+	    /*examples=*/ {"SELECT * FROM read_huggingface('lhoestq/demo1');"},
+	    /*categories=*/ {"lance_conversion", "reader"});
 }
 
 } // namespace duckdb

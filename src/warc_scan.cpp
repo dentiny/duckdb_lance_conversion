@@ -3,6 +3,7 @@
 #include "function_metadata.hpp"
 #include "lance_conversion.h"
 #include "lance_ffi.hpp"
+#include "source_options.hpp"
 #include "storage_options.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/file_system.hpp"
@@ -45,20 +46,29 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 		throw BinderException("read_warc path must not be NULL");
 	}
 	auto path = input.inputs[0].GetValue<string>();
+	auto read_options = SourceReadOptions::From(input);
+	string index_path;
+	auto index_path_entry = input.named_parameters.find("index_path");
+	if (index_path_entry != input.named_parameters.end()) {
+		index_path = index_path_entry->second.GetValue<string>();
+	}
 	LanceS3Config s3;
 	const LanceS3Config *s3_ptr = nullptr;
 	LanceS3Options options;
-	if (FileSystem::IsRemoteFile(path)) {
-		if (!StringUtil::CIStartsWith(path, "s3://")) {
+	auto credential_path = FileSystem::IsRemoteFile(path) ? path : index_path;
+	if (FileSystem::IsRemoteFile(credential_path)) {
+		if (!StringUtil::CIStartsWith(credential_path, "s3://")) {
 			throw BinderException("read_warc supports only local and s3:// paths");
 		}
-		options = ReadS3Options(context, path);
+		options = ReadS3Options(context, credential_path);
 		s3 = options.ToConfig();
 		s3_ptr = &s3;
 	}
 
 	WarcStreamFactory *factory = nullptr;
-	ThrowIfLanceError(lance_warc_open(path.c_str(), s3_ptr, &factory), "WARC reader");
+	ThrowIfLanceError(lance_warc_open(path.c_str(), index_path.empty() ? nullptr : index_path.c_str(), s3_ptr,
+	                                  read_options.max_read_parallelism, &factory),
+	                  "WARC reader");
 	auto dependency = make_shared_ptr<WarcDependency>(factory);
 	auto result = make_uniq<ArrowScanFunctionData>(ProduceWarcStream, reinterpret_cast<uintptr_t>(factory), dependency);
 	ThrowIfLanceError(lance_warc_get_schema(factory, &result->schema_root.arrow_schema), "WARC reader");
@@ -75,8 +85,10 @@ void RegisterWarcScanFunction(ExtensionLoader &loader) {
 	TableFunction function("read_warc", {LogicalType::VARCHAR}, ArrowTableFunction::ArrowScanFunction, BindWarc,
 	                       ArrowTableFunction::ArrowScanInitGlobal, ArrowTableFunction::ArrowScanInitLocal);
 	function.projection_pushdown = true;
+	function.named_parameters["index_path"] = LogicalType::VARCHAR;
+	SourceReadOptions::Register(function);
 	RegisterTableFunctionWithMetadata(loader, std::move(function),
-	                                  /*parameter_names=*/ {"path"},
+	                                  /*parameter_names=*/ {"path", "index_path", "max_read_parallelism"},
 	                                  /*description=*/"Reads records from a local or S3 WARC file.",
 	                                  /*examples=*/ {"SELECT * FROM read_warc('archive.warc.gz');"},
 	                                  /*categories=*/ {"lance_conversion", "reader"});

@@ -1,4 +1,5 @@
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Cursor, Read};
+use std::ops::Range;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, LazyLock};
 
@@ -8,13 +9,14 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use flate2::read::MultiGzDecoder;
-use futures::stream;
+use futures::{stream, StreamExt, TryStreamExt};
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tokio_util::io::SyncIoBridge;
 use warc::{Record, StreamingBody, WarcHeader, WarcReader};
 
-use super::{BatchSource, BatchStream};
+use super::{BatchSource, BatchStream, SourceReadOptions};
 use crate::storage::OpendalStorage;
 use crate::{Error, Result, S3StorageConfig};
 
@@ -24,6 +26,7 @@ const DEFAULT_BATCH_SIZE: usize = 8192;
 const MAX_BATCH_BODY_BYTES: usize = 16 * 1024 * 1024;
 const CHANNEL_CAPACITY: usize = 1;
 const READ_BUFFER_SIZE: usize = 1024 * 1024;
+const INDEX_WORK_UNIT_COMPRESSED_BYTES: u64 = 16 * 1024 * 1024;
 const BODY_COLUMN_INDEX: usize = 19;
 
 static WARC_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
@@ -100,6 +103,8 @@ pub struct WarcSource {
     batch_size: usize,
     s3_config: Option<S3StorageConfig>,
     projection: Option<Vec<usize>>,
+    read_options: SourceReadOptions,
+    index_path: Option<String>,
 }
 
 impl WarcSource {
@@ -109,6 +114,8 @@ impl WarcSource {
             batch_size: DEFAULT_BATCH_SIZE,
             s3_config: None,
             projection: None,
+            read_options: SourceReadOptions::default(),
+            index_path: None,
         }
     }
 
@@ -126,6 +133,16 @@ impl WarcSource {
         self.projection = Some(projection);
         self
     }
+
+    pub fn with_max_read_parallelism(mut self, max_read_parallelism: usize) -> Self {
+        self.read_options.max_read_parallelism = max_read_parallelism;
+        self
+    }
+
+    pub fn with_index_path(mut self, index_path: impl Into<String>) -> Self {
+        self.index_path = Some(index_path.into());
+        self
+    }
 }
 
 impl BatchSource for WarcSource {
@@ -133,6 +150,7 @@ impl BatchSource for WarcSource {
         if self.batch_size == 0 {
             return Err(Error::message("batch_size must be positive"));
         }
+        let read_options = self.read_options.validate()?;
         let full_schema = warc_schema();
         let projection = match self.projection {
             Some(projection) if !projection.is_empty() => projection,
@@ -165,6 +183,20 @@ impl BatchSource for WarcSource {
             return Err(Error::message("WARC input must not be a storage root"));
         }
         let gzipped = path.to_ascii_lowercase().ends_with(".gz");
+        if let Some(index_path) = self.index_path {
+            return open_indexed_warc(
+                storage.operator,
+                path,
+                gzipped,
+                &index_path,
+                self.s3_config.as_ref(),
+                self.batch_size,
+                projection,
+                schema,
+                read_options.max_read_parallelism,
+            )
+            .await;
+        }
         let reader = storage
             .operator
             .reader(&path)
@@ -192,7 +224,7 @@ impl BatchSource for WarcSource {
                     batch_size,
                     stream_projection,
                     stream_schema,
-                    &sender,
+                    |batch| send_batch(batch, &sender),
                 )
             }));
             let error = match result {
@@ -219,21 +251,199 @@ impl BatchSource for WarcSource {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct WarcIndexEntry {
+    offset: u64,
+    length: u64,
+}
+
+fn json_u64(object: &Value, name: &str, line_number: usize) -> Result<u64> {
+    let value = object
+        .get(name)
+        .ok_or_else(|| Error::message(format!("WARC index line {line_number} has no {name}")))?;
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        .ok_or_else(|| Error::message(format!("WARC index line {line_number} has invalid {name}")))
+}
+
+fn index_filename_matches(source_path: &str, filename: &str) -> bool {
+    source_path.ends_with(filename)
+        || std::path::Path::new(source_path).file_name()
+            == std::path::Path::new(filename).file_name()
+}
+
+fn parse_warc_index(
+    bytes: bytes::Bytes,
+    gzipped: bool,
+    source_path: &str,
+) -> Result<Vec<WarcIndexEntry>> {
+    let reader: Box<dyn BufRead> = if gzipped {
+        Box::new(BufReader::new(MultiGzDecoder::new(Cursor::new(bytes))))
+    } else {
+        Box::new(BufReader::new(Cursor::new(bytes)))
+    };
+    let mut entries = Vec::new();
+    for (index, line) in reader.lines().enumerate() {
+        let line_number = index + 1;
+        let line = line.map_err(|error| {
+            Error::message(format!("reading WARC index line {line_number}: {error}"))
+        })?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let json_start = line.find('{').ok_or_else(|| {
+            Error::message(format!("WARC index line {line_number} is not JSON or CDXJ"))
+        })?;
+        let object: Value = serde_json::from_str(&line[json_start..]).map_err(|error| {
+            Error::message(format!("invalid WARC index line {line_number}: {error}"))
+        })?;
+        if let Some(filename) = object.get("filename").and_then(Value::as_str) {
+            if !index_filename_matches(source_path, filename) {
+                continue;
+            }
+        }
+        let offset = json_u64(&object, "offset", line_number)?;
+        let length = json_u64(&object, "length", line_number)?;
+        if length == 0 {
+            return Err(Error::message(format!(
+                "WARC index line {line_number} has zero length"
+            )));
+        }
+        entries.push(WarcIndexEntry { offset, length });
+    }
+    if entries.is_empty() {
+        return Err(Error::message(
+            "WARC index contains no entries for the source file",
+        ));
+    }
+    Ok(entries)
+}
+
+fn index_work_units(mut entries: Vec<WarcIndexEntry>) -> Result<Vec<Range<u64>>> {
+    entries.sort_unstable_by_key(|entry| entry.offset);
+    let mut units: Vec<Range<u64>> = Vec::new();
+    for entry in entries {
+        let end = entry
+            .offset
+            .checked_add(entry.length)
+            .ok_or_else(|| Error::message("WARC index offset plus length overflows u64"))?;
+        if let Some(unit) = units.last_mut() {
+            if entry.offset < unit.end {
+                return Err(Error::message("WARC index entries overlap"));
+            }
+            if entry.offset == unit.end
+                && end.saturating_sub(unit.start) <= INDEX_WORK_UNIT_COMPRESSED_BYTES
+            {
+                unit.end = end;
+                continue;
+            }
+        }
+        units.push(entry.offset..end);
+    }
+    Ok(units)
+}
+
+fn parse_indexed_warc_bytes(
+    bytes: bytes::Bytes,
+    gzipped: bool,
+    batch_size: usize,
+    projection: Vec<usize>,
+    schema: SchemaRef,
+) -> Result<Vec<RecordBatch>> {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let reader: Box<dyn BufRead> = if gzipped {
+            Box::new(BufReader::new(MultiGzDecoder::new(Cursor::new(bytes))))
+        } else {
+            Box::new(BufReader::new(Cursor::new(bytes)))
+        };
+        let mut batches = Vec::new();
+        stream_records(reader, batch_size, projection, schema, |batch| {
+            batches.push(batch.finish()?);
+            Ok(true)
+        })?;
+        Ok(batches)
+    }));
+    match result {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown panic");
+            Err(Error::message(format!("panic in WARC parser: {message}")))
+        }
+    }
+}
+
+async fn open_indexed_warc(
+    operator: opendal::Operator,
+    path: String,
+    gzipped: bool,
+    index_path: &str,
+    s3_config: Option<&S3StorageConfig>,
+    batch_size: usize,
+    projection: Vec<usize>,
+    schema: SchemaRef,
+    max_read_parallelism: usize,
+) -> Result<(SchemaRef, BatchStream)> {
+    let index_storage = OpendalStorage::from_path(index_path, s3_config)?;
+    let index_object_path = index_storage.object_path.to_string();
+    if index_object_path.is_empty() {
+        return Err(Error::message("WARC index must not be a storage root"));
+    }
+    let index_bytes = index_storage
+        .operator
+        .read(&index_object_path)
+        .await?
+        .to_bytes();
+    let index_gzipped = index_object_path.to_ascii_lowercase().ends_with(".gz");
+    let source_path = path.clone();
+    let entries = tokio::task::spawn_blocking(move || {
+        parse_warc_index(index_bytes, index_gzipped, &source_path)
+    })
+    .await
+    .map_err(|error| Error::message(format!("WARC index parser task failed: {error}")))??;
+    let work_units = index_work_units(entries)?;
+    let parallelism = work_units.len().min(max_read_parallelism).max(1);
+    let stream_schema = schema.clone();
+    let batches = stream::iter(work_units)
+        .map(move |range| {
+            let operator = operator.clone();
+            let path = path.clone();
+            let projection = projection.clone();
+            let schema = stream_schema.clone();
+            async move {
+                let bytes = operator.read_with(&path).range(range).await?.to_bytes();
+                tokio::task::spawn_blocking(move || {
+                    parse_indexed_warc_bytes(bytes, gzipped, batch_size, projection, schema)
+                })
+                .await
+                .map_err(|error| {
+                    Error::message(format!("indexed WARC parser task failed: {error}"))
+                })?
+            }
+        })
+        .buffered(parallelism)
+        .map_ok(|batches| stream::iter(batches.into_iter().map(Ok::<_, Error>)))
+        .try_flatten();
+    Ok((schema, Box::pin(batches)))
+}
+
 fn stream_records(
     reader: Box<dyn BufRead>,
     batch_size: usize,
     projection: Vec<usize>,
     schema: SchemaRef,
-    sender: &mpsc::Sender<Result<RecordBatch>>,
+    mut emit: impl FnMut(WarcBatchBuilder) -> Result<bool>,
 ) -> Result<()> {
     let include_body = projection.contains(&BODY_COLUMN_INDEX);
     let mut reader = WarcReader::new(reader);
     let mut batch = WarcBatchBuilder::new(batch_size, projection, schema)?;
     let mut stream = reader.stream_records();
     while let Some(record) = stream.next_item() {
-        if sender.is_closed() {
-            return Ok(());
-        }
         let record =
             record.map_err(|error| Error::message(format!("WARC parse error: {error}")))?;
         let body_len = if include_body {
@@ -246,7 +456,7 @@ fn stream_records(
         };
         if !batch.is_empty()
             && batch.would_exceed_body_limit(body_len)
-            && !send_batch(batch.take_empty(batch_size)?, sender)?
+            && !emit(batch.take_empty(batch_size)?)?
         {
             return Ok(());
         }
@@ -261,13 +471,13 @@ fn stream_records(
         }
         batch.finish_row();
         if (batch.len() == batch_size || batch.body_bytes() >= MAX_BATCH_BODY_BYTES)
-            && !send_batch(batch.take_empty(batch_size)?, sender)?
+            && !emit(batch.take_empty(batch_size)?)?
         {
             return Ok(());
         }
     }
     if !batch.is_empty() {
-        send_batch(batch, sender)?;
+        emit(batch)?;
     }
     Ok(())
 }
@@ -442,7 +652,7 @@ mod tests {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use arrow_array::BinaryViewArray;
+    use arrow_array::{BinaryViewArray, StringArray};
     use flate2::{write::GzEncoder, Compression};
     use futures::TryStreamExt;
 
@@ -569,6 +779,60 @@ mod tests {
                 .sum::<usize>(),
             2
         );
+
+        tokio::fs::remove_dir_all(temp).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn streams_indexed_gzip_members_in_offset_order() {
+        let temp = test_directory().await;
+        let gzip_member = |value: String| {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(value.as_bytes()).unwrap();
+            encoder.finish().unwrap()
+        };
+        let first = gzip_member(record(1, "first"));
+        let second = gzip_member(record(2, "second"));
+        let gap = b"index gap";
+        let second_offset = first.len() + gap.len();
+        let mut archive = first.clone();
+        archive.extend_from_slice(gap);
+        archive.extend_from_slice(&second);
+        let archive_path = temp.join("indexed.warc.gz");
+        tokio::fs::write(&archive_path, archive).await.unwrap();
+
+        let index = format!(
+            "com,example)/2 20240102030405 {{\"filename\":\"indexed.warc.gz\",\"offset\":\"{}\",\"length\":\"{}\"}}\n\
+             com,example)/1 20240102030405 {{\"filename\":\"indexed.warc.gz\",\"offset\":0,\"length\":{}}}\n",
+            second_offset,
+            second.len(),
+            first.len()
+        );
+        let index_path = temp.join("indexed.cdxj");
+        tokio::fs::write(&index_path, index).await.unwrap();
+
+        let (_, stream) = WarcSource::new(archive_path.to_string_lossy())
+            .with_index_path(index_path.to_string_lossy())
+            .with_max_read_parallelism(2)
+            .with_batch_size(1)
+            .open()
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let ids = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .iter()
+                    .map(Option::unwrap)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["<urn:uuid:1>", "<urn:uuid:2>"]);
 
         tokio::fs::remove_dir_all(temp).await.unwrap();
     }

@@ -92,6 +92,8 @@ pub struct HuggingFaceStreamFactory {
     config: String,
     split: String,
     token: Option<String>,
+    preserve_insertion_order: bool,
+    max_read_parallelism: usize,
     schema: SchemaRef,
     reader: Option<ArrowBatchReader>,
 }
@@ -100,7 +102,9 @@ impl HuggingFaceStreamFactory {
     fn open_reader(&self) -> Result<ArrowBatchReader> {
         let mut source = HuggingFaceSource::new(&self.dataset)
             .with_config(&self.config)
-            .with_split(&self.split);
+            .with_split(&self.split)
+            .with_preserve_insertion_order(self.preserve_insertion_order)
+            .with_max_read_parallelism(self.max_read_parallelism);
         if let Some(token) = &self.token {
             source = source.with_token(token);
         }
@@ -110,12 +114,19 @@ impl HuggingFaceStreamFactory {
 
 pub struct WarcStreamFactory {
     path: String,
+    index_path: Option<String>,
     s3_config: Option<S3StorageConfig>,
+    max_read_parallelism: usize,
 }
 
 impl WarcStreamFactory {
     fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
-        let mut source = WarcSource::new(&self.path).with_projection(projection);
+        let mut source = WarcSource::new(&self.path)
+            .with_projection(projection)
+            .with_max_read_parallelism(self.max_read_parallelism);
+        if let Some(index_path) = &self.index_path {
+            source = source.with_index_path(index_path);
+        }
         if let Some(config) = &self.s3_config {
             source = source.with_s3_config(config.clone());
         }
@@ -329,6 +340,8 @@ pub unsafe extern "C" fn lance_huggingface_open(
     config: *const c_char,
     split: *const c_char,
     token: *const c_char,
+    preserve_insertion_order: i32,
+    max_read_parallelism: u64,
     output: *mut *mut HuggingFaceStreamFactory,
 ) -> *mut c_char {
     call(|| {
@@ -340,9 +353,13 @@ pub unsafe extern "C" fn lance_huggingface_open(
         let config = CStr::from_ptr(config).to_str()?.to_owned();
         let split = CStr::from_ptr(split).to_str()?.to_owned();
         let token = optional_string(token)?;
+        let max_read_parallelism = usize::try_from(max_read_parallelism)
+            .map_err(|_| Error::message("max_read_parallelism is too large"))?;
         let mut source = HuggingFaceSource::new(&dataset)
             .with_config(&config)
-            .with_split(&split);
+            .with_split(&split)
+            .with_preserve_insertion_order(preserve_insertion_order != 0)
+            .with_max_read_parallelism(max_read_parallelism);
         if let Some(token) = &token {
             source = source.with_token(token);
         }
@@ -353,6 +370,8 @@ pub unsafe extern "C" fn lance_huggingface_open(
             config,
             split,
             token,
+            preserve_insertion_order: preserve_insertion_order != 0,
+            max_read_parallelism,
             schema,
             reader: Some(reader),
         }));
@@ -409,7 +428,9 @@ pub unsafe extern "C" fn lance_huggingface_destroy(factory: *mut HuggingFaceStre
 #[no_mangle]
 pub unsafe extern "C" fn lance_warc_open(
     path: *const c_char,
+    index_path: *const c_char,
     s3: *const LanceS3Config,
+    max_read_parallelism: u64,
     output: *mut *mut WarcStreamFactory,
 ) -> *mut c_char {
     call(|| {
@@ -418,9 +439,17 @@ pub unsafe extern "C" fn lance_warc_open(
         }
         *output = ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?.to_owned();
+        let index_path = optional_string(index_path)?;
+        let max_read_parallelism = usize::try_from(max_read_parallelism)
+            .map_err(|_| Error::message("max_read_parallelism is too large"))?;
+        if max_read_parallelism == 0 {
+            return Err(Error::message("max_read_parallelism must be positive"));
+        }
         *output = Box::into_raw(Box::new(WarcStreamFactory {
             path,
+            index_path,
             s3_config: s3_config(s3)?,
+            max_read_parallelism,
         }));
         Ok(())
     })
