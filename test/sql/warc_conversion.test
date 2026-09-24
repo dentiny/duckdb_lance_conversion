@@ -33,10 +33,26 @@ EXECUTE warc_scan;
 
 query TTI rowsort
 SELECT type, id, epoch_ms(date)
-FROM read_warc('test/data/records.warc');
+FROM read_warc('test/data/records.warc', max_read_parallelism = 2);
 ----
 response	<urn:uuid:1>	1704164645000
 response	<urn:uuid:2>	1704164646000
+
+query I
+SELECT count(*)
+FROM read_warc(
+    'test/data/records.warc.gz',
+    index_path = 'test/data/records.cdxj',
+    max_read_parallelism = 2
+);
+----
+2
+
+statement error
+SELECT *
+FROM read_warc('test/data/records.warc', max_read_parallelism = 0);
+----
+max_read_parallelism must be positive
 
 restart no_extension_load
 

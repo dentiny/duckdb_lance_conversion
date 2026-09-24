@@ -98,14 +98,21 @@ output path must not exist, even as an empty directory.
 ### Extension readers
 
 `read_huggingface` reads the Parquet representation published for a Hugging
-Face dataset. `config` and `split` default to `default` and `train`:
+Face dataset. `config` and `split` default to `default` and `train`.
+`preserve_insertion_order` defaults to `true`, which reads sorted Parquet
+shards and their row groups sequentially. Set it to `false` to read files and
+row groups concurrently, emitting batches as they become ready.
+`max_read_parallelism` defaults to `8` and is capped by the total row-group
+count:
 
 ```sql
 COPY (
     SELECT * FROM read_huggingface(
         'lhoestq/demo1',
         config = 'default',
-        split = 'train'
+        split = 'train',
+        preserve_insertion_order = false,
+        max_read_parallelism = 8
     )
 )
 TO 'demo1.lance' (FORMAT LANCE);
@@ -128,11 +135,18 @@ TO 'archive.lance' (FORMAT LANCE);
 
 Local and `s3://` paths are supported. Projection pushdown avoids constructing
 and copying WARC bodies when the query does not select `body`.
+For WARC files with a JSON or CDXJ index containing `offset` and `length`,
+`index_path` enables parallel range reads. `max_read_parallelism` defaults to
+`8`; results remain in WARC offset order.
 
 ```sql
 COPY (
     SELECT id, date, body
-    FROM read_warc('s3://bucket/crawl/archive.warc.gz')
+    FROM read_warc(
+        's3://bucket/crawl/archive.warc.gz',
+        index_path = 's3://bucket/crawl/archive.cdxj.gz',
+        max_read_parallelism = 16
+    )
 )
 TO 's3://bucket/datasets/archive.lance' (FORMAT LANCE);
 ```

@@ -56,9 +56,8 @@ extern "C" {
 
 // NULL means success. Free each owned error with lance_conversion_error_free.
 void lance_conversion_error_free(char *error);
-char *lance_conversion_open(const char *path, const struct ArrowSchema *schema,
-                            const struct LanceWriteConfig *config, const struct LanceS3Config *s3,
-                            struct LanceConversionWriter **output);
+char *lance_conversion_open(const char *path, const struct ArrowSchema *schema, const struct LanceWriteConfig *config,
+                            const struct LanceS3Config *s3, struct LanceConversionWriter **output);
 // Takes ownership of array on import and clears its release callback.
 char *lance_conversion_push(struct LanceConversionWriter *writer, struct ArrowArray *array);
 char *lance_conversion_finish(struct LanceConversionWriter *writer);
@@ -66,12 +65,14 @@ char *lance_conversion_finish(struct LanceConversionWriter *writer);
 void lance_conversion_destroy(struct LanceConversionWriter *writer);
 
 char *lance_huggingface_open(const char *dataset, const char *config, const char *split, const char *token,
+                             int32_t preserve_insertion_order, uint64_t max_read_parallelism,
                              struct HuggingFaceStreamFactory **output);
 char *lance_huggingface_get_schema(const struct HuggingFaceStreamFactory *factory, struct ArrowSchema *output);
 char *lance_huggingface_get_stream(struct HuggingFaceStreamFactory *factory, struct ArrowArrayStream *output);
 void lance_huggingface_destroy(struct HuggingFaceStreamFactory *factory);
 
-char *lance_warc_open(const char *path, const struct LanceS3Config *s3, struct WarcStreamFactory **output);
+char *lance_warc_open(const char *path, const char *index_path, const struct LanceS3Config *s3,
+                      uint64_t max_read_parallelism, struct WarcStreamFactory **output);
 char *lance_warc_get_schema(const struct WarcStreamFactory *factory, struct ArrowSchema *output);
 char *lance_warc_get_stream(const struct WarcStreamFactory *factory, const char *const *columns, size_t column_count,
                             struct ArrowArrayStream *output);

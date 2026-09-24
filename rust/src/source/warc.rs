@@ -14,7 +14,8 @@ use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tokio_util::io::SyncIoBridge;
 use warc::{Record, StreamingBody, WarcHeader, WarcReader};
 
-use super::{BatchSource, BatchStream};
+use super::warc_index::open_indexed_warc;
+use super::{BatchSource, BatchStream, SourceReadOptions};
 use crate::storage::OpendalStorage;
 use crate::{Error, Result, S3StorageConfig};
 
@@ -100,6 +101,8 @@ pub struct WarcSource {
     batch_size: usize,
     s3_config: Option<S3StorageConfig>,
     projection: Option<Vec<usize>>,
+    read_options: SourceReadOptions,
+    index_path: Option<String>,
 }
 
 impl WarcSource {
@@ -109,6 +112,8 @@ impl WarcSource {
             batch_size: DEFAULT_BATCH_SIZE,
             s3_config: None,
             projection: None,
+            read_options: SourceReadOptions::default(),
+            index_path: None,
         }
     }
 
@@ -126,6 +131,16 @@ impl WarcSource {
         self.projection = Some(projection);
         self
     }
+
+    pub fn with_max_read_parallelism(mut self, max_read_parallelism: usize) -> Self {
+        self.read_options.max_read_parallelism = max_read_parallelism;
+        self
+    }
+
+    pub fn with_index_path(mut self, index_path: impl Into<String>) -> Self {
+        self.index_path = Some(index_path.into());
+        self
+    }
 }
 
 impl BatchSource for WarcSource {
@@ -133,6 +148,7 @@ impl BatchSource for WarcSource {
         if self.batch_size == 0 {
             return Err(Error::message("batch_size must be positive"));
         }
+        let read_options = self.read_options.validate()?;
         let full_schema = warc_schema();
         let projection = match self.projection {
             Some(projection) if !projection.is_empty() => projection,
@@ -165,6 +181,20 @@ impl BatchSource for WarcSource {
             return Err(Error::message("WARC input must not be a storage root"));
         }
         let gzipped = path.to_ascii_lowercase().ends_with(".gz");
+        if let Some(index_path) = self.index_path {
+            return open_indexed_warc(
+                storage.operator,
+                path,
+                gzipped,
+                &index_path,
+                self.s3_config.as_ref(),
+                self.batch_size,
+                projection,
+                schema,
+                read_options.max_read_parallelism,
+            )
+            .await;
+        }
         let reader = storage
             .operator
             .reader(&path)
@@ -192,7 +222,7 @@ impl BatchSource for WarcSource {
                     batch_size,
                     stream_projection,
                     stream_schema,
-                    &sender,
+                    |batch| send_batch(batch, &sender),
                 )
             }));
             let error = match result {
@@ -219,21 +249,18 @@ impl BatchSource for WarcSource {
     }
 }
 
-fn stream_records(
+pub(super) fn stream_records(
     reader: Box<dyn BufRead>,
     batch_size: usize,
     projection: Vec<usize>,
     schema: SchemaRef,
-    sender: &mpsc::Sender<Result<RecordBatch>>,
+    mut emit: impl FnMut(WarcBatchBuilder) -> Result<bool>,
 ) -> Result<()> {
     let include_body = projection.contains(&BODY_COLUMN_INDEX);
     let mut reader = WarcReader::new(reader);
     let mut batch = WarcBatchBuilder::new(batch_size, projection, schema)?;
     let mut stream = reader.stream_records();
     while let Some(record) = stream.next_item() {
-        if sender.is_closed() {
-            return Ok(());
-        }
         let record =
             record.map_err(|error| Error::message(format!("WARC parse error: {error}")))?;
         let body_len = if include_body {
@@ -246,7 +273,7 @@ fn stream_records(
         };
         if !batch.is_empty()
             && batch.would_exceed_body_limit(body_len)
-            && !send_batch(batch.take_empty(batch_size)?, sender)?
+            && !emit(batch.take_empty(batch_size)?)?
         {
             return Ok(());
         }
@@ -261,13 +288,13 @@ fn stream_records(
         }
         batch.finish_row();
         if (batch.len() == batch_size || batch.body_bytes() >= MAX_BATCH_BODY_BYTES)
-            && !send_batch(batch.take_empty(batch_size)?, sender)?
+            && !emit(batch.take_empty(batch_size)?)?
         {
             return Ok(());
         }
     }
     if !batch.is_empty() {
-        send_batch(batch, sender)?;
+        emit(batch)?;
     }
     Ok(())
 }
@@ -312,7 +339,7 @@ impl ProjectedColumnBuilder {
     }
 }
 
-struct WarcBatchBuilder {
+pub(super) struct WarcBatchBuilder {
     len: usize,
     body_bytes: usize,
     projection: Vec<usize>,
@@ -427,7 +454,7 @@ impl WarcBatchBuilder {
         self.len += 1;
     }
 
-    fn finish(self) -> Result<RecordBatch> {
+    pub(super) fn finish(self) -> Result<RecordBatch> {
         let columns = self
             .columns
             .into_iter()
@@ -442,10 +469,11 @@ mod tests {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use arrow_array::BinaryViewArray;
+    use arrow_array::{BinaryViewArray, StringArray};
     use flate2::{write::GzEncoder, Compression};
     use futures::TryStreamExt;
 
+    use super::super::test_util::{warc_record as record, write_indexed_warc_fixture};
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -458,22 +486,6 @@ mod tests {
         ));
         tokio::fs::create_dir(&path).await.unwrap();
         path
-    }
-
-    fn record(id: usize, body: &str) -> String {
-        format!(
-            "WARC/1.0\r\n\
-             WARC-Type: response\r\n\
-             WARC-Record-ID: <urn:uuid:{id}>\r\n\
-             WARC-Date: 2024-01-02T03:04:05Z\r\n\
-             WARC-Target-URI: https://example.com/{id}\r\n\
-             Content-Type: text/plain\r\n\
-             Content-Length: {}\r\n\
-             \r\n\
-             {body}\r\n\
-             \r\n",
-            body.len()
-        )
     }
 
     #[test]
@@ -569,6 +581,44 @@ mod tests {
                 .sum::<usize>(),
             2
         );
+
+        tokio::fs::remove_dir_all(temp).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn streams_indexed_gzip_members_in_offset_order() {
+        let temp = test_directory().await;
+        let fixture = write_indexed_warc_fixture(
+            &temp,
+            "indexed",
+            &[(1, "first"), (2, "second")],
+            &[1, 0],
+            b"index gap",
+        )
+        .await;
+
+        let (_, stream) = WarcSource::new(fixture.archive_path.to_string_lossy())
+            .with_index_path(fixture.index_path.to_string_lossy())
+            .with_max_read_parallelism(2)
+            .with_batch_size(1)
+            .open()
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let ids = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .iter()
+                    .map(Option::unwrap)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["<urn:uuid:1>", "<urn:uuid:2>"]);
 
         tokio::fs::remove_dir_all(temp).await.unwrap();
     }
