@@ -1,5 +1,4 @@
 use std::ops::Range;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
@@ -12,11 +11,9 @@ use parquet::arrow::async_reader::{
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 
-use super::{BatchSource, BatchStream};
-use crate::storage::OpendalStorage;
-use crate::{Error, Result, S3StorageConfig};
+use super::BatchStream;
+use crate::{Error, Result};
 
-const DEFAULT_BATCH_SIZE: usize = 8192;
 const MAX_CONCURRENT_RANGE_READS: usize = 8;
 
 struct OpendalParquetReader {
@@ -136,87 +133,4 @@ pub(crate) async fn open_parquet_paths(
         .try_flatten();
     let batches = reader.map_err(Error::from).chain(remaining);
     Ok((schema, Box::pin(batches)))
-}
-
-async fn parquet_paths(storage: &OpendalStorage) -> Result<Vec<String>> {
-    let path = storage.object_path.to_string();
-    if !path.ends_with('/') {
-        match storage.operator.stat(&path).await {
-            Ok(metadata) if metadata.is_file() => return Ok(vec![path]),
-            Ok(metadata) if !metadata.is_dir() => {
-                return Err(Error::message("Parquet input must be a file or directory"));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == opendal::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-
-    let prefix = if path.is_empty() || path.ends_with('/') {
-        path
-    } else {
-        format!("{path}/")
-    };
-    let mut entries = storage
-        .operator
-        .lister_with(&prefix)
-        .recursive(true)
-        .await?;
-    let mut paths = Vec::new();
-    while let Some(entry) = entries.try_next().await? {
-        if entry.metadata().is_file()
-            && entry
-                .path()
-                .rsplit_once('.')
-                .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("parquet"))
-        {
-            paths.push(entry.path().to_owned());
-        }
-    }
-    paths.sort_unstable();
-    if paths.is_empty() {
-        return Err(Error::message(format!(
-            "Parquet directory contains no .parquet files: {}",
-            storage.location
-        )));
-    }
-    Ok(paths)
-}
-
-pub struct ParquetFileSource {
-    path: PathBuf,
-    batch_size: usize,
-    s3_config: Option<S3StorageConfig>,
-}
-
-impl ParquetFileSource {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self {
-            path: path.into(),
-            batch_size: DEFAULT_BATCH_SIZE,
-            s3_config: None,
-        }
-    }
-
-    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
-        self.batch_size = batch_size;
-        self
-    }
-
-    pub fn with_s3_config(mut self, config: S3StorageConfig) -> Self {
-        self.s3_config = Some(config);
-        self
-    }
-}
-
-impl BatchSource for ParquetFileSource {
-    async fn open(self) -> Result<(SchemaRef, BatchStream)> {
-        let path = self
-            .path
-            .to_str()
-            .ok_or_else(|| Error::message("Parquet input path must be valid UTF-8"))?;
-        let storage = OpendalStorage::from_path(path, self.s3_config.as_ref())?;
-        let paths = parquet_paths(&storage).await?;
-        open_parquet_paths(storage.operator, paths, self.batch_size).await
-    }
 }
