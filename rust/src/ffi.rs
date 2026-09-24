@@ -62,6 +62,7 @@ pub struct LanceWriteConfig {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
+/// Cumulative source bytes and the expected total used for scan progress.
 pub struct LanceReadMetrics {
     bytes_read: u64,
     total_bytes: u64,
@@ -69,8 +70,8 @@ pub struct LanceReadMetrics {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
+/// Final destination I/O totals, available after the Lance writer finishes.
 pub struct LanceWriteMetrics {
-    rows_written: u64,
     bytes_read: u64,
     bytes_written: u64,
 }
@@ -358,7 +359,6 @@ pub unsafe extern "C" fn lance_conversion_get_metrics(
     }
     let metrics = match &(*writer).summary {
         Some(summary) => LanceWriteMetrics {
-            rows_written: summary.rows_written,
             bytes_read: summary.bytes_read,
             bytes_written: summary.bytes_written,
         },

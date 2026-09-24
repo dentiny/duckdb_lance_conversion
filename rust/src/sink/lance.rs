@@ -399,19 +399,24 @@ async fn write_stream(
         .catch_unwind()
         .await
         .unwrap_or_else(|_| Err(Error::message("Lance writer task panicked")));
-    let (bytes_read, bytes_written) = result?;
+    let io_metrics = result?;
     Ok(WriteSummary {
         rows_written: rows_written.load(Ordering::Relaxed),
-        bytes_read,
-        bytes_written,
+        bytes_read: io_metrics.bytes_read,
+        bytes_written: io_metrics.bytes_written,
     })
+}
+
+struct WriteIoMetrics {
+    bytes_read: u64,
+    bytes_written: u64,
 }
 
 async fn write_dataset(
     destination: &OpendalStorage,
     stream: SendableRecordBatchStream,
     options: &WriteOptions,
-) -> Result<(u64, u64)> {
+) -> Result<WriteIoMetrics> {
     if destination.object_path.as_ref().is_empty() {
         return Err(Error::message(
             "Lance destination must not be a storage root",
@@ -451,5 +456,8 @@ async fn write_dataset(
         })?;
     indexes.create(&mut dataset).await?;
     let stats = io_tracker.stats();
-    Ok((stats.read_bytes, stats.written_bytes))
+    Ok(WriteIoMetrics {
+        bytes_read: stats.read_bytes,
+        bytes_written: stats.written_bytes,
+    })
 }

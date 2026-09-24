@@ -50,13 +50,18 @@ struct LanceWriteConfig {
 	size_t bloom_filter_index_column_count = 0;
 };
 
+// Cumulative source metrics sampled while a scan is running.
+// bytes_read contributes to DuckDB's query-level TOTAL_BYTES_READ.
+// total_bytes is the expected source size used only for progress reporting.
 struct LanceReadMetrics {
 	uint64_t bytes_read = 0;
 	uint64_t total_bytes = 0;
 };
 
+// Final destination I/O metrics available after lance_conversion_finish.
+// Both fields contribute to DuckDB's query-level byte counters; bytes_read
+// includes Lance metadata read while opening or updating the destination.
 struct LanceWriteMetrics {
-	uint64_t rows_written = 0;
 	uint64_t bytes_read = 0;
 	uint64_t bytes_written = 0;
 };

@@ -82,6 +82,7 @@ set(EXTENSION_SOURCES
     src/lance_copy.cpp
     src/function_metadata.cpp
     src/huggingface_scan.cpp
+    src/source_metrics.cpp
     src/source_options.cpp
     src/storage_options.cpp
     src/warc_scan.cpp)
