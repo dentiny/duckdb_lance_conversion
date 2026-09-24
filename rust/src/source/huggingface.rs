@@ -202,24 +202,24 @@ mod tests {
     fn filters_and_sorts_parquet_shards() {
         let (paths, total_bytes) = parquet_paths([
             (
-                /* path = */ "default/train/2.parquet".into(),
-                /* is_file = */ true,
-                /* content_length = */ 20,
+                /*path=*/ "default/train/2.parquet".into(),
+                /*is_file=*/ true,
+                /*content_length=*/ 20,
             ),
             (
-                /* path = */ "default/train/_metadata".into(),
-                /* is_file = */ true,
-                /* content_length = */ 40,
+                /*path=*/ "default/train/_metadata".into(),
+                /*is_file=*/ true,
+                /*content_length=*/ 40,
             ),
             (
-                /* path = */ "default/train/1.PARQUET".into(),
-                /* is_file = */ true,
-                /* content_length = */ 10,
+                /*path=*/ "default/train/1.PARQUET".into(),
+                /*is_file=*/ true,
+                /*content_length=*/ 10,
             ),
             (
-                /* path = */ "default/train/directory.parquet".into(),
-                /* is_file = */ false,
-                /* content_length = */ 80,
+                /*path=*/ "default/train/directory.parquet".into(),
+                /*is_file=*/ false,
+                /*content_length=*/ 80,
             ),
         ]);
         assert_eq!(
