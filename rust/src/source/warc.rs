@@ -7,8 +7,8 @@ use arrow_array::{
     ArrayRef, RecordBatch,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use flate2::read::MultiGzDecoder;
 use futures::stream;
-use libflate::gzip::MultiDecoder;
 use tokio::sync::mpsc;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tokio_util::io::SyncIoBridge;
@@ -19,7 +19,9 @@ use crate::storage::OpendalStorage;
 use crate::{Error, Result, S3StorageConfig};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
-const MAX_BATCH_BODY_BYTES: usize = 64 * 1024 * 1024;
+// A batch crosses Arrow -> DuckDB -> Arrow and may remain queued while Lance
+// encodes it, so body bytes dominate peak memory much more than row count.
+const MAX_BATCH_BODY_BYTES: usize = 16 * 1024 * 1024;
 const CHANNEL_CAPACITY: usize = 1;
 const READ_BUFFER_SIZE: usize = 1024 * 1024;
 const BODY_COLUMN_INDEX: usize = 19;
@@ -181,7 +183,7 @@ impl BatchSource for WarcSource {
                 let reader = SyncIoBridge::new_with_handle(reader, runtime);
                 let reader: Box<dyn BufRead> = if gzipped {
                     let reader = BufReader::with_capacity(READ_BUFFER_SIZE, reader);
-                    Box::new(BufReader::new(MultiDecoder::new(reader)?))
+                    Box::new(BufReader::new(MultiGzDecoder::new(reader)))
                 } else {
                     Box::new(BufReader::with_capacity(READ_BUFFER_SIZE, reader))
                 };
@@ -441,8 +443,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use arrow_array::BinaryViewArray;
+    use flate2::{write::GzEncoder, Compression};
     use futures::TryStreamExt;
-    use libflate::gzip::Encoder;
 
     use super::*;
 
@@ -519,9 +521,9 @@ mod tests {
         );
 
         let gzip_path = temp.join("records.warc.gz");
-        let mut encoder = Encoder::new(Vec::new()).unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(input.as_bytes()).unwrap();
-        tokio::fs::write(gzip_path, encoder.finish().into_result().unwrap())
+        tokio::fs::write(gzip_path, encoder.finish().unwrap())
             .await
             .unwrap();
         let (_, stream) = WarcSource::new(temp.join("records.warc.gz").to_string_lossy())
