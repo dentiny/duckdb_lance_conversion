@@ -473,6 +473,7 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
     use futures::TryStreamExt;
 
+    use super::super::test_util::{warc_record as record, write_indexed_warc_fixture};
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -485,22 +486,6 @@ mod tests {
         ));
         tokio::fs::create_dir(&path).await.unwrap();
         path
-    }
-
-    fn record(id: usize, body: &str) -> String {
-        format!(
-            "WARC/1.0\r\n\
-             WARC-Type: response\r\n\
-             WARC-Record-ID: <urn:uuid:{id}>\r\n\
-             WARC-Date: 2024-01-02T03:04:05Z\r\n\
-             WARC-Target-URI: https://example.com/{id}\r\n\
-             Content-Type: text/plain\r\n\
-             Content-Length: {}\r\n\
-             \r\n\
-             {body}\r\n\
-             \r\n",
-            body.len()
-        )
     }
 
     #[test]
@@ -603,33 +588,17 @@ mod tests {
     #[tokio::test]
     async fn streams_indexed_gzip_members_in_offset_order() {
         let temp = test_directory().await;
-        let gzip_member = |value: String| {
-            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            encoder.write_all(value.as_bytes()).unwrap();
-            encoder.finish().unwrap()
-        };
-        let first = gzip_member(record(1, "first"));
-        let second = gzip_member(record(2, "second"));
-        let gap = b"index gap";
-        let second_offset = first.len() + gap.len();
-        let mut archive = first.clone();
-        archive.extend_from_slice(gap);
-        archive.extend_from_slice(&second);
-        let archive_path = temp.join("indexed.warc.gz");
-        tokio::fs::write(&archive_path, archive).await.unwrap();
+        let fixture = write_indexed_warc_fixture(
+            &temp,
+            "indexed",
+            &[(1, "first"), (2, "second")],
+            &[1, 0],
+            b"index gap",
+        )
+        .await;
 
-        let index = format!(
-            "com,example)/2 20240102030405 {{\"filename\":\"indexed.warc.gz\",\"offset\":\"{}\",\"length\":\"{}\"}}\n\
-             com,example)/1 20240102030405 {{\"filename\":\"indexed.warc.gz\",\"offset\":0,\"length\":{}}}\n",
-            second_offset,
-            second.len(),
-            first.len()
-        );
-        let index_path = temp.join("indexed.cdxj");
-        tokio::fs::write(&index_path, index).await.unwrap();
-
-        let (_, stream) = WarcSource::new(archive_path.to_string_lossy())
-            .with_index_path(index_path.to_string_lossy())
+        let (_, stream) = WarcSource::new(fixture.archive_path.to_string_lossy())
+            .with_index_path(fixture.index_path.to_string_lossy())
             .with_max_read_parallelism(2)
             .with_batch_size(1)
             .open()

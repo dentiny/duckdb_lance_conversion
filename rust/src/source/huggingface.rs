@@ -152,36 +152,13 @@ async fn open_operator(
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
-    use std::sync::Arc;
-
     use arrow_array::{Int32Array, RecordBatch};
-    use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
     use opendal::services::Fs;
-    use parquet::arrow::ArrowWriter;
-    use parquet::file::properties::WriterProperties;
     use tempfile::TempDir;
 
+    use super::super::test_util::write_parquet_shard;
     use super::*;
-
-    fn write_shard(path: &std::path::Path, field_name: &str, values: Vec<i32>) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            field_name,
-            DataType::Int32,
-            false,
-        )]));
-        let batch =
-            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(values))]).unwrap();
-        let properties = WriterProperties::builder()
-            .set_max_row_group_row_count(Some(1))
-            .build();
-        let mut writer =
-            ArrowWriter::try_new(File::create(path).unwrap(), schema, Some(properties)).unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-    }
 
     fn fs_operator(root: &TempDir) -> Operator {
         Operator::new(Fs::default().root(root.path().to_str().unwrap())).unwrap()
@@ -217,15 +194,17 @@ mod tests {
     #[tokio::test]
     async fn streams_multiple_shards() {
         let root = TempDir::new().unwrap();
-        write_shard(
+        write_parquet_shard(
             &root.path().join("default/train/2.parquet"),
             "id",
             vec![3, 4],
+            1,
         );
-        write_shard(
+        write_parquet_shard(
             &root.path().join("default/train/1.parquet"),
             "id",
             vec![1, 2],
+            1,
         );
         let (_, stream) = open_operator(fs_operator(&root), "default/train/", 1024, true, 8)
             .await
@@ -272,11 +251,17 @@ mod tests {
         };
         assert!(error.to_string().contains("no Parquet shards"));
 
-        write_shard(&root.path().join("default/train/1.parquet"), "id", vec![1]);
-        write_shard(
+        write_parquet_shard(
+            &root.path().join("default/train/1.parquet"),
+            "id",
+            vec![1],
+            1,
+        );
+        write_parquet_shard(
             &root.path().join("default/train/2.parquet"),
             "other",
             vec![2],
+            1,
         );
         let error = match open_operator(fs_operator(&root), "default/train/", 1024, false, 8).await
         {

@@ -12,6 +12,8 @@ pub const DEFAULT_MAX_READ_PARALLELISM: usize = 8;
 mod huggingface;
 mod parquet;
 mod parquet_metadata;
+#[cfg(test)]
+mod test_util;
 mod warc;
 mod warc_index;
 pub use huggingface::HuggingFaceSource;
