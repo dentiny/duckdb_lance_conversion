@@ -16,6 +16,21 @@
 namespace duckdb {
 namespace {
 
+class WarcMetricsDependency final : public SourceMetricsDependency {
+public:
+	explicit WarcMetricsDependency(WarcStreamFactory *factory_p) : factory(factory_p, lance_warc_destroy) {
+	}
+
+	LanceReadMetrics Snapshot() const override {
+		LanceReadMetrics metrics;
+		lance_warc_get_metrics(factory.get(), &metrics);
+		return metrics;
+	}
+
+private:
+	std::unique_ptr<WarcStreamFactory, decltype(&lance_warc_destroy)> factory;
+};
+
 unique_ptr<ArrowArrayStreamWrapper> ProduceWarcStream(uintptr_t factory_ptr, ArrowStreamParameters &parameters) {
 	auto result = make_uniq<ArrowArrayStreamWrapper>();
 	vector<const char *> columns;
@@ -58,12 +73,9 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 	ThrowIfLanceError(lance_warc_open(path.c_str(), index_path.empty() ? nullptr : index_path.c_str(), s3_ptr,
 	                                  read_options.max_read_parallelism, &factory),
 	                  "WARC reader");
-	auto dependency = make_shared_ptr<SourceMetricsDependency>(
-	    factory, [](void *value) { lance_warc_destroy(static_cast<WarcStreamFactory *>(value)); },
-	    [](const void *value, LanceReadMetrics *metrics) {
-		    lance_warc_get_metrics(static_cast<const WarcStreamFactory *>(value), metrics);
-	    });
-	auto result = make_uniq<ArrowScanFunctionData>(ProduceWarcStream, reinterpret_cast<uintptr_t>(factory), dependency);
+	auto dependency = make_shared_ptr<WarcMetricsDependency>(factory);
+	auto result = make_uniq<ArrowScanFunctionData>(ProduceWarcStream, reinterpret_cast<uintptr_t>(factory),
+	                                               std::move(dependency));
 	ThrowIfLanceError(lance_warc_get_schema(factory, &result->schema_root.arrow_schema), "WARC reader");
 	ArrowTableFunction::PopulateArrowTableSchema(context, result->arrow_table, result->schema_root.arrow_schema);
 	names = result->arrow_table.GetNames();

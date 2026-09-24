@@ -5,19 +5,13 @@
 #include "duckdb/main/external_dependencies.hpp"
 
 #include <atomic>
-#include <functional>
 
 namespace duckdb {
 
 class SourceMetricsDependency : public DependencyItem {
 public:
-	using destroy_t = std::function<void(void *)>;
-	using get_metrics_t = std::function<void(const void *, LanceReadMetrics *)>;
-
-	SourceMetricsDependency(void *factory, destroy_t destroy, get_metrics_t get_metrics);
-	~SourceMetricsDependency() override;
-
-	LanceReadMetrics Snapshot() const;
+	~SourceMetricsDependency() override = default;
+	virtual LanceReadMetrics Snapshot() const = 0;
 
 private:
 	friend void SourceMetricsArrowScan(ClientContext &, TableFunctionInput &, DataChunk &);
@@ -28,9 +22,6 @@ private:
 	uint64_t TakeDelta(std::atomic<uint64_t> &reported, uint64_t current);
 	void ReportBytes(ClientContext &context);
 
-	void *factory;
-	destroy_t destroy;
-	get_metrics_t get_metrics;
 	std::atomic<uint64_t> reported_bytes {0};
 	std::atomic<uint64_t> reported_rows {0};
 };

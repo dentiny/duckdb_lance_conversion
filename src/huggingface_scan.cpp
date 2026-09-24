@@ -16,6 +16,22 @@
 namespace duckdb {
 namespace {
 
+class HuggingFaceMetricsDependency final : public SourceMetricsDependency {
+public:
+	explicit HuggingFaceMetricsDependency(HuggingFaceStreamFactory *factory_p)
+	    : factory(factory_p, lance_huggingface_destroy) {
+	}
+
+	LanceReadMetrics Snapshot() const override {
+		LanceReadMetrics metrics;
+		lance_huggingface_get_metrics(factory.get(), &metrics);
+		return metrics;
+	}
+
+private:
+	std::unique_ptr<HuggingFaceStreamFactory, decltype(&lance_huggingface_destroy)> factory;
+};
+
 unique_ptr<ArrowArrayStreamWrapper> ProduceHuggingFaceStream(uintptr_t factory_ptr, ArrowStreamParameters &) {
 	auto result = make_uniq<ArrowArrayStreamWrapper>();
 	ThrowIfLanceError(lance_huggingface_get_stream(reinterpret_cast<HuggingFaceStreamFactory *>(factory_ptr),
@@ -53,13 +69,9 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	                                         token.empty() ? nullptr : token.c_str(), preserve_insertion_order,
 	                                         read_options.max_read_parallelism, &factory),
 	                  "Hugging Face reader");
-	auto dependency = make_shared_ptr<SourceMetricsDependency>(
-	    factory, [](void *value) { lance_huggingface_destroy(static_cast<HuggingFaceStreamFactory *>(value)); },
-	    [](const void *value, LanceReadMetrics *metrics) {
-		    lance_huggingface_get_metrics(static_cast<const HuggingFaceStreamFactory *>(value), metrics);
-	    });
-	auto result =
-	    make_uniq<ArrowScanFunctionData>(ProduceHuggingFaceStream, reinterpret_cast<uintptr_t>(factory), dependency);
+	auto dependency = make_shared_ptr<HuggingFaceMetricsDependency>(factory);
+	auto result = make_uniq<ArrowScanFunctionData>(ProduceHuggingFaceStream, reinterpret_cast<uintptr_t>(factory),
+	                                               std::move(dependency));
 	ThrowIfLanceError(lance_huggingface_get_schema(factory, &result->schema_root.arrow_schema), "Hugging Face reader");
 	ArrowTableFunction::PopulateArrowTableSchema(context, result->arrow_table, result->schema_root.arrow_schema);
 	names = result->arrow_table.GetNames();

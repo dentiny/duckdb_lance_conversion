@@ -4,20 +4,6 @@
 
 namespace duckdb {
 
-SourceMetricsDependency::SourceMetricsDependency(void *factory_p, destroy_t destroy_p, get_metrics_t get_metrics_p)
-    : factory(factory_p), destroy(std::move(destroy_p)), get_metrics(std::move(get_metrics_p)) {
-}
-
-SourceMetricsDependency::~SourceMetricsDependency() {
-	destroy(factory);
-}
-
-LanceReadMetrics SourceMetricsDependency::Snapshot() const {
-	LanceReadMetrics result;
-	get_metrics(factory, &result);
-	return result;
-}
-
 uint64_t SourceMetricsDependency::TakeDelta(std::atomic<uint64_t> &reported, uint64_t current) {
 	auto previous = reported.load(std::memory_order_relaxed);
 	while (current > previous &&
