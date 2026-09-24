@@ -1,18 +1,21 @@
+use std::sync::Arc;
+
 use arrow_schema::SchemaRef;
 use futures::{stream, StreamExt, TryStreamExt};
 use parquet::arrow::async_reader::{ParquetRecordBatchStream, ParquetRecordBatchStreamBuilder};
 
 use super::parquet_metadata::{load_parquet_metadata, OpendalParquetReader};
-use super::BatchStream;
+use super::{BatchStream, ReadMetrics};
 use crate::{Error, Result};
 
 async fn open_parquet(
     operator: opendal::Operator,
     path: String,
     batch_size: usize,
+    metrics: Arc<ReadMetrics>,
 ) -> Result<ParquetRecordBatchStream<OpendalParquetReader>> {
     Ok(
-        ParquetRecordBatchStreamBuilder::new(OpendalParquetReader::new(operator, path))
+        ParquetRecordBatchStreamBuilder::new(OpendalParquetReader::new(operator, path, metrics))
             .await?
             .with_batch_size(batch_size)
             .build()?,
@@ -23,19 +26,21 @@ async fn open_parquet_in_order(
     operator: opendal::Operator,
     paths: Vec<String>,
     batch_size: usize,
+    metrics: Arc<ReadMetrics>,
 ) -> Result<(SchemaRef, BatchStream)> {
     let mut paths = paths.into_iter();
     let first_path = paths
         .next()
         .ok_or_else(|| Error::message("Parquet source contains no .parquet files"))?;
-    let reader = open_parquet(operator.clone(), first_path, batch_size).await?;
+    let reader = open_parquet(operator.clone(), first_path, batch_size, metrics.clone()).await?;
     let schema = reader.schema().clone();
     let expected_schema = schema.clone();
     let open_remaining = move |path: String| {
         let operator = operator.clone();
         let expected_schema = expected_schema.clone();
+        let metrics = metrics.clone();
         async move {
-            let reader = open_parquet(operator, path.clone(), batch_size).await?;
+            let reader = open_parquet(operator, path.clone(), batch_size, metrics).await?;
             if reader.schema() != &expected_schema {
                 return Err(Error::message(format!(
                     "Parquet schema does not match the first file: {path}"
@@ -62,9 +67,15 @@ async fn open_parquet_row_groups(
     paths: Vec<String>,
     batch_size: usize,
     max_read_parallelism: usize,
+    metrics: Arc<ReadMetrics>,
 ) -> Result<(SchemaRef, BatchStream)> {
-    let (schema, files) =
-        load_parquet_metadata(operator.clone(), paths, max_read_parallelism).await?;
+    let (schema, files) = load_parquet_metadata(
+        operator.clone(),
+        paths,
+        max_read_parallelism,
+        metrics.clone(),
+    )
+    .await?;
     let row_groups = files
         .into_iter()
         .flat_map(|file| {
@@ -75,7 +86,7 @@ async fn open_parquet_row_groups(
     let parallelism = row_groups.len().min(max_read_parallelism).max(1);
     let readers = stream::iter(row_groups).map(move |(path, metadata, row_group)| {
         ParquetRecordBatchStreamBuilder::new_with_metadata(
-            OpendalParquetReader::new(operator.clone(), path),
+            OpendalParquetReader::new(operator.clone(), path, metrics.clone()),
             metadata,
         )
         .with_batch_size(batch_size)
@@ -106,6 +117,7 @@ pub(crate) async fn open_parquet_paths(
     batch_size: usize,
     preserve_insertion_order: bool,
     max_read_parallelism: usize,
+    metrics: Arc<ReadMetrics>,
 ) -> Result<(SchemaRef, BatchStream)> {
     if batch_size == 0 {
         return Err(Error::message("batch_size must be positive"));
@@ -117,8 +129,8 @@ pub(crate) async fn open_parquet_paths(
         return Err(Error::message("max_read_parallelism must be positive"));
     }
     if preserve_insertion_order {
-        open_parquet_in_order(operator, paths, batch_size).await
+        open_parquet_in_order(operator, paths, batch_size, metrics).await
     } else {
-        open_parquet_row_groups(operator, paths, batch_size, max_read_parallelism).await
+        open_parquet_row_groups(operator, paths, batch_size, max_read_parallelism, metrics).await
     }
 }

@@ -3,6 +3,7 @@
 #include "function_metadata.hpp"
 #include "lance_ffi.hpp"
 #include "lance_conversion.h"
+#include "source_metrics.hpp"
 #include "source_options.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/exception.hpp"
@@ -15,16 +16,20 @@
 namespace duckdb {
 namespace {
 
-class HuggingFaceDependency : public DependencyItem {
+class HuggingFaceMetricsDependency final : public SourceMetricsDependency {
 public:
-	explicit HuggingFaceDependency(HuggingFaceStreamFactory *factory_p) : factory(factory_p) {
+	explicit HuggingFaceMetricsDependency(HuggingFaceStreamFactory *factory_p)
+	    : factory(factory_p, lance_huggingface_destroy) {
 	}
 
-	~HuggingFaceDependency() override {
-		lance_huggingface_destroy(factory);
+	LanceReadMetrics Snapshot() const override {
+		LanceReadMetrics metrics;
+		lance_huggingface_get_metrics(factory.get(), &metrics);
+		return metrics;
 	}
 
-	HuggingFaceStreamFactory *factory;
+private:
+	std::unique_ptr<HuggingFaceStreamFactory, decltype(&lance_huggingface_destroy)> factory;
 };
 
 unique_ptr<ArrowArrayStreamWrapper> ProduceHuggingFaceStream(uintptr_t factory_ptr, ArrowStreamParameters &) {
@@ -64,9 +69,9 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	                                         token.empty() ? nullptr : token.c_str(), preserve_insertion_order,
 	                                         read_options.max_read_parallelism, &factory),
 	                  "Hugging Face reader");
-	auto dependency = make_shared_ptr<HuggingFaceDependency>(factory);
-	auto result =
-	    make_uniq<ArrowScanFunctionData>(ProduceHuggingFaceStream, reinterpret_cast<uintptr_t>(factory), dependency);
+	auto dependency = make_shared_ptr<HuggingFaceMetricsDependency>(factory);
+	auto result = make_uniq<ArrowScanFunctionData>(ProduceHuggingFaceStream, reinterpret_cast<uintptr_t>(factory),
+	                                               std::move(dependency));
 	ThrowIfLanceError(lance_huggingface_get_schema(factory, &result->schema_root.arrow_schema), "Hugging Face reader");
 	ArrowTableFunction::PopulateArrowTableSchema(context, result->arrow_table, result->schema_root.arrow_schema);
 	names = result->arrow_table.GetNames();
@@ -82,9 +87,10 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 } // namespace
 
 void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
-	TableFunction function("read_huggingface", {LogicalType::VARCHAR}, ArrowTableFunction::ArrowScanFunction,
-	                       BindHuggingFace, ArrowTableFunction::ArrowScanInitGlobal,
-	                       ArrowTableFunction::ArrowScanInitLocal);
+	TableFunction function("read_huggingface", {LogicalType::VARCHAR}, SourceMetricsArrowScan, BindHuggingFace,
+	                       ArrowTableFunction::ArrowScanInitGlobal, ArrowTableFunction::ArrowScanInitLocal);
+	function.get_metrics = SourceMetricsGetMetrics;
+	function.table_scan_progress = SourceMetricsProgress;
 	function.named_parameters["config"] = LogicalType::VARCHAR;
 	function.named_parameters["split"] = LogicalType::VARCHAR;
 	function.named_parameters["preserve_insertion_order"] = LogicalType::BOOLEAN;

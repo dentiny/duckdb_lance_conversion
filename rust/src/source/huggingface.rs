@@ -1,9 +1,11 @@
+use std::sync::Arc;
+
 use arrow_schema::SchemaRef;
 use futures::TryStreamExt;
 use opendal::{services::Hf, Operator};
 
 use super::parquet::open_parquet_paths;
-use super::{BatchSource, BatchStream, SourceReadOptions};
+use super::{BatchSource, BatchStream, ReadMetrics, SourceReadOptions};
 use crate::error::ResultExt;
 use crate::{Error, Result};
 
@@ -18,6 +20,7 @@ pub struct HuggingFaceSource {
     batch_size: usize,
     preserve_insertion_order: bool,
     read_options: SourceReadOptions,
+    metrics: Arc<ReadMetrics>,
 }
 
 impl HuggingFaceSource {
@@ -30,6 +33,7 @@ impl HuggingFaceSource {
             batch_size: DEFAULT_BATCH_SIZE,
             preserve_insertion_order: true,
             read_options: SourceReadOptions::default(),
+            metrics: Arc::new(ReadMetrics::default()),
         }
     }
 
@@ -63,6 +67,11 @@ impl HuggingFaceSource {
         self
     }
 
+    pub(crate) fn with_metrics(mut self, metrics: Arc<ReadMetrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
     fn operator(&self) -> Result<Operator> {
         opendal_http_transport_reqwest::install_default();
         let mut builder = Hf::default()
@@ -86,19 +95,23 @@ impl HuggingFaceSource {
     }
 }
 
-fn parquet_paths(entries: impl IntoIterator<Item = (String, bool)>) -> Vec<String> {
+fn parquet_paths(entries: impl IntoIterator<Item = (String, bool, u64)>) -> (Vec<String>, u64) {
+    let mut total_bytes = 0_u64;
     let mut paths: Vec<_> = entries
         .into_iter()
-        .filter_map(|(path, is_file)| {
-            (is_file
+        .filter_map(|(path, is_file, content_length)| {
+            let is_parquet = is_file
                 && path
                     .rsplit_once('.')
-                    .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("parquet")))
-            .then_some(path)
+                    .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("parquet"));
+            is_parquet.then(|| {
+                total_bytes = total_bytes.saturating_add(content_length);
+                path
+            })
         })
         .collect();
     paths.sort_unstable();
-    paths
+    (paths, total_bytes)
 }
 
 impl BatchSource for HuggingFaceSource {
@@ -115,6 +128,7 @@ impl BatchSource for HuggingFaceSource {
             self.batch_size,
             self.preserve_insertion_order,
             read_options.max_read_parallelism,
+            self.metrics,
         )
         .await
         .context(format!(
@@ -130,22 +144,29 @@ async fn open_operator(
     batch_size: usize,
     preserve_insertion_order: bool,
     max_read_parallelism: usize,
+    metrics: Arc<ReadMetrics>,
 ) -> Result<(SchemaRef, BatchStream)> {
     let mut lister = operator.lister_with(prefix).recursive(true).await?;
     let mut entries = Vec::new();
     while let Some(entry) = lister.try_next().await? {
-        entries.push((entry.path().to_owned(), entry.metadata().is_file()));
+        entries.push((
+            entry.path().to_owned(),
+            entry.metadata().is_file(),
+            entry.metadata().content_length(),
+        ));
     }
-    let paths = parquet_paths(entries);
+    let (paths, total_bytes) = parquet_paths(entries);
     if paths.is_empty() {
         return Err(Error::message("source contains no Parquet shards"));
     }
+    metrics.set_total_bytes(total_bytes);
     open_parquet_paths(
         operator,
         paths,
         batch_size,
         preserve_insertion_order,
         max_read_parallelism,
+        metrics,
     )
     .await
 }
@@ -179,16 +200,33 @@ mod tests {
 
     #[test]
     fn filters_and_sorts_parquet_shards() {
-        let paths = parquet_paths([
-            ("default/train/2.parquet".into(), true),
-            ("default/train/_metadata".into(), true),
-            ("default/train/1.PARQUET".into(), true),
-            ("default/train/directory.parquet".into(), false),
+        let (paths, total_bytes) = parquet_paths([
+            (
+                /*path=*/ "default/train/2.parquet".into(),
+                /*is_file=*/ true,
+                /*content_length=*/ 20,
+            ),
+            (
+                /*path=*/ "default/train/_metadata".into(),
+                /*is_file=*/ true,
+                /*content_length=*/ 40,
+            ),
+            (
+                /*path=*/ "default/train/1.PARQUET".into(),
+                /*is_file=*/ true,
+                /*content_length=*/ 10,
+            ),
+            (
+                /*path=*/ "default/train/directory.parquet".into(),
+                /*is_file=*/ false,
+                /*content_length=*/ 80,
+            ),
         ]);
         assert_eq!(
             paths,
             vec!["default/train/1.PARQUET", "default/train/2.parquet"]
         );
+        assert_eq!(total_bytes, 30);
     }
 
     #[tokio::test]
@@ -206,11 +244,22 @@ mod tests {
             vec![1, 2],
             1,
         );
-        let (_, stream) = open_operator(fs_operator(&root), "default/train/", 1024, true, 8)
-            .await
-            .unwrap();
+        let metrics = Arc::new(ReadMetrics::default());
+        let (_, stream) = open_operator(
+            fs_operator(&root),
+            "default/train/",
+            1024,
+            true,
+            8,
+            metrics.clone(),
+        )
+        .await
+        .unwrap();
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
         assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+        let snapshot = metrics.snapshot();
+        assert!(snapshot.bytes_read > 0);
+        assert!(snapshot.total_bytes > 0);
         assert_eq!(
             batches[0]
                 .column(0)
@@ -221,9 +270,16 @@ mod tests {
             1
         );
 
-        let (_, stream) = open_operator(fs_operator(&root), "default/train/", 1024, false, 8)
-            .await
-            .unwrap();
+        let (_, stream) = open_operator(
+            fs_operator(&root),
+            "default/train/",
+            1024,
+            false,
+            8,
+            Arc::new(ReadMetrics::default()),
+        )
+        .await
+        .unwrap();
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
         let mut values = batches
             .iter()
@@ -245,7 +301,16 @@ mod tests {
     #[tokio::test]
     async fn rejects_empty_and_mismatched_shards() {
         let root = TempDir::new().unwrap();
-        let error = match open_operator(fs_operator(&root), "default/train/", 1024, true, 8).await {
+        let error = match open_operator(
+            fs_operator(&root),
+            "default/train/",
+            1024,
+            true,
+            8,
+            Arc::new(ReadMetrics::default()),
+        )
+        .await
+        {
             Ok(_) => panic!("empty source should fail"),
             Err(error) => error,
         };
@@ -263,7 +328,15 @@ mod tests {
             vec![2],
             1,
         );
-        let error = match open_operator(fs_operator(&root), "default/train/", 1024, false, 8).await
+        let error = match open_operator(
+            fs_operator(&root),
+            "default/train/",
+            1024,
+            false,
+            8,
+            Arc::new(ReadMetrics::default()),
+        )
+        .await
         {
             Ok(_) => panic!("mismatched schemas should fail"),
             Err(error) => error,

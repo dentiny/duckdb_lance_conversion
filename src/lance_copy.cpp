@@ -8,6 +8,7 @@
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
@@ -335,7 +336,13 @@ void LanceSinkChunk(ExecutionContext &context, FunctionData &bind_p, GlobalFunct
 }
 
 void LanceFinalize(ClientContext &context, FunctionData &bind, GlobalFunctionData &global_p) {
-	ThrowIfLanceError(lance_conversion_finish(global_p.Cast<LanceGlobalState>().writer), "Lance conversion");
+	auto writer = global_p.Cast<LanceGlobalState>().writer;
+	ThrowIfLanceError(lance_conversion_finish(writer), "Lance conversion");
+	LanceWriteMetrics metrics;
+	lance_conversion_get_metrics(writer, &metrics);
+	auto &profiler = QueryProfiler::Get(context);
+	profiler.AddToCounter(MetricType::TOTAL_BYTES_READ, metrics.bytes_read);
+	profiler.AddToCounter(MetricType::TOTAL_BYTES_WRITTEN, metrics.bytes_written);
 }
 
 CopyFunctionExecutionMode LanceExecutionMode(bool preserve_order, bool supports_batch_index) {

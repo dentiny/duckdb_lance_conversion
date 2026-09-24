@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader, Cursor};
 use std::ops::Range;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -9,7 +10,7 @@ use futures::{stream, StreamExt, TryStreamExt};
 use serde_json::Value;
 
 use super::warc::stream_records;
-use super::BatchStream;
+use super::{BatchStream, ReadMetrics};
 use crate::storage::OpendalStorage;
 use crate::{Error, Result, S3StorageConfig};
 
@@ -189,6 +190,7 @@ pub(super) async fn open_indexed_warc(
     projection: Vec<usize>,
     schema: SchemaRef,
     max_read_parallelism: usize,
+    metrics: Arc<ReadMetrics>,
 ) -> Result<(SchemaRef, BatchStream)> {
     let index_storage = OpendalStorage::from_path(index_path, s3_config)?;
     let index_object_path = index_storage.object_path.to_string();
@@ -200,6 +202,8 @@ pub(super) async fn open_indexed_warc(
         .read(&index_object_path)
         .await?
         .to_bytes();
+    metrics.add_bytes_read(index_bytes.len());
+    let index_length = u64::try_from(index_bytes.len()).unwrap_or(u64::MAX);
     let index_gzipped = index_object_path.to_ascii_lowercase().ends_with(".gz");
     let source_path = path.clone();
     let entries = tokio::task::spawn_blocking(move || {
@@ -208,6 +212,10 @@ pub(super) async fn open_indexed_warc(
     .await
     .map_err(|error| Error::message(format!("WARC index parser task failed: {error}")))??;
     let work_units = build_index_work_units(entries, max_read_parallelism)?;
+    let source_length = work_units.iter().fold(0_u64, |total, range| {
+        total.saturating_add(range.end - range.start)
+    });
+    metrics.set_total_bytes(index_length.saturating_add(source_length));
     let parallelism = work_units.len().min(max_read_parallelism).max(1);
     let stream_schema = schema.clone();
     let batches = stream::iter(work_units)
@@ -216,8 +224,10 @@ pub(super) async fn open_indexed_warc(
             let path = path.clone();
             let projection = projection.clone();
             let schema = stream_schema.clone();
+            let metrics = metrics.clone();
             async move {
                 let bytes = operator.read_with(&path).range(range).await?.to_bytes();
+                metrics.add_bytes_read(bytes.len());
                 tokio::task::spawn_blocking(move || {
                     parse_indexed_warc_bytes(bytes, gzipped, batch_size, projection, schema)
                 })

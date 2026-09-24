@@ -15,7 +15,7 @@ use tokio_util::io::SyncIoBridge;
 use warc::{Record, StreamingBody, WarcHeader, WarcReader};
 
 use super::warc_index::open_indexed_warc;
-use super::{BatchSource, BatchStream, SourceReadOptions};
+use super::{BatchSource, BatchStream, MetricsReader, ReadMetrics, SourceReadOptions};
 use crate::storage::OpendalStorage;
 use crate::{Error, Result, S3StorageConfig};
 
@@ -103,6 +103,7 @@ pub struct WarcSource {
     projection: Option<Vec<usize>>,
     read_options: SourceReadOptions,
     index_path: Option<String>,
+    metrics: Arc<ReadMetrics>,
 }
 
 impl WarcSource {
@@ -114,6 +115,7 @@ impl WarcSource {
             projection: None,
             read_options: SourceReadOptions::default(),
             index_path: None,
+            metrics: Arc::new(ReadMetrics::default()),
         }
     }
 
@@ -139,6 +141,11 @@ impl WarcSource {
 
     pub fn with_index_path(mut self, index_path: impl Into<String>) -> Self {
         self.index_path = Some(index_path.into());
+        self
+    }
+
+    pub(crate) fn with_metrics(mut self, metrics: Arc<ReadMetrics>) -> Self {
+        self.metrics = metrics;
         self
     }
 }
@@ -192,9 +199,12 @@ impl BatchSource for WarcSource {
                 projection,
                 schema,
                 read_options.max_read_parallelism,
+                self.metrics,
             )
             .await;
         }
+        let metadata = storage.operator.stat(&path).await?;
+        self.metrics.set_total_bytes(metadata.content_length());
         let reader = storage
             .operator
             .reader(&path)
@@ -202,6 +212,7 @@ impl BatchSource for WarcSource {
             .into_futures_async_read(..)
             .await?
             .compat();
+        let reader = MetricsReader::new(reader, self.metrics);
         let runtime = tokio::runtime::Handle::current();
         let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
         let batch_size = self.batch_size;

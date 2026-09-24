@@ -34,6 +34,8 @@ impl BatchSink for MemorySink {
         }
         Ok(WriteSummary {
             rows_written: rows_written as u64,
+            bytes_read: 0,
+            bytes_written: 0,
         })
     }
 }
