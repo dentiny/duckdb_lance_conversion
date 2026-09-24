@@ -1,5 +1,4 @@
-use std::io::{BufRead, BufReader, Cursor, Read};
-use std::ops::Range;
+use std::io::{BufRead, BufReader, Read};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, LazyLock};
 
@@ -9,13 +8,13 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use flate2::read::MultiGzDecoder;
-use futures::{stream, StreamExt, TryStreamExt};
-use serde_json::Value;
+use futures::stream;
 use tokio::sync::mpsc;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tokio_util::io::SyncIoBridge;
 use warc::{Record, StreamingBody, WarcHeader, WarcReader};
 
+use super::warc_index::open_indexed_warc;
 use super::{BatchSource, BatchStream, SourceReadOptions};
 use crate::storage::OpendalStorage;
 use crate::{Error, Result, S3StorageConfig};
@@ -26,7 +25,6 @@ const DEFAULT_BATCH_SIZE: usize = 8192;
 const MAX_BATCH_BODY_BYTES: usize = 16 * 1024 * 1024;
 const CHANNEL_CAPACITY: usize = 1;
 const READ_BUFFER_SIZE: usize = 1024 * 1024;
-const INDEX_WORK_UNIT_COMPRESSED_BYTES: u64 = 16 * 1024 * 1024;
 const BODY_COLUMN_INDEX: usize = 19;
 
 static WARC_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
@@ -251,188 +249,7 @@ impl BatchSource for WarcSource {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct WarcIndexEntry {
-    offset: u64,
-    length: u64,
-}
-
-fn json_u64(object: &Value, name: &str, line_number: usize) -> Result<u64> {
-    let value = object
-        .get(name)
-        .ok_or_else(|| Error::message(format!("WARC index line {line_number} has no {name}")))?;
-    value
-        .as_u64()
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-        .ok_or_else(|| Error::message(format!("WARC index line {line_number} has invalid {name}")))
-}
-
-fn index_filename_matches(source_path: &str, filename: &str) -> bool {
-    source_path.ends_with(filename)
-        || std::path::Path::new(source_path).file_name()
-            == std::path::Path::new(filename).file_name()
-}
-
-fn parse_warc_index(
-    bytes: bytes::Bytes,
-    gzipped: bool,
-    source_path: &str,
-) -> Result<Vec<WarcIndexEntry>> {
-    let reader: Box<dyn BufRead> = if gzipped {
-        Box::new(BufReader::new(MultiGzDecoder::new(Cursor::new(bytes))))
-    } else {
-        Box::new(BufReader::new(Cursor::new(bytes)))
-    };
-    let mut entries = Vec::new();
-    for (index, line) in reader.lines().enumerate() {
-        let line_number = index + 1;
-        let line = line.map_err(|error| {
-            Error::message(format!("reading WARC index line {line_number}: {error}"))
-        })?;
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let json_start = line.find('{').ok_or_else(|| {
-            Error::message(format!("WARC index line {line_number} is not JSON or CDXJ"))
-        })?;
-        let object: Value = serde_json::from_str(&line[json_start..]).map_err(|error| {
-            Error::message(format!("invalid WARC index line {line_number}: {error}"))
-        })?;
-        if let Some(filename) = object.get("filename").and_then(Value::as_str) {
-            if !index_filename_matches(source_path, filename) {
-                continue;
-            }
-        }
-        let offset = json_u64(&object, "offset", line_number)?;
-        let length = json_u64(&object, "length", line_number)?;
-        if length == 0 {
-            return Err(Error::message(format!(
-                "WARC index line {line_number} has zero length"
-            )));
-        }
-        entries.push(WarcIndexEntry { offset, length });
-    }
-    if entries.is_empty() {
-        return Err(Error::message(
-            "WARC index contains no entries for the source file",
-        ));
-    }
-    Ok(entries)
-}
-
-fn index_work_units(mut entries: Vec<WarcIndexEntry>) -> Result<Vec<Range<u64>>> {
-    entries.sort_unstable_by_key(|entry| entry.offset);
-    let mut units: Vec<Range<u64>> = Vec::new();
-    for entry in entries {
-        let end = entry
-            .offset
-            .checked_add(entry.length)
-            .ok_or_else(|| Error::message("WARC index offset plus length overflows u64"))?;
-        if let Some(unit) = units.last_mut() {
-            if entry.offset < unit.end {
-                return Err(Error::message("WARC index entries overlap"));
-            }
-            if entry.offset == unit.end
-                && end.saturating_sub(unit.start) <= INDEX_WORK_UNIT_COMPRESSED_BYTES
-            {
-                unit.end = end;
-                continue;
-            }
-        }
-        units.push(entry.offset..end);
-    }
-    Ok(units)
-}
-
-fn parse_indexed_warc_bytes(
-    bytes: bytes::Bytes,
-    gzipped: bool,
-    batch_size: usize,
-    projection: Vec<usize>,
-    schema: SchemaRef,
-) -> Result<Vec<RecordBatch>> {
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let reader: Box<dyn BufRead> = if gzipped {
-            Box::new(BufReader::new(MultiGzDecoder::new(Cursor::new(bytes))))
-        } else {
-            Box::new(BufReader::new(Cursor::new(bytes)))
-        };
-        let mut batches = Vec::new();
-        stream_records(reader, batch_size, projection, schema, |batch| {
-            batches.push(batch.finish()?);
-            Ok(true)
-        })?;
-        Ok(batches)
-    }));
-    match result {
-        Ok(result) => result,
-        Err(payload) => {
-            let message = payload
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("unknown panic");
-            Err(Error::message(format!("panic in WARC parser: {message}")))
-        }
-    }
-}
-
-async fn open_indexed_warc(
-    operator: opendal::Operator,
-    path: String,
-    gzipped: bool,
-    index_path: &str,
-    s3_config: Option<&S3StorageConfig>,
-    batch_size: usize,
-    projection: Vec<usize>,
-    schema: SchemaRef,
-    max_read_parallelism: usize,
-) -> Result<(SchemaRef, BatchStream)> {
-    let index_storage = OpendalStorage::from_path(index_path, s3_config)?;
-    let index_object_path = index_storage.object_path.to_string();
-    if index_object_path.is_empty() {
-        return Err(Error::message("WARC index must not be a storage root"));
-    }
-    let index_bytes = index_storage
-        .operator
-        .read(&index_object_path)
-        .await?
-        .to_bytes();
-    let index_gzipped = index_object_path.to_ascii_lowercase().ends_with(".gz");
-    let source_path = path.clone();
-    let entries = tokio::task::spawn_blocking(move || {
-        parse_warc_index(index_bytes, index_gzipped, &source_path)
-    })
-    .await
-    .map_err(|error| Error::message(format!("WARC index parser task failed: {error}")))??;
-    let work_units = index_work_units(entries)?;
-    let parallelism = work_units.len().min(max_read_parallelism).max(1);
-    let stream_schema = schema.clone();
-    let batches = stream::iter(work_units)
-        .map(move |range| {
-            let operator = operator.clone();
-            let path = path.clone();
-            let projection = projection.clone();
-            let schema = stream_schema.clone();
-            async move {
-                let bytes = operator.read_with(&path).range(range).await?.to_bytes();
-                tokio::task::spawn_blocking(move || {
-                    parse_indexed_warc_bytes(bytes, gzipped, batch_size, projection, schema)
-                })
-                .await
-                .map_err(|error| {
-                    Error::message(format!("indexed WARC parser task failed: {error}"))
-                })?
-            }
-        })
-        .buffered(parallelism)
-        .map_ok(|batches| stream::iter(batches.into_iter().map(Ok::<_, Error>)))
-        .try_flatten();
-    Ok((schema, Box::pin(batches)))
-}
-
-fn stream_records(
+pub(super) fn stream_records(
     reader: Box<dyn BufRead>,
     batch_size: usize,
     projection: Vec<usize>,
@@ -522,7 +339,7 @@ impl ProjectedColumnBuilder {
     }
 }
 
-struct WarcBatchBuilder {
+pub(super) struct WarcBatchBuilder {
     len: usize,
     body_bytes: usize,
     projection: Vec<usize>,
@@ -637,7 +454,7 @@ impl WarcBatchBuilder {
         self.len += 1;
     }
 
-    fn finish(self) -> Result<RecordBatch> {
+    pub(super) fn finish(self) -> Result<RecordBatch> {
         let columns = self
             .columns
             .into_iter()

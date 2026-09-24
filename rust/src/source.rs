@@ -13,6 +13,7 @@ mod huggingface;
 mod parquet;
 mod parquet_metadata;
 mod warc;
+mod warc_index;
 pub use huggingface::HuggingFaceSource;
 pub use warc::{warc_schema, WarcSource};
 
