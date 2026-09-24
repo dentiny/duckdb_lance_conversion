@@ -1,92 +1,10 @@
-use std::ops::Range;
-use std::sync::Arc;
-
 use arrow_schema::SchemaRef;
-use bytes::Bytes;
-use futures::{future::BoxFuture, stream, FutureExt, StreamExt, TryStreamExt};
-use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
-use parquet::arrow::async_reader::{
-    AsyncFileReader, MetadataSuffixFetch, ParquetRecordBatchStream, ParquetRecordBatchStreamBuilder,
-};
-use parquet::errors::ParquetError;
-use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
+use futures::{stream, StreamExt, TryStreamExt};
+use parquet::arrow::async_reader::{ParquetRecordBatchStream, ParquetRecordBatchStreamBuilder};
 
+use super::parquet_metadata::{load_parquet_metadata, OpendalParquetReader};
 use super::BatchStream;
 use crate::{Error, Result};
-
-const MAX_CONCURRENT_RANGE_READS: usize = 8;
-
-struct OpendalParquetReader {
-    operator: opendal::Operator,
-    path: String,
-}
-
-fn opendal_error(error: opendal::Error) -> ParquetError {
-    ParquetError::External(Box::new(error))
-}
-
-impl AsyncFileReader for OpendalParquetReader {
-    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        async move {
-            self.operator
-                .read_with(&self.path)
-                .range(range)
-                .await
-                .map(|buffer| buffer.to_bytes())
-                .map_err(opendal_error)
-        }
-        .boxed()
-    }
-
-    fn get_byte_ranges(
-        &mut self,
-        ranges: Vec<Range<u64>>,
-    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
-        let operator = &self.operator;
-        let path = &self.path;
-        stream::iter(ranges)
-            .map(move |range| async move {
-                operator
-                    .read_with(path)
-                    .range(range)
-                    .await
-                    .map(|buffer| buffer.to_bytes())
-                    .map_err(opendal_error)
-            })
-            .buffered(MAX_CONCURRENT_RANGE_READS)
-            .try_collect()
-            .boxed()
-    }
-
-    fn get_metadata<'a>(
-        &'a mut self,
-        options: Option<&'a ArrowReaderOptions>,
-    ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
-        async move {
-            let metadata_options = options.map(|options| options.metadata_options().clone());
-            let metadata = ParquetMetaDataReader::new()
-                .with_metadata_options(metadata_options)
-                .load_via_suffix_and_finish(self)
-                .await?;
-            Ok(Arc::new(metadata))
-        }
-        .boxed()
-    }
-}
-
-impl MetadataSuffixFetch for &mut OpendalParquetReader {
-    fn fetch_suffix(&mut self, suffix: usize) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        async move {
-            self.operator
-                .read_with(&self.path)
-                .range(opendal::BytesRange::suffix(suffix as u64))
-                .await
-                .map(|buffer| buffer.to_bytes())
-                .map_err(opendal_error)
-        }
-        .boxed()
-    }
-}
 
 async fn open_parquet(
     operator: opendal::Operator,
@@ -94,61 +12,40 @@ async fn open_parquet(
     batch_size: usize,
 ) -> Result<ParquetRecordBatchStream<OpendalParquetReader>> {
     Ok(
-        ParquetRecordBatchStreamBuilder::new(OpendalParquetReader { operator, path })
+        ParquetRecordBatchStreamBuilder::new(OpendalParquetReader::new(operator, path))
             .await?
             .with_batch_size(batch_size)
             .build()?,
     )
 }
 
+/// Opens one reader per row group and merges their batches as they become
+/// available.
+///
+/// File metadata is loaded concurrently but retained in `paths` order so the
+/// first file defines the expected schema. All files are validated before any
+/// batches are emitted. At most `max_read_parallelism` row-group readers are
+/// active at once; values above the total row-group count are effectively
+/// capped. Batch order is intentionally nondeterministic.
 async fn open_parquet_row_groups(
     operator: opendal::Operator,
     paths: Vec<String>,
     batch_size: usize,
     max_read_parallelism: usize,
 ) -> Result<(SchemaRef, BatchStream)> {
-    let file_parallelism = paths.len();
-    let metadata_operator = operator.clone();
-    let files = stream::iter(paths)
-        .map(move |path| {
-            let operator = metadata_operator.clone();
-            async move {
-                let mut reader = OpendalParquetReader {
-                    operator,
-                    path: path.clone(),
-                };
-                let metadata =
-                    ArrowReaderMetadata::load_async(&mut reader, ArrowReaderOptions::new()).await?;
-                Ok::<_, Error>((path, metadata))
-            }
-        })
-        .buffered(file_parallelism)
-        .try_collect::<Vec<_>>()
-        .await?;
-
-    let schema = files[0].1.schema().clone();
-    for (path, metadata) in files.iter().skip(1) {
-        if metadata.schema() != &schema {
-            return Err(Error::message(format!(
-                "Parquet schema does not match the first file: {path}"
-            )));
-        }
-    }
-
+    let (schema, files) =
+        load_parquet_metadata(operator.clone(), paths, max_read_parallelism).await?;
     let row_groups = files
         .into_iter()
-        .flat_map(|(path, metadata)| {
-            let count = metadata.metadata().num_row_groups();
-            (0..count).map(move |index| (path.clone(), metadata.clone(), index))
+        .flat_map(|file| {
+            let count = file.metadata.metadata().num_row_groups();
+            (0..count).map(move |index| (file.path.clone(), file.metadata.clone(), index))
         })
         .collect::<Vec<_>>();
     let parallelism = row_groups.len().min(max_read_parallelism).max(1);
     let readers = stream::iter(row_groups).map(move |(path, metadata, row_group)| {
         ParquetRecordBatchStreamBuilder::new_with_metadata(
-            OpendalParquetReader {
-                operator: operator.clone(),
-                path,
-            },
+            OpendalParquetReader::new(operator.clone(), path),
             metadata,
         )
         .with_batch_size(batch_size)
