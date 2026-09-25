@@ -28,6 +28,9 @@ pub enum Error {
     Parquet(ErrorStruct),
 
     #[error("{0}")]
+    Http(ErrorStruct),
+
+    #[error("{0}")]
     Task(ErrorStruct),
 
     #[error("{0}")]
@@ -61,6 +64,7 @@ impl Error {
             | Self::Lance(inner)
             | Self::OpenDal(inner)
             | Self::Parquet(inner)
+            | Self::Http(inner)
             | Self::Task(inner)
             | Self::Url(inner)
             | Self::Utf8(inner) => inner,
@@ -76,6 +80,7 @@ impl Error {
             | Self::Lance(inner)
             | Self::OpenDal(inner)
             | Self::Parquet(inner)
+            | Self::Http(inner)
             | Self::Task(inner)
             | Self::Url(inner)
             | Self::Utf8(inner) => inner,
@@ -123,6 +128,23 @@ permanent_error_from!(parquet::errors::ParquetError, Parquet, "Parquet error");
 permanent_error_from!(tokio::task::JoinError, Task, "async task error");
 permanent_error_from!(url::ParseError, Url, "URL parse error");
 permanent_error_from!(std::str::Utf8Error, Utf8, "UTF-8 decode error");
+
+impl From<reqwest::Error> for Error {
+    #[track_caller]
+    fn from(source: reqwest::Error) -> Self {
+        let temporary = source.is_connect()
+            || source.is_timeout()
+            || source.status().is_some_and(|status| {
+                status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            });
+        let status = if temporary {
+            ErrorStatus::Temporary
+        } else {
+            ErrorStatus::Permanent
+        };
+        Self::Http(ErrorStruct::new("HTTP error", status).with_source(source))
+    }
+}
 
 impl From<std::io::Error> for Error {
     #[track_caller]
