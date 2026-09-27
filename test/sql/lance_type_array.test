@@ -1,0 +1,30 @@
+# name: test/sql/lance_type_array.test
+# description: Fixed-size array round trip through Lance
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT [1.5, 2.5]::FLOAT[2] AS value
+    UNION ALL
+    SELECT NULL::FLOAT[2]
+) TO '__TEST_DIR__/array.lance' (FORMAT LANCE);
+----
+2
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query II
+SELECT
+    count(*) FILTER (
+        WHERE value[1] = 1.5
+          AND value[2] = 2.5
+    ) = 1,
+    count(*) FILTER (WHERE value IS NULL) = 1
+FROM '__TEST_DIR__/array.lance';
+----
+true	true

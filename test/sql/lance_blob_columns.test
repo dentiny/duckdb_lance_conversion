@@ -1,5 +1,5 @@
 # name: test/sql/lance_blob_columns.test
-# description: Ingest URI strings as Lance Blob v2 columns
+# description: Write native BLOB values and ingest URI strings as Lance Blob v2 columns
 # group: [sql]
 
 require lance_conversion
@@ -17,6 +17,23 @@ COPY (
 );
 ----
 2
+
+query I
+COPY (
+    SELECT *
+    FROM (VALUES
+        (1, ''::BLOB),
+        (2, unhex('0001020304')),
+        (3, unhex('00FF10203040506070')),
+        (4, NULL::BLOB)
+    ) t(id, payload)
+) TO '__TEST_DIR__/native_blobs.lance' (
+    FORMAT LANCE,
+    BLOB_INLINE_SIZE_THRESHOLD 4,
+    BLOB_DEDICATED_SIZE_THRESHOLD 8
+);
+----
+4
 
 statement error
 COPY (SELECT 'test/data/records.warc' AS uri) TO '__TEST_DIR__/missing_blob_column.lance' (
@@ -43,3 +60,19 @@ query I
 SELECT count(*) FROM '__TEST_DIR__/blob_columns.lance';
 ----
 2
+
+query II
+SELECT
+    count(*) = 4,
+    count(*) FILTER (
+        WHERE CASE id
+            WHEN 1 THEN payload = ''::BLOB
+            WHEN 2 THEN hex(payload) = '0001020304'
+            WHEN 3 THEN hex(payload) = '00FF10203040506070'
+            WHEN 4 THEN payload IS NULL
+            ELSE false
+        END
+    ) = 4
+FROM '__TEST_DIR__/native_blobs.lance';
+----
+true	true

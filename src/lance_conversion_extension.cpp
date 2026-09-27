@@ -7,10 +7,15 @@
 
 namespace duckdb {
 
-void LanceConversionExtension::Load(ExtensionLoader &loader) {
+static void LoadLanceConversion(ExtensionLoader &loader) {
+	loader.SetDescription("Converts many data formats to Lance, including Parquet, Hugging Face datasets, and WARC.");
 	RegisterLanceCopyFunction(loader);
 	RegisterHuggingFaceScanFunction(loader);
 	RegisterWarcScanFunction(loader);
+}
+
+void LanceConversionExtension::Load(ExtensionLoader &loader) {
+	LoadLanceConversion(loader);
 }
 std::string LanceConversionExtension::Name() {
 	return "lance_conversion";
@@ -19,15 +24,13 @@ std::string LanceConversionExtension::Version() const {
 #ifdef EXT_VERSION_LANCE_CONVERSION
 	return EXT_VERSION_LANCE_CONVERSION;
 #else
-	return "0.1.0";
+	return "0.1.1";
 #endif
 }
 } // namespace duckdb
 
 extern "C" {
 DUCKDB_CPP_EXTENSION_ENTRY(lance_conversion, loader) {
-	duckdb::RegisterLanceCopyFunction(loader);
-	duckdb::RegisterHuggingFaceScanFunction(loader);
-	duckdb::RegisterWarcScanFunction(loader);
+	duckdb::LoadLanceConversion(loader);
 }
 }

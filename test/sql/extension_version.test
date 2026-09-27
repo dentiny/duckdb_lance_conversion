@@ -1,12 +1,12 @@
 # name: test/sql/extension_version.test
-# description: Verify the Lance conversion extension release version
+# description: Verify the Lance conversion extension metadata
 # group: [sql]
 
 require lance_conversion
 
-query T
-SELECT extension_version
+query TT
+SELECT extension_version, description
 FROM duckdb_extensions()
 WHERE extension_name = 'lance_conversion' AND loaded;
 ----
-0.1.0
+0.1.1	Converts many data formats to Lance, including Parquet, Hugging Face datasets, and WARC.
