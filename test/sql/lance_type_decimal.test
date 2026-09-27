@@ -1,0 +1,29 @@
+# name: test/sql/lance_type_decimal.test
+# description: Decimal round trip through Lance
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT CAST('-12345678901234567890123456789.123456789' AS DECIMAL(38,9)) AS value
+    UNION ALL
+    SELECT NULL::DECIMAL(38,9)
+) TO '__TEST_DIR__/decimal.lance' (FORMAT LANCE);
+----
+2
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query II
+SELECT
+    count(*) FILTER (
+        WHERE value = CAST('-12345678901234567890123456789.123456789' AS DECIMAL(38,9))
+    ) = 1,
+    count(*) FILTER (WHERE value IS NULL) = 1
+FROM '__TEST_DIR__/decimal.lance';
+----
+true	true

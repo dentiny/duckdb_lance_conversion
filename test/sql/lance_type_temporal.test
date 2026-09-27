@@ -1,0 +1,47 @@
+# name: test/sql/lance_type_temporal.test
+# description: Time and timestamp round trips through Lance
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT
+        TIME '12:34:56.123456' AS time_value,
+        TIMESTAMP '2024-02-29 12:34:56.123456' AS timestamp_value,
+        TIMESTAMPTZ '2024-02-29 12:34:56.123456+05:30' AS timestamptz_value
+    UNION ALL
+    SELECT
+        NULL::TIME,
+        NULL::TIMESTAMP,
+        NULL::TIMESTAMPTZ
+) TO '__TEST_DIR__/temporal.lance' (FORMAT LANCE);
+----
+2
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query III
+SELECT
+    count(*) FILTER (WHERE time_value = TIME '12:34:56.123456') = 1,
+    count(*) FILTER (
+        WHERE timestamp_value = TIMESTAMP '2024-02-29 12:34:56.123456'
+    ) = 1,
+    count(*) FILTER (
+        WHERE timestamptz_value = TIMESTAMPTZ '2024-02-29 12:34:56.123456+05:30'
+    ) = 1
+FROM '__TEST_DIR__/temporal.lance';
+----
+true	true	true
+
+query III
+SELECT
+    count(*) FILTER (WHERE time_value IS NULL) = 1,
+    count(*) FILTER (WHERE timestamp_value IS NULL) = 1,
+    count(*) FILTER (WHERE timestamptz_value IS NULL) = 1
+FROM '__TEST_DIR__/temporal.lance';
+----
+true	true	true

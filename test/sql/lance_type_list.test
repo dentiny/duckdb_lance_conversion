@@ -1,0 +1,32 @@
+# name: test/sql/lance_type_list.test
+# description: List round trip through Lance
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT [1, NULL, 3]::INTEGER[] AS value
+    UNION ALL
+    SELECT NULL::INTEGER[]
+) TO '__TEST_DIR__/list.lance' (FORMAT LANCE);
+----
+2
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query II
+SELECT
+    count(*) FILTER (
+        WHERE len(value) = 3
+          AND value[1] = 1
+          AND value[2] IS NULL
+          AND value[3] = 3
+    ) = 1,
+    count(*) FILTER (WHERE value IS NULL) = 1
+FROM '__TEST_DIR__/list.lance';
+----
+true	true

@@ -1,0 +1,33 @@
+# name: test/sql/lance_type_struct.test
+# description: Struct round trip through Lance
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT {
+        'label': 'alpha',
+        'score': 10
+    }::STRUCT(label VARCHAR, score INTEGER) AS value
+    UNION ALL
+    SELECT NULL::STRUCT(label VARCHAR, score INTEGER)
+) TO '__TEST_DIR__/struct.lance' (FORMAT LANCE);
+----
+2
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query II
+SELECT
+    count(*) FILTER (
+        WHERE value.label = 'alpha'
+          AND value.score = 10
+    ) = 1,
+    count(*) FILTER (WHERE value IS NULL) = 1
+FROM '__TEST_DIR__/struct.lance';
+----
+true	true
