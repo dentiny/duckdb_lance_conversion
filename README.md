@@ -29,11 +29,12 @@ vector, full-text, and Bloom filter indexes.
 
 ## Usage
 
-Use a compatible DuckDB v1.5.5 shell with the extension loaded. For an unsigned
-local extension, start DuckDB with `-unsigned` and load it:
+Install the extension from the DuckDB Community Extensions repository, then
+load it:
 
 ```sql
-LOAD '/absolute/path/lance_conversion.duckdb_extension';
+FORCE INSTALL lance_conversion FROM community;
+LOAD lance_conversion;
 
 COPY (
     SELECT * FROM read_parquet('/absolute/path/input.parquet')
@@ -340,8 +341,11 @@ Top-level `BLOB` columns use Lance Blob v2 storage. Depending on the reader,
 they may be exposed as a logical struct containing `data` and `uri`. Nested
 binary fields remain ordinary binary columns. Conversion does not preserve
 original Parquet encodings, field IDs, key/value metadata, or Hugging Face
-feature metadata. Rust allocations are not accounted for by DuckDB's
-`memory_limit`.
+feature metadata. The extension reserves bounded memory budgets for its Rust
+readers and Lance writer against DuckDB's `memory_limit`; the writer also
+accounts exported Arrow batches for their full Rust-side lifetime. Allocations
+inside Rust dependencies are represented by conservative reservations rather
+than exact per-allocation tracking.
 
 ### S3-compatible storage
 
@@ -404,6 +408,5 @@ than `Decimal128`. It does not automatically cast them.
 ## TODO
 
 - Add per-stage timing for download, decode, Lance write, and index creation.
-- Expand round-trip coverage for decimal, temporal, and nested types, including
-  nested arrays.
-- Add crash recovery and resumable conversions.
+- Integrate cancellation with DuckDB.
+- Add crash recovery, resumable conversions, and cleanup of uncommitted files.
