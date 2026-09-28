@@ -7,7 +7,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use lance::index::DatasetIndexExt;
-use lance_conversion::{LanceFileVersion, LanceWriter, WriteMode, WriteOptions};
+use lance_conversion::{LanceWriter, WriteMode, WriteOptions};
 use tempfile::tempdir;
 use tokio::{fs, task::spawn_blocking};
 
@@ -49,7 +49,7 @@ async fn storage_version_selects_the_lance_file_format() {
     let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
     for (name, version, expected) in [
         ("default.lance", WriteOptions::default().storage_version, "2.2"),
-        ("v2_1.lance", LanceFileVersion::V2_1, "2.1"),
+        ("v2_1.lance", "2.1".to_string(), "2.1"),
     ] {
         let output = temp.path().join(name);
         let batch = fixture(10).project(&[0, 1, 2]).unwrap();

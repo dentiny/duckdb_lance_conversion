@@ -18,7 +18,6 @@ use lance::{
     session::Session,
     BlobFieldOptions,
 };
-pub use lance_file::version::LanceFileVersion;
 use lance_io::{object_store::WrappingObjectStore, utils::tracking_store::IOTracker};
 use tokio::{
     sync::mpsc::{channel, Receiver, Sender},
@@ -35,6 +34,7 @@ use crate::{Error, Result, S3StorageConfig};
 const DEFAULT_BLOB_INLINE_SIZE_THRESHOLD: usize = 2 * 1024 * 1024;
 const DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD: usize = 16 * 1024 * 1024;
 const DEFAULT_TARGET_FILE_SIZE: usize = 512 * 1024 * 1024;
+const DEFAULT_STORAGE_VERSION: &str = "stable";
 
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
@@ -43,7 +43,7 @@ pub struct WriteOptions {
     pub blob_inline_size_threshold: Option<usize>,
     pub blob_dedicated_size_threshold: Option<usize>,
     pub target_file_size: usize,
-    pub storage_version: LanceFileVersion,
+    pub storage_version: String,
     pub blob_columns: Vec<String>,
     pub scalar_index_columns: Vec<String>,
     pub vector_index_columns: Vec<String>,
@@ -59,7 +59,7 @@ impl Default for WriteOptions {
             blob_inline_size_threshold: Some(DEFAULT_BLOB_INLINE_SIZE_THRESHOLD),
             blob_dedicated_size_threshold: Some(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
             target_file_size: DEFAULT_TARGET_FILE_SIZE,
-            storage_version: LanceFileVersion::Stable,
+            storage_version: DEFAULT_STORAGE_VERSION.into(),
             blob_columns: Vec::new(),
             scalar_index_columns: Vec::new(),
             vector_index_columns: Vec::new(),
@@ -428,7 +428,7 @@ async fn write_dataset(
     let mut params = WriteParams {
         mode: options.mode,
         max_bytes_per_file: options.target_file_size,
-        data_storage_version: Some(options.storage_version),
+        data_storage_version: Some(options.storage_version.parse()?),
         external_blob_mode: if options.blob_columns.is_empty() {
             ExternalBlobMode::Reference
         } else {

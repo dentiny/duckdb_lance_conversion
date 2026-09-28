@@ -2766,7 +2766,6 @@ dependencies = [
  "flate2",
  "futures",
  "lance",
- "lance-file",
  "lance-index",
  "lance-io",
  "lance-linalg",

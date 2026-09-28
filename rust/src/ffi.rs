@@ -13,8 +13,8 @@ use futures::TryStreamExt;
 
 use crate::source::ReadMetrics;
 use crate::{
-    warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceFileVersion,
-    LanceWriter, Result, S3StorageConfig, WarcSource, WriteMode, WriteOptions, WriteSummary,
+    warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceWriter, Result,
+    S3StorageConfig, WarcSource, WriteMode, WriteOptions, WriteSummary,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -223,13 +223,6 @@ fn optional_threshold(value: i64, name: &str, allow_zero: bool) -> Result<Option
     })?))
 }
 
-unsafe fn storage_version(value: *const c_char) -> Result<LanceFileVersion> {
-    Ok(match optional_string(value)? {
-        Some(version) => version.parse()?,
-        None => LanceFileVersion::Stable,
-    })
-}
-
 fn write_mode(mode: i32) -> Result<WriteMode> {
     match mode {
         0 => Ok(WriteMode::Create),
@@ -292,7 +285,8 @@ pub unsafe extern "C" fn lance_conversion_open(
                 false,
             )?
             .unwrap_or_else(|| WriteOptions::default().target_file_size),
-            storage_version: storage_version(config.storage_version)?,
+            storage_version: optional_string(config.storage_version)?
+                .unwrap_or_else(|| WriteOptions::default().storage_version),
             blob_columns: string_list(config.blob_columns, config.blob_column_count)?,
             scalar_index_columns: string_list(
                 config.scalar_index_columns,
