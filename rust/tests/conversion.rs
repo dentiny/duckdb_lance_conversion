@@ -48,11 +48,11 @@ async fn overwrite_replaces_rows_and_can_commit_an_empty_dataset() {
 async fn storage_version_selects_the_lance_file_format() {
     let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
     for (name, version, expected) in [
-        ("default.lance", None, "2.2"),
-        ("v2_1.lance", Some(LanceFileVersion::V2_1), "2.1"),
+        ("default.lance", WriteOptions::default().storage_version, "2.2"),
+        ("v2_1.lance", LanceFileVersion::V2_1, "2.1"),
     ] {
         let output = temp.path().join(name);
-        let batch = fixture(10);
+        let batch = fixture(10).project(&[0, 1, 2]).unwrap();
         let mut writer = LanceWriter::create(
             &output,
             batch.schema(),

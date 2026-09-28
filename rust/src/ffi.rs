@@ -223,14 +223,11 @@ fn optional_threshold(value: i64, name: &str, allow_zero: bool) -> Result<Option
     })?))
 }
 
-unsafe fn storage_version(value: *const c_char) -> Result<Option<LanceFileVersion>> {
-    optional_string(value)?
-        .map(|version| {
-            version.parse().map_err(|_| {
-                Error::invalid_argument(format!("unsupported Lance storage version: {version}"))
-            })
-        })
-        .transpose()
+unsafe fn storage_version(value: *const c_char) -> Result<LanceFileVersion> {
+    Ok(match optional_string(value)? {
+        Some(version) => version.parse()?,
+        None => LanceFileVersion::Stable,
+    })
 }
 
 fn write_mode(mode: i32) -> Result<WriteMode> {

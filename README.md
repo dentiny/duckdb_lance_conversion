@@ -228,12 +228,8 @@ TO 'output.lance' (
 );
 ```
 
-`STORAGE_VERSION` selects the Lance file format version: `2.0`, `2.1`, `2.2`,
-`2.3`, `stable`, or `next`. The default is Lance's current default (`2.2`). It
-applies to `Create` and `OVERWRITE` writes and cannot be combined with `APPEND`,
-which keeps the existing dataset's version. Blob v2 storage requires `2.2` or
-newer: with older versions, `BLOB` columns are written as plain binary columns
-and `BLOB_COLUMNS` is rejected.
+`STORAGE_VERSION` selects the Lance file format version, such as `2.1`, `2.2`,
+`stable`, or `next`, and is passed to Lance as-is. It defaults to `stable`.
 
 ```sql
 COPY (SELECT * FROM source)

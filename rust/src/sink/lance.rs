@@ -18,7 +18,6 @@ use lance::{
     session::Session,
     BlobFieldOptions,
 };
-use lance_file::version::ConcreteFileVersion;
 pub use lance_file::version::LanceFileVersion;
 use lance_io::{object_store::WrappingObjectStore, utils::tracking_store::IOTracker};
 use tokio::{
@@ -44,7 +43,7 @@ pub struct WriteOptions {
     pub blob_inline_size_threshold: Option<usize>,
     pub blob_dedicated_size_threshold: Option<usize>,
     pub target_file_size: usize,
-    pub storage_version: Option<LanceFileVersion>,
+    pub storage_version: LanceFileVersion,
     pub blob_columns: Vec<String>,
     pub scalar_index_columns: Vec<String>,
     pub vector_index_columns: Vec<String>,
@@ -60,7 +59,7 @@ impl Default for WriteOptions {
             blob_inline_size_threshold: Some(DEFAULT_BLOB_INLINE_SIZE_THRESHOLD),
             blob_dedicated_size_threshold: Some(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
             target_file_size: DEFAULT_TARGET_FILE_SIZE,
-            storage_version: None,
+            storage_version: LanceFileVersion::Stable,
             blob_columns: Vec::new(),
             scalar_index_columns: Vec::new(),
             vector_index_columns: Vec::new(),
@@ -275,13 +274,6 @@ fn transform_blob_batch(
     RecordBatch::try_new(schema, columns)
 }
 
-fn supports_blob_v2(version: Option<LanceFileVersion>) -> bool {
-    !matches!(
-        version.unwrap_or_default().resolve(),
-        ConcreteFileVersion::V1 | ConcreteFileVersion::V2_0 | ConcreteFileVersion::V2_1
-    )
-}
-
 fn configure_blob_storage(
     stream: SendableRecordBatchStream,
     options: &WriteOptions,
@@ -292,15 +284,6 @@ fn configure_blob_storage(
     {
         return Ok(stream);
     }
-    if !supports_blob_v2(options.storage_version) {
-        if !options.blob_columns.is_empty() {
-            return Err(Error::invalid_argument(
-                "BLOB_COLUMNS requires Lance storage version 2.2 or newer",
-            ));
-        }
-        return Ok(stream);
-    }
-
     let mut blob_options = BlobFieldOptions::default();
     if let Some(threshold) = options.blob_inline_size_threshold {
         blob_options = blob_options.with_inline_size_threshold(threshold);
@@ -445,7 +428,7 @@ async fn write_dataset(
     let mut params = WriteParams {
         mode: options.mode,
         max_bytes_per_file: options.target_file_size,
-        data_storage_version: options.storage_version,
+        data_storage_version: Some(options.storage_version),
         external_blob_mode: if options.blob_columns.is_empty() {
             ExternalBlobMode::Reference
         } else {

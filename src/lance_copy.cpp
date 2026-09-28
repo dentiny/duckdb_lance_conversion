@@ -252,9 +252,6 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 				throw BinderException("STORAGE_VERSION requires one version string");
 			}
 			result->storage_version = option.second[0].CastAs(context, LogicalType::VARCHAR).GetValue<string>();
-			if (result->storage_version.empty()) {
-				throw BinderException("STORAGE_VERSION cannot be empty");
-			}
 		} else if (StringUtil::CIEquals(option.first, "blob_columns")) {
 			result->blob_columns = ParseBlobColumns(context, option.second, names, types);
 		} else if (StringUtil::CIEquals(option.first, "scalar_index_columns")) {
@@ -268,9 +265,6 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 		} else {
 			throw BinderException("Unsupported option for FORMAT LANCE: %s", option.first);
 		}
-	}
-	if (result->mode == LANCE_WRITE_MODE_APPEND && !result->storage_version.empty()) {
-		throw BinderException("STORAGE_VERSION cannot be used with APPEND; appends keep the dataset's version");
 	}
 	ValidateIndexColumns(*result);
 	auto &fs = FileSystem::GetFileSystem(context);
