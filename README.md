@@ -228,6 +228,14 @@ TO 'output.lance' (
 );
 ```
 
+`STORAGE_VERSION` selects the Lance file format version, such as `2.1`, `2.2`,
+`stable`, or `next`, and is passed to Lance as-is. It defaults to `stable`.
+
+```sql
+COPY (SELECT * FROM source)
+TO 'output.lance' (FORMAT LANCE, STORAGE_VERSION '2.1');
+```
+
 `BLOB_COLUMNS` converts selected top-level `VARCHAR` columns containing local
 paths or URIs into Lance Blob v2 columns. Lance asynchronously reads each
 referenced object during the write and stores its bytes using the thresholds

@@ -33,6 +33,8 @@ struct LanceWriteConfig {
 	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
 	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
 	int64_t target_file_size = 512 * 1024 * 1024;
+	// Lance file format version such as "2.1" or "stable"; NULL or empty uses "stable".
+	const char *storage_version = NULL;
 	// Blob columns.
 	const char *const *blob_columns = NULL;
 	size_t blob_column_count = 0;

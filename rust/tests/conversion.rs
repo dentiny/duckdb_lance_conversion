@@ -45,6 +45,41 @@ async fn overwrite_replaces_rows_and_can_commit_an_empty_dataset() {
 }
 
 #[tokio::test]
+async fn storage_version_selects_the_lance_file_format() {
+    let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
+    for (name, version, expected) in [
+        ("default.lance", WriteOptions::default().storage_version, "2.2"),
+        ("v2_1.lance", "2.1".to_string(), "2.1"),
+        ("stable.lance", "stable".to_string(), "2.2"),
+        ("next.lance", "next".to_string(), "2.3"),
+    ] {
+        let output = temp.path().join(name);
+        let batch = fixture(10).project(&[0, 1, 2]).unwrap();
+        let mut writer = LanceWriter::create(
+            &output,
+            batch.schema(),
+            WriteOptions {
+                storage_version: version,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        writer.write_batch(batch.clone()).await.unwrap();
+        writer.finish().await.unwrap();
+        let dataset = lance::Dataset::open(output.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            dataset.manifest().data_storage_format.version.to_string(),
+            expected
+        );
+        assert_values(&read_lance(&output).await, &batch);
+    }
+    spawn_blocking(move || temp.close()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn string_uri_column_is_ingested_as_a_blob() {
     let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
     let first = temp.path().join("first.bin");
