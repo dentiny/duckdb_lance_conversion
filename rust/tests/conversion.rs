@@ -50,6 +50,8 @@ async fn storage_version_selects_the_lance_file_format() {
     for (name, version, expected) in [
         ("default.lance", WriteOptions::default().storage_version, "2.2"),
         ("v2_1.lance", "2.1".to_string(), "2.1"),
+        ("stable.lance", "stable".to_string(), "2.2"),
+        ("next.lance", "next".to_string(), "2.3"),
     ] {
         let output = temp.path().join(name);
         let batch = fixture(10).project(&[0, 1, 2]).unwrap();
