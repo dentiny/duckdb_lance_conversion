@@ -48,7 +48,11 @@ async fn overwrite_replaces_rows_and_can_commit_an_empty_dataset() {
 async fn storage_version_selects_the_lance_file_format() {
     let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
     for (name, version, expected) in [
-        ("default.lance", WriteOptions::default().storage_version, "2.2"),
+        (
+            "default.lance",
+            WriteOptions::default().storage_version,
+            "2.2",
+        ),
         ("v2_1.lance", "2.1".to_string(), "2.1"),
         ("stable.lance", "stable".to_string(), "2.2"),
         ("next.lance", "next".to_string(), "2.3"),
@@ -76,6 +80,57 @@ async fn storage_version_selects_the_lance_file_format() {
         );
         assert_values(&read_lance(&output).await, &batch);
     }
+    spawn_blocking(move || temp.close()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn column_compression_is_passed_to_lance() {
+    let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
+    let batch = fixture(1000).project(&[0, 1, 2]).unwrap();
+    let write = |name: &str, column_compression: Vec<(String, String)>| {
+        let output = temp.path().join(name);
+        let batch = batch.clone();
+        async move {
+            let mut writer = LanceWriter::create(
+                &output,
+                batch.schema(),
+                WriteOptions {
+                    column_compression,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            writer.write_batch(batch).await?;
+            writer.finish().await?;
+            Ok::<_, lance_conversion::Error>(output)
+        }
+    };
+
+    let output = write(
+        "zstd.lance",
+        vec![("id".into(), "zstd".into()), ("text".into(), "lz4".into())],
+    )
+    .await
+    .unwrap();
+    let dataset = lance::Dataset::open(output.to_str().unwrap())
+        .await
+        .unwrap();
+    for (column, expected) in [("id", Some("zstd")), ("text", Some("lz4")), ("flag", None)] {
+        let field = dataset.schema().field(column).unwrap();
+        assert_eq!(
+            field
+                .metadata
+                .get("lance-encoding:compression")
+                .map(String::as_str),
+            expected
+        );
+    }
+    assert_values(&read_lance(&output).await, &batch);
+
+    let error = write("bogus.lance", vec![("id".into(), "bogus".into())])
+        .await
+        .unwrap_err();
+    assert!(format!("{error:?}").contains("bogus"), "{error:?}");
     spawn_blocking(move || temp.close()).await.unwrap().unwrap();
 }
 

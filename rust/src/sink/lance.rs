@@ -35,6 +35,7 @@ const DEFAULT_BLOB_INLINE_SIZE_THRESHOLD: usize = 2 * 1024 * 1024;
 const DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD: usize = 16 * 1024 * 1024;
 const DEFAULT_TARGET_FILE_SIZE: usize = 512 * 1024 * 1024;
 const DEFAULT_STORAGE_VERSION: &str = "stable";
+const COMPRESSION_META_KEY: &str = "lance-encoding:compression";
 
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
@@ -44,6 +45,8 @@ pub struct WriteOptions {
     pub blob_dedicated_size_threshold: Option<usize>,
     pub target_file_size: usize,
     pub storage_version: String,
+    /// (column, algorithm) pairs set as `lance-encoding:compression` field metadata.
+    pub column_compression: Vec<(String, String)>,
     pub blob_columns: Vec<String>,
     pub scalar_index_columns: Vec<String>,
     pub vector_index_columns: Vec<String>,
@@ -60,6 +63,7 @@ impl Default for WriteOptions {
             blob_dedicated_size_threshold: Some(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
             target_file_size: DEFAULT_TARGET_FILE_SIZE,
             storage_version: DEFAULT_STORAGE_VERSION.into(),
+            column_compression: Vec::new(),
             blob_columns: Vec::new(),
             scalar_index_columns: Vec::new(),
             vector_index_columns: Vec::new(),
@@ -371,6 +375,35 @@ fn configure_blob_storage(
     )))
 }
 
+fn configure_column_compression(
+    stream: SendableRecordBatchStream,
+    options: &WriteOptions,
+) -> Result<SendableRecordBatchStream> {
+    if options.column_compression.is_empty() {
+        return Ok(stream);
+    }
+    let input_schema = stream.schema();
+    let mut fields = input_schema.fields().to_vec();
+    for (name, algorithm) in &options.column_compression {
+        let index = input_schema.index_of(name).map_err(|_| {
+            Error::invalid_argument(format!("COLUMN_COMPRESSION column not found: {name}"))
+        })?;
+        let mut metadata = fields[index].metadata().clone();
+        metadata.insert(COMPRESSION_META_KEY.into(), algorithm.clone());
+        fields[index] = Arc::new(fields[index].as_ref().clone().with_metadata(metadata));
+    }
+    let output_schema = Arc::new(Schema::new_with_metadata(
+        fields,
+        input_schema.metadata().clone(),
+    ));
+    let batch_schema = output_schema.clone();
+    let batches = stream.map(move |batch| Ok(batch?.with_schema(batch_schema.clone())?));
+    Ok(Box::pin(RecordBatchStreamAdapter::new(
+        output_schema,
+        batches,
+    )))
+}
+
 fn ensure_uri_column(data_type: &DataType, name: &str) -> Result<()> {
     if matches!(
         data_type,
@@ -390,6 +423,7 @@ async fn write_stream(
     options: WriteOptions,
 ) -> Result<WriteSummary> {
     let stream = configure_blob_storage(stream, &options)?;
+    let stream = configure_column_compression(stream, &options)?;
     let rows_written = Arc::new(AtomicU64::new(0));
     let count = rows_written.clone();
     let schema = stream.schema();

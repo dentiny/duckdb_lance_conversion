@@ -49,6 +49,9 @@ pub struct LanceWriteConfig {
     blob_dedicated_size_threshold: i64,
     target_file_size: i64,
     storage_version: *const c_char,
+    compression_columns: *const *const c_char,
+    compression_algorithms: *const *const c_char,
+    compression_column_count: usize,
     blob_columns: *const *const c_char,
     blob_column_count: usize,
     scalar_index_columns: *const *const c_char,
@@ -287,6 +290,16 @@ pub unsafe extern "C" fn lance_conversion_open(
             .unwrap_or_else(|| WriteOptions::default().target_file_size),
             storage_version: optional_string(config.storage_version)?
                 .unwrap_or_else(|| WriteOptions::default().storage_version),
+            column_compression: string_list(
+                config.compression_columns,
+                config.compression_column_count,
+            )?
+            .into_iter()
+            .zip(string_list(
+                config.compression_algorithms,
+                config.compression_column_count,
+            )?)
+            .collect(),
             blob_columns: string_list(config.blob_columns, config.blob_column_count)?,
             scalar_index_columns: string_list(
                 config.scalar_index_columns,
