@@ -13,8 +13,8 @@ use futures::TryStreamExt;
 
 use crate::source::ReadMetrics;
 use crate::{
-    warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceWriter, Result,
-    S3StorageConfig, WarcSource, WriteMode, WriteOptions, WriteSummary,
+    warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceFileVersion,
+    LanceWriter, Result, S3StorageConfig, WarcSource, WriteMode, WriteOptions, WriteSummary,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -48,6 +48,7 @@ pub struct LanceWriteConfig {
     blob_inline_size_threshold: i64,
     blob_dedicated_size_threshold: i64,
     target_file_size: i64,
+    storage_version: *const c_char,
     blob_columns: *const *const c_char,
     blob_column_count: usize,
     scalar_index_columns: *const *const c_char,
@@ -222,6 +223,16 @@ fn optional_threshold(value: i64, name: &str, allow_zero: bool) -> Result<Option
     })?))
 }
 
+unsafe fn storage_version(value: *const c_char) -> Result<Option<LanceFileVersion>> {
+    optional_string(value)?
+        .map(|version| {
+            version.parse().map_err(|_| {
+                Error::invalid_argument(format!("unsupported Lance storage version: {version}"))
+            })
+        })
+        .transpose()
+}
+
 fn write_mode(mode: i32) -> Result<WriteMode> {
     match mode {
         0 => Ok(WriteMode::Create),
@@ -284,6 +295,7 @@ pub unsafe extern "C" fn lance_conversion_open(
                 false,
             )?
             .unwrap_or_else(|| WriteOptions::default().target_file_size),
+            storage_version: storage_version(config.storage_version)?,
             blob_columns: string_list(config.blob_columns, config.blob_column_count)?,
             scalar_index_columns: string_list(
                 config.scalar_index_columns,

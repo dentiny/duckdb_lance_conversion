@@ -25,6 +25,7 @@ struct LanceBindData : public FunctionData {
 	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
 	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
 	int64_t target_file_size = 512 * 1024 * 1024;
+	string storage_version;
 	vector<string> blob_columns;
 	vector<string> scalar_index_columns;
 	vector<string> vector_index_columns;
@@ -41,6 +42,7 @@ struct LanceBindData : public FunctionData {
 		result->blob_inline_size_threshold = blob_inline_size_threshold;
 		result->blob_dedicated_size_threshold = blob_dedicated_size_threshold;
 		result->target_file_size = target_file_size;
+		result->storage_version = storage_version;
 		result->blob_columns = blob_columns;
 		result->scalar_index_columns = scalar_index_columns;
 		result->vector_index_columns = vector_index_columns;
@@ -53,7 +55,8 @@ struct LanceBindData : public FunctionData {
 		return names == other.names && types == other.types && mode == other.mode && s3 == other.s3 &&
 		       blob_inline_size_threshold == other.blob_inline_size_threshold &&
 		       blob_dedicated_size_threshold == other.blob_dedicated_size_threshold &&
-		       target_file_size == other.target_file_size && blob_columns == other.blob_columns &&
+		       target_file_size == other.target_file_size && storage_version == other.storage_version &&
+		       blob_columns == other.blob_columns &&
 		       scalar_index_columns == other.scalar_index_columns &&
 		       vector_index_columns == other.vector_index_columns && text_index_columns == other.text_index_columns &&
 		       bloom_filter_index_columns == other.bloom_filter_index_columns;
@@ -244,6 +247,14 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			if (result->target_file_size == 0) {
 				throw BinderException("TARGET_FILE_SIZE must be greater than zero");
 			}
+		} else if (StringUtil::CIEquals(option.first, "storage_version")) {
+			if (option.second.size() != 1 || option.second[0].IsNull()) {
+				throw BinderException("STORAGE_VERSION requires one version string");
+			}
+			result->storage_version = option.second[0].CastAs(context, LogicalType::VARCHAR).GetValue<string>();
+			if (result->storage_version.empty()) {
+				throw BinderException("STORAGE_VERSION cannot be empty");
+			}
 		} else if (StringUtil::CIEquals(option.first, "blob_columns")) {
 			result->blob_columns = ParseBlobColumns(context, option.second, names, types);
 		} else if (StringUtil::CIEquals(option.first, "scalar_index_columns")) {
@@ -257,6 +268,9 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 		} else {
 			throw BinderException("Unsupported option for FORMAT LANCE: %s", option.first);
 		}
+	}
+	if (result->mode == LANCE_WRITE_MODE_APPEND && !result->storage_version.empty()) {
+		throw BinderException("STORAGE_VERSION cannot be used with APPEND; appends keep the dataset's version");
 	}
 	ValidateIndexColumns(*result);
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -284,6 +298,7 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	write_config.blob_inline_size_threshold = bind.blob_inline_size_threshold;
 	write_config.blob_dedicated_size_threshold = bind.blob_dedicated_size_threshold;
 	write_config.target_file_size = bind.target_file_size;
+	write_config.storage_version = bind.storage_version.empty() ? nullptr : bind.storage_version.c_str();
 	vector<const char *> blob_columns;
 	for (const auto &column : bind.blob_columns) {
 		blob_columns.push_back(column.c_str());

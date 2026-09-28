@@ -7,7 +7,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use lance::index::DatasetIndexExt;
-use lance_conversion::{LanceWriter, WriteMode, WriteOptions};
+use lance_conversion::{LanceFileVersion, LanceWriter, WriteMode, WriteOptions};
 use tempfile::tempdir;
 use tokio::{fs, task::spawn_blocking};
 
@@ -39,6 +39,39 @@ async fn overwrite_replaces_rows_and_can_commit_an_empty_dataset() {
         let summary = writer.finish().await.unwrap();
         assert_eq!(summary.rows_written, rows as u64);
         assert!(summary.bytes_written > 0);
+        assert_values(&read_lance(&output).await, &batch);
+    }
+    spawn_blocking(move || temp.close()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn storage_version_selects_the_lance_file_format() {
+    let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
+    for (name, version, expected) in [
+        ("default.lance", None, "2.2"),
+        ("v2_1.lance", Some(LanceFileVersion::V2_1), "2.1"),
+    ] {
+        let output = temp.path().join(name);
+        let batch = fixture(10);
+        let mut writer = LanceWriter::create(
+            &output,
+            batch.schema(),
+            WriteOptions {
+                storage_version: version,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        writer.write_batch(batch.clone()).await.unwrap();
+        writer.finish().await.unwrap();
+        let dataset = lance::Dataset::open(output.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            dataset.manifest().data_storage_format.version.to_string(),
+            expected
+        );
         assert_values(&read_lance(&output).await, &batch);
     }
     spawn_blocking(move || temp.close()).await.unwrap().unwrap();
