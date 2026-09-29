@@ -135,6 +135,52 @@ async fn column_compression_is_passed_to_lance() {
 }
 
 #[tokio::test]
+async fn native_blobs_roundtrip_across_storage_thresholds() {
+    let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
+    let output = temp.path().join("native_blobs.lance");
+    // Cover empty, inline, packed and dedicated blobs, including both threshold
+    // boundaries, and keep NULL distinct from an empty blob.
+    let payloads = [
+        Some(vec![]),
+        Some(vec![0, 255, 16]),
+        Some(vec![0, 255, 16, 32]),
+        Some(vec![0, 1, 2, 3, 4]),
+        Some(vec![0, 255, 16, 32, 48, 64, 80, 96]),
+        Some(vec![0, 255, 16, 32, 48, 64, 80, 96, 112]),
+        None,
+    ];
+    let batch = RecordBatch::try_from_iter(vec![
+        (
+            "id",
+            Arc::new(Int64Array::from_iter_values(0..payloads.len() as i64)) as ArrayRef,
+        ),
+        (
+            "payload",
+            Arc::new(BinaryArray::from_iter(
+                payloads.iter().map(|value| value.as_deref()),
+            )) as ArrayRef,
+        ),
+    ])
+    .unwrap();
+    let mut writer = LanceWriter::create(
+        &output,
+        batch.schema(),
+        WriteOptions {
+            blob_inline_size_threshold: Some(4),
+            blob_dedicated_size_threshold: Some(8),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    writer.write_batch(batch.clone()).await.unwrap();
+    let summary = writer.finish().await.unwrap();
+    assert_eq!(summary.rows_written, payloads.len() as u64);
+    assert_values(&read_lance(&output).await, &batch);
+    spawn_blocking(move || temp.close()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn string_uri_column_is_ingested_as_a_blob() {
     let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
     let first = temp.path().join("first.bin");
