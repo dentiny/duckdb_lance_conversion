@@ -68,9 +68,13 @@ TO 'combined.lance' (FORMAT LANCE);
 COPY (SELECT * FROM read_csv('events.csv'))
 TO 'events_from_csv.lance' (FORMAT LANCE);
 
--- JSON or NDJSON
+-- JSON
 COPY (SELECT * FROM read_json_auto('events.json'))
 TO 'events_from_json.lance' (FORMAT LANCE);
+
+-- JSONL / NDJSON
+COPY (SELECT * FROM read_ndjson_auto('events.jsonl'))
+TO 'events_from_jsonl.lance' (FORMAT LANCE);
 
 -- S3 through DuckDB's filesystem support
 COPY (SELECT * FROM read_parquet('s3://bucket/events/*.parquet'))
