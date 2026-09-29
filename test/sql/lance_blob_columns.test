@@ -61,18 +61,10 @@ SELECT count(*) FROM '__TEST_DIR__/blob_columns.lance';
 ----
 2
 
-query II
-SELECT
-    count(*) = 4,
-    count(*) FILTER (
-        WHERE CASE id
-            WHEN 1 THEN payload = ''::BLOB
-            WHEN 2 THEN hex(payload) = '0001020304'
-            WHEN 3 THEN hex(payload) = '00FF10203040506070'
-            WHEN 4 THEN payload IS NULL
-            ELSE false
-        END
-    ) = 4
-FROM '__TEST_DIR__/native_blobs.lance';
+query I
+SELECT id FROM '__TEST_DIR__/native_blobs.lance' ORDER BY id;
 ----
-true	true
+1
+2
+3
+4

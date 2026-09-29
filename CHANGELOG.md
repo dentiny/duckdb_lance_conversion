@@ -6,6 +6,10 @@
 - Add parallel range reads for indexed WARC and WARC.GZ files using JSON or CDXJ indexes, while preserving archive offset order ([#19]).
 - Report source rows and bytes, Lance destination I/O, and byte-based progress through DuckDB's profiling and progress APIs ([#20]).
 
+## Fixed
+
+- Verify Blob v2 round trips through the Lance Blob API instead of the SQL reader, which does not materialize Blob v2 payloads.
+
 ## Changed
 
 - Update DuckDB and extension-ci-tools to `v1.5.6`, upgrade Lance to latest main (`b94b20c785ca`), and refresh the Lance reader used by SQL tests.
