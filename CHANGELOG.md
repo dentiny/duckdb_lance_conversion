@@ -8,7 +8,7 @@
 
 ## Changed
 
-- Update DuckDB and extension-ci-tools to `v1.5.6`.
+- Update DuckDB and extension-ci-tools to `v1.5.6`, upgrade Lance to latest main (`b94b20c785ca`), and refresh the Lance reader used by SQL tests.
 
 - Discover Hugging Face Parquet shards through the Hugging Face datasets API and use their reported sizes for accurate progress metrics ([#21]).
 - Use `flate2` with zlib-ng for WARC gzip decompression ([#17]).
