@@ -8,6 +8,8 @@
 
 ## Changed
 
+- Update DuckDB and extension-ci-tools to `v1.5.6`.
+
 - Discover Hugging Face Parquet shards through the Hugging Face datasets API and use their reported sizes for accurate progress metrics ([#21]).
 - Use `flate2` with zlib-ng for WARC gzip decompression ([#17]).
 - Reduce the Rust dependency footprint and remove unused standalone Parquet source code ([#18], [#21]).
