@@ -4,6 +4,12 @@ updates:
     directory: /rust
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "arrow*"
+      - dependency-name: "lance*"
+      - dependency-name: "datafusion*"
+      - dependency-name: "object_store*"
+      - dependency-name: "parquet"
     groups:
       rust-dependencies:
         patterns:
