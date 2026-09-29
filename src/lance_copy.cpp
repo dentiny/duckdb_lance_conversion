@@ -4,6 +4,7 @@
 #include "lance_conversion.h"
 #include "duckdb/common/arrow/arrow_converter.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
+#include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -17,16 +18,24 @@ namespace duckdb {
 namespace {
 
 struct LanceBindData : public FunctionData {
+	// Source schema
 	vector<string> names;
 	vector<LogicalType> types;
 	ClientProperties properties;
+	// Write mode and destination
 	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
 	bool s3 = false;
+	// Storage configuration
 	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
 	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
 	int64_t target_file_size = 512 * 1024 * 1024;
 	string storage_version;
+	// Column compression
+	vector<string> compression_columns;
+	vector<string> compression_algorithms;
+	// Blob columns
 	vector<string> blob_columns;
+	// Index columns
 	vector<string> scalar_index_columns;
 	vector<string> vector_index_columns;
 	vector<string> text_index_columns;
@@ -43,6 +52,8 @@ struct LanceBindData : public FunctionData {
 		result->blob_dedicated_size_threshold = blob_dedicated_size_threshold;
 		result->target_file_size = target_file_size;
 		result->storage_version = storage_version;
+		result->compression_columns = compression_columns;
+		result->compression_algorithms = compression_algorithms;
 		result->blob_columns = blob_columns;
 		result->scalar_index_columns = scalar_index_columns;
 		result->vector_index_columns = vector_index_columns;
@@ -56,7 +67,8 @@ struct LanceBindData : public FunctionData {
 		       blob_inline_size_threshold == other.blob_inline_size_threshold &&
 		       blob_dedicated_size_threshold == other.blob_dedicated_size_threshold &&
 		       target_file_size == other.target_file_size && storage_version == other.storage_version &&
-		       blob_columns == other.blob_columns &&
+		       compression_columns == other.compression_columns &&
+		       compression_algorithms == other.compression_algorithms && blob_columns == other.blob_columns &&
 		       scalar_index_columns == other.scalar_index_columns &&
 		       vector_index_columns == other.vector_index_columns && text_index_columns == other.text_index_columns &&
 		       bloom_filter_index_columns == other.bloom_filter_index_columns;
@@ -122,33 +134,38 @@ int64_t ParseSizeOption(ClientContext &context, const string &name, const vector
 	return value;
 }
 
+using ColumnIndexMap = case_insensitive_map_t<idx_t>;
+
+ColumnIndexMap BuildColumnIndexMap(const vector<string> &names) {
+	ColumnIndexMap result;
+	for (idx_t index = 0; index < names.size(); index++) {
+		result.emplace(names[index], index);
+	}
+	return result;
+}
+
 vector<string> ParseBlobColumns(ClientContext &context, const vector<Value> &values, const vector<string> &names,
-                                const vector<LogicalType> &types) {
+                                const vector<LogicalType> &types, const ColumnIndexMap &column_indexes) {
 	if (values.empty()) {
 		throw BinderException("BLOB_COLUMNS requires at least one column");
 	}
 	vector<string> result;
+	case_insensitive_set_t seen;
 	for (const auto &value : values) {
 		if (value.IsNull()) {
 			throw BinderException("BLOB_COLUMNS cannot contain NULL");
 		}
 		auto requested = value.CastAs(context, LogicalType::VARCHAR).GetValue<string>();
-		idx_t index;
-		for (index = 0; index < names.size(); index++) {
-			if (StringUtil::CIEquals(names[index], requested)) {
-				break;
-			}
-		}
-		if (index == names.size()) {
+		auto entry = column_indexes.find(requested);
+		if (entry == column_indexes.end()) {
 			throw BinderException("BLOB_COLUMNS column not found: %s", requested);
 		}
+		auto index = entry->second;
 		if (types[index].id() != LogicalTypeId::VARCHAR) {
 			throw BinderException("BLOB_COLUMNS column must be VARCHAR: %s", names[index]);
 		}
-		for (const auto &column : result) {
-			if (StringUtil::CIEquals(column, names[index])) {
-				throw BinderException("Duplicate BLOB_COLUMNS column: %s", names[index]);
-			}
+		if (!seen.insert(names[index]).second) {
+			throw BinderException("Duplicate BLOB_COLUMNS column: %s", names[index]);
 		}
 		result.push_back(names[index]);
 	}
@@ -156,51 +173,68 @@ vector<string> ParseBlobColumns(ClientContext &context, const vector<Value> &val
 }
 
 vector<string> ParseIndexColumns(ClientContext &context, const string &option_name, const vector<Value> &values,
-                                 const vector<string> &names) {
+                                 const vector<string> &names, const ColumnIndexMap &column_indexes) {
 	if (values.empty()) {
 		throw BinderException("%s requires at least one column", option_name);
 	}
 	vector<string> result;
+	case_insensitive_set_t seen;
 	for (const auto &value : values) {
 		if (value.IsNull()) {
 			throw BinderException("%s cannot contain NULL", option_name);
 		}
 		auto requested = value.CastAs(context, LogicalType::VARCHAR).GetValue<string>();
-		idx_t index;
-		for (index = 0; index < names.size(); index++) {
-			if (StringUtil::CIEquals(names[index], requested)) {
-				break;
-			}
-		}
-		if (index == names.size()) {
+		auto entry = column_indexes.find(requested);
+		if (entry == column_indexes.end()) {
 			throw BinderException("%s column not found: %s", option_name, requested);
 		}
-		for (const auto &column : result) {
-			if (StringUtil::CIEquals(column, names[index])) {
-				throw BinderException("Duplicate index column: %s", names[index]);
-			}
+		auto index = entry->second;
+		if (!seen.insert(names[index]).second) {
+			throw BinderException("Duplicate index column: %s", names[index]);
 		}
 		result.push_back(names[index]);
 	}
 	return result;
 }
 
+void ParseColumnCompression(ClientContext &context, const vector<Value> &values, const vector<string> &names,
+                            const ColumnIndexMap &column_indexes, LanceBindData &result) {
+	if (values.size() != 1 || values[0].type().id() != LogicalTypeId::STRUCT || values[0].IsNull()) {
+		throw BinderException("COLUMN_COMPRESSION requires a struct such as {'column': 'zstd'}");
+	}
+	auto &entries = StructType::GetChildTypes(values[0].type());
+	auto &algorithms = StructValue::GetChildren(values[0]);
+	case_insensitive_set_t seen(result.compression_columns.begin(), result.compression_columns.end());
+	for (idx_t i = 0; i < entries.size(); i++) {
+		const auto &requested = entries[i].first;
+		auto entry = column_indexes.find(requested);
+		if (entry == column_indexes.end()) {
+			throw BinderException("COLUMN_COMPRESSION column not found: %s", requested);
+		}
+		auto index = entry->second;
+		if (!seen.insert(names[index]).second) {
+			throw BinderException("Duplicate COLUMN_COMPRESSION column: %s", names[index]);
+		}
+		if (algorithms[i].IsNull()) {
+			throw BinderException("COLUMN_COMPRESSION algorithm cannot be NULL: %s", names[index]);
+		}
+		result.compression_columns.push_back(names[index]);
+		result.compression_algorithms.push_back(algorithms[i].CastAs(context, LogicalType::VARCHAR).GetValue<string>());
+	}
+}
+
 void ValidateIndexColumns(const LanceBindData &data) {
-	vector<string> columns;
+	case_insensitive_set_t blob_columns(data.blob_columns.begin(), data.blob_columns.end());
+	case_insensitive_set_t indexed;
 	for (const auto *group : {&data.scalar_index_columns, &data.vector_index_columns, &data.text_index_columns,
 	                          &data.bloom_filter_index_columns}) {
 		for (const auto &column : *group) {
-			for (const auto &existing : columns) {
-				if (StringUtil::CIEquals(column, existing)) {
-					throw BinderException("Column cannot have multiple indexes in one COPY: %s", column);
-				}
+			if (!indexed.insert(column).second) {
+				throw BinderException("Column cannot have multiple indexes in one COPY: %s", column);
 			}
-			for (const auto &blob_column : data.blob_columns) {
-				if (StringUtil::CIEquals(column, blob_column)) {
-					throw BinderException("BLOB_COLUMNS column cannot also be indexed: %s", column);
-				}
+			if (blob_columns.count(column)) {
+				throw BinderException("BLOB_COLUMNS column cannot also be indexed: %s", column);
 			}
-			columns.push_back(column);
 		}
 	}
 }
@@ -219,6 +253,7 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 	for (const auto &type : types) {
 		ValidateDuckDBType(type);
 	}
+	auto column_indexes = BuildColumnIndexMap(names);
 	bool has_write_mode = false;
 	for (auto &option : input.info.options) {
 		if (StringUtil::CIEquals(option.first, "overwrite") || StringUtil::CIEquals(option.first, "append")) {
@@ -252,16 +287,21 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 				throw BinderException("STORAGE_VERSION requires one version string");
 			}
 			result->storage_version = option.second[0].CastAs(context, LogicalType::VARCHAR).GetValue<string>();
+		} else if (StringUtil::CIEquals(option.first, "column_compression")) {
+			ParseColumnCompression(context, option.second, names, column_indexes, *result);
 		} else if (StringUtil::CIEquals(option.first, "blob_columns")) {
-			result->blob_columns = ParseBlobColumns(context, option.second, names, types);
+			result->blob_columns = ParseBlobColumns(context, option.second, names, types, column_indexes);
 		} else if (StringUtil::CIEquals(option.first, "scalar_index_columns")) {
-			result->scalar_index_columns = ParseIndexColumns(context, option.first, option.second, names);
+			result->scalar_index_columns =
+			    ParseIndexColumns(context, option.first, option.second, names, column_indexes);
 		} else if (StringUtil::CIEquals(option.first, "vector_index_columns")) {
-			result->vector_index_columns = ParseIndexColumns(context, option.first, option.second, names);
+			result->vector_index_columns =
+			    ParseIndexColumns(context, option.first, option.second, names, column_indexes);
 		} else if (StringUtil::CIEquals(option.first, "text_index_columns")) {
-			result->text_index_columns = ParseIndexColumns(context, option.first, option.second, names);
+			result->text_index_columns = ParseIndexColumns(context, option.first, option.second, names, column_indexes);
 		} else if (StringUtil::CIEquals(option.first, "bloom_filter_index_columns")) {
-			result->bloom_filter_index_columns = ParseIndexColumns(context, option.first, option.second, names);
+			result->bloom_filter_index_columns =
+			    ParseIndexColumns(context, option.first, option.second, names, column_indexes);
 		} else {
 			throw BinderException("Unsupported option for FORMAT LANCE: %s", option.first);
 		}
@@ -306,6 +346,11 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 		}
 		return result;
 	};
+	auto compression_columns = string_pointers(bind.compression_columns);
+	auto compression_algorithms = string_pointers(bind.compression_algorithms);
+	write_config.compression_columns = compression_columns.data();
+	write_config.compression_algorithms = compression_algorithms.data();
+	write_config.compression_column_count = compression_columns.size();
 	auto scalar_index_columns = string_pointers(bind.scalar_index_columns);
 	auto vector_index_columns = string_pointers(bind.vector_index_columns);
 	auto text_index_columns = string_pointers(bind.text_index_columns);

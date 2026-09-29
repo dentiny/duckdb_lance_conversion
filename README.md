@@ -236,6 +236,18 @@ COPY (SELECT * FROM source)
 TO 'output.lance' (FORMAT LANCE, STORAGE_VERSION '2.1');
 ```
 
+`COLUMN_COMPRESSION` selects a general compression algorithm for individual
+top-level columns, such as `zstd`, `lz4`, or `none`. Each value is passed to
+Lance as-is through the `lance-encoding:compression` field metadata. Columns
+not listed use Lance's default encoding, which does not apply general
+compression. See Lance's
+[compression configuration](https://lance.org/format/file/encoding/#compression-configuration).
+
+```sql
+COPY (SELECT * FROM source)
+TO 'output.lance' (FORMAT LANCE, COLUMN_COMPRESSION {'body': 'zstd', 'id': 'lz4'});
+```
+
 `BLOB_COLUMNS` converts selected top-level `VARCHAR` columns containing local
 paths or URIs into Lance Blob v2 columns. Lance asynchronously reads each
 referenced object during the write and stores its bytes using the thresholds
