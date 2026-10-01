@@ -11,6 +11,12 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/query_result.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/parsed_data/sample_options.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/statement/copy_statement.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 
@@ -415,15 +421,72 @@ CopyFunction MakeLanceCopyFunction() {
 	return function;
 }
 
+// Removes SAMPLE_PERCENT / SAMPLE_ROWS from the COPY options and returns the equivalent DuckDB sample.
+unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &info) {
+	auto percent = info.options.find("sample_percent");
+	auto rows = info.options.find("sample_rows");
+	if (percent == info.options.end() && rows == info.options.end()) {
+		return nullptr;
+	}
+	if (percent != info.options.end() && rows != info.options.end()) {
+		throw BinderException("Only one of SAMPLE_PERCENT or SAMPLE_ROWS can be specified");
+	}
+	auto sample = make_uniq<SampleOptions>();
+	if (percent != info.options.end()) {
+		if (percent->second.size() != 1 || percent->second[0].IsNull()) {
+			throw BinderException("SAMPLE_PERCENT requires one number between 0 and 100");
+		}
+		auto value = percent->second[0].CastAs(context, LogicalType::DOUBLE).GetValue<double>();
+		if (!(value >= 0 && value <= 100)) {
+			throw BinderException("SAMPLE_PERCENT must be between 0 and 100");
+		}
+		sample->sample_size = Value::DOUBLE(value);
+		sample->is_percentage = true;
+		sample->method = SampleMethod::BERNOULLI_SAMPLE;
+		info.options.erase(percent);
+	} else {
+		if (rows->second.size() != 1 || rows->second[0].IsNull()) {
+			throw BinderException("SAMPLE_ROWS requires one non-negative integer");
+		}
+		auto value = rows->second[0].CastAs(context, LogicalType::BIGINT).GetValue<int64_t>();
+		if (value < 0) {
+			throw BinderException("SAMPLE_ROWS must be non-negative");
+		}
+		if (static_cast<idx_t>(value) > SampleOptions::MAX_SAMPLE_ROWS) {
+			throw BinderException("SAMPLE_ROWS must not exceed %llu", SampleOptions::MAX_SAMPLE_ROWS);
+		}
+		sample->sample_size = Value::BIGINT(value);
+		sample->is_percentage = false;
+		sample->method = SampleMethod::RESERVOIR_SAMPLE;
+		info.options.erase(rows);
+	}
+	return sample;
+}
+
+unique_ptr<QueryNode> ApplySample(unique_ptr<QueryNode> query, unique_ptr<SampleOptions> sample) {
+	auto subquery = make_uniq<SelectStatement>();
+	subquery->node = std::move(query);
+	auto result = make_uniq<SelectNode>();
+	result->select_list.push_back(make_uniq<StarExpression>());
+	result->from_table = make_uniq<SubqueryRef>(std::move(subquery));
+	result->sample = std::move(sample);
+	return std::move(result);
+}
+
 // Own the plan so DuckDB file rotation/overwrite options cannot operate on a dataset directory.
 BoundStatement LancePlan(Binder &binder, CopyStatement &statement) {
 	auto function = MakeLanceCopyFunction();
-	auto query = statement.info->select_statement->Copy();
+	auto info = statement.info->Copy();
+	auto query = info->select_statement->Copy();
+	auto sample = TakeSampleOptions(binder.context, *info);
+	if (sample) {
+		query = ApplySample(std::move(query), std::move(sample));
+	}
 	auto source = binder.Bind(*query);
 	QueryResult::DeduplicateColumns(source.names);
-	CopyFunctionBindInput input(*statement.info);
+	CopyFunctionBindInput input(*info);
 	auto data = LanceBind(binder.context, input, source.names, source.types);
-	auto copy = make_uniq<LogicalCopyToFile>(function, std::move(data), statement.info->Copy());
+	auto copy = make_uniq<LogicalCopyToFile>(function, std::move(data), std::move(info));
 	copy->file_path = statement.info->file_path;
 	copy->file_extension = "lance";
 	copy->use_tmp_file = false;

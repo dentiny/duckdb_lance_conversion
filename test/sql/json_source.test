@@ -27,6 +27,22 @@ TO '__TEST_DIR__/json_source.lance' (FORMAT LANCE);
 ----
 3
 
+query I
+COPY (
+    SELECT * FROM read_json_auto('__TEST_DIR__/source.json')
+)
+TO '__TEST_DIR__/json_sample_rows.lance' (FORMAT LANCE, SAMPLE_ROWS 2);
+----
+2
+
+query I
+COPY (
+    SELECT * FROM read_json_auto('__TEST_DIR__/source.json')
+)
+TO '__TEST_DIR__/json_sample_percent.lance' (FORMAT LANCE, SAMPLE_PERCENT 100);
+----
+3
+
 # Load the official Lance reader only after exercising our FORMAT LANCE writer.
 restart no_extension_load
 
@@ -41,3 +57,13 @@ ORDER BY id;
 1	alpha	1.5
 2	beta	NULL
 3	gamma	2.25
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/json_sample_rows.lance';
+----
+2
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/json_sample_percent.lance';
+----
+3

@@ -5,6 +5,7 @@
 - Add concurrent Hugging Face Parquet reads with configurable insertion-order preservation and maximum read parallelism ([#19]).
 - Add parallel range reads for indexed WARC and WARC.GZ files using JSON or CDXJ indexes, while preserving archive offset order ([#19]).
 - Report source rows and bytes, Lance destination I/O, and byte-based progress through DuckDB's profiling and progress APIs ([#20]).
+- Add `SAMPLE_PERCENT` and `SAMPLE_ROWS` COPY options to write a random sample of the source rows.
 
 ## Fixed
 

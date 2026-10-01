@@ -18,6 +18,20 @@ COPY (
 ----
 2
 
+query I
+COPY (
+    SELECT * FROM read_warc('test/data/records.warc')
+) TO '__TEST_DIR__/warc_sample_rows.lance' (FORMAT LANCE, SAMPLE_ROWS 1);
+----
+1
+
+query I
+COPY (
+    SELECT * FROM read_warc('test/data/records.warc.gz')
+) TO '__TEST_DIR__/warc_sample_percent.lance' (FORMAT LANCE, SAMPLE_PERCENT 100);
+----
+2
+
 statement ok
 PREPARE warc_scan AS SELECT count(*) FROM read_warc('test/data/records.warc');
 
@@ -68,5 +82,15 @@ FROM '__TEST_DIR__/warc.lance';
 
 query I
 SELECT count(*) FROM '__TEST_DIR__/warc_gzip.lance';
+----
+2
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/warc_sample_rows.lance';
+----
+1
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/warc_sample_percent.lance';
 ----
 2
