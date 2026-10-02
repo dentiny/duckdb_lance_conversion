@@ -449,8 +449,9 @@ Value ParseSampleSize(ClientContext &context, SampleKind kind, const vector<Valu
 		if (value < 0) {
 			throw InvalidInputException("SAMPLE_ROWS must be non-negative");
 		}
-		if (NumericCast<idx_t>(value) > SampleOptions::MAX_SAMPLE_ROWS) {
-			throw InvalidInputException("SAMPLE_ROWS must not exceed %llu", SampleOptions::MAX_SAMPLE_ROWS);
+		const idx_t max_sample_rows = SampleOptions::MAX_SAMPLE_ROWS;
+		if (NumericCast<idx_t>(value) > max_sample_rows) {
+			throw InvalidInputException("SAMPLE_ROWS must not exceed %llu", max_sample_rows);
 		}
 		return Value::BIGINT(value);
 	}
