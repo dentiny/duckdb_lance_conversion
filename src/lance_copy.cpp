@@ -446,22 +446,22 @@ unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &in
 		sample->is_percentage = true;
 		sample->method = SampleMethod::BERNOULLI_SAMPLE;
 		info.options.erase(percent);
-	} else {
-		if (rows->second.size() != 1 || rows->second[0].IsNull()) {
-			throw BinderException("SAMPLE_ROWS requires one non-negative integer");
-		}
-		auto value = rows->second[0].CastAs(context, LogicalType::BIGINT).GetValue<int64_t>();
-		if (value < 0) {
-			throw InvalidInputException("SAMPLE_ROWS must be non-negative");
-		}
-		if (static_cast<idx_t>(value) > SampleOptions::MAX_SAMPLE_ROWS) {
-			throw InvalidInputException("SAMPLE_ROWS must not exceed %llu", SampleOptions::MAX_SAMPLE_ROWS);
-		}
-		sample->sample_size = Value::BIGINT(value);
-		sample->is_percentage = false;
-		sample->method = SampleMethod::RESERVOIR_SAMPLE;
-		info.options.erase(rows);
+		return sample;
 	}
+	if (rows->second.size() != 1 || rows->second[0].IsNull()) {
+		throw BinderException("SAMPLE_ROWS requires one non-negative integer");
+	}
+	auto value = rows->second[0].CastAs(context, LogicalType::BIGINT).GetValue<int64_t>();
+	if (value < 0) {
+		throw InvalidInputException("SAMPLE_ROWS must be non-negative");
+	}
+	if (static_cast<idx_t>(value) > SampleOptions::MAX_SAMPLE_ROWS) {
+		throw InvalidInputException("SAMPLE_ROWS must not exceed %llu", SampleOptions::MAX_SAMPLE_ROWS);
+	}
+	sample->sample_size = Value::BIGINT(value);
+	sample->is_percentage = false;
+	sample->method = SampleMethod::RESERVOIR_SAMPLE;
+	info.options.erase(rows);
 	return sample;
 }
 
