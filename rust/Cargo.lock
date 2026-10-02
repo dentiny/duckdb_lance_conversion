@@ -84,12 +84,6 @@ checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
 
 [[package]]
 name = "arrayvec"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23b62fc65de8e4e7f52534fb52b0f3ed04746ae267519eef2a83941e8085068b"
-
-[[package]]
-name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
@@ -177,7 +171,7 @@ dependencies = [
  "chrono",
  "comfy-table",
  "half",
- "lexical-core 1.0.6",
+ "lexical-core",
  "num-traits",
  "ryu",
 ]
@@ -242,7 +236,7 @@ dependencies = [
  "half",
  "indexmap 2.14.2",
  "itoa",
- "lexical-core 1.0.6",
+ "lexical-core",
  "memchr",
  "num-traits",
  "ryu",
@@ -396,6 +390,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "asyncband"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2d85fd3d291fabcc40c7232c92c280ec1754fd7b5d7ea769f143222143e179a"
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -503,7 +503,7 @@ version = "1.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae"
 dependencies = [
- "arrayvec 0.7.8",
+ "arrayvec",
  "cc",
  "cfg-if",
  "constant_time_eq",
@@ -2772,7 +2772,7 @@ dependencies = [
  "lance-linalg",
  "object_store 0.14.2",
  "object_store_opendal",
- "opendal",
+ "opendal 0.59.3",
  "opendal-http-transport-reqwest",
  "parquet",
  "percent-encoding",
@@ -3173,19 +3173,6 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lexical-core"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6607c62aa161d23d17a9072cc5da0be67cdfc89d3afb1e8d9c842bebc2525ffe"
-dependencies = [
- "arrayvec 0.5.2",
- "bitflags 1.3.2",
- "cfg-if",
- "ryu",
- "static_assertions",
-]
-
-[[package]]
-name = "lexical-core"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8d125a277f807e55a77304455eb7b1cb52f2b18c143b60e766c120bd64a594"
@@ -3420,6 +3407,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3522,13 +3515,12 @@ dependencies = [
 
 [[package]]
 name = "nom"
-version = "5.1.3"
+version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08959a387a676302eebf4ddbcbc611da04285579f76f88ee0506c63b1a61dd4b"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
- "lexical-core 0.7.6",
  "memchr",
- "version_check",
+ "minimal-lexical",
 ]
 
 [[package]]
@@ -3664,12 +3656,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "598e2f511e1d5b620f7bef985ec63a04c6d8c568402ff0d3969c5acf84ae1814"
 dependencies = [
  "async-trait",
- "asyncband",
+ "asyncband 0.6.7",
  "bytes",
  "chrono",
  "futures",
  "object_store 0.14.2",
- "opendal",
+ "opendal 0.58.2",
  "pin-project",
  "tokio",
 ]
@@ -3686,7 +3678,16 @@ version = "0.58.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33dbff14cc9bb085224256d6a81289d2f3202e85b06f408d42534b42162a4231"
 dependencies = [
- "opendal-core",
+ "opendal-core 0.58.2",
+]
+
+[[package]]
+name = "opendal"
+version = "0.59.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef16fe6b19b73b49ce39e3e0f4cec27e54789eee5d5f752cb2d26bd3e9449686"
+dependencies = [
+ "opendal-core 0.59.3",
  "opendal-http-transport-reqwest",
  "opendal-service-fs",
  "opendal-service-http",
@@ -3700,7 +3701,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48dbcef97d3eb7591db2c18d5cae95c836bcce07359b98d98dd6f4e861eb77b7"
 dependencies = [
  "anyhow",
- "asyncband",
+ "asyncband 0.6.7",
+ "base64 0.23.1",
+ "bytes",
+ "futures",
+ "http",
+ "jiff",
+ "log",
+ "md-5",
+ "percent-encoding",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+ "uuid 1.26.1",
+ "web-time",
+]
+
+[[package]]
+name = "opendal-core"
+version = "0.59.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddff5c648dcb3922c2bec71e0d26e881ddf9c367cb7c9a59ed7f2d39a4f38218"
+dependencies = [
+ "anyhow",
+ "asyncband 0.7.2",
  "base64 0.23.1",
  "bytes",
  "futures",
@@ -3721,27 +3747,27 @@ dependencies = [
 
 [[package]]
 name = "opendal-http-transport-reqwest"
-version = "0.58.2"
+version = "0.59.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85663452ea32bbc17e8f79ab29788c846d116ec7de31451be9c787e462dcb36c"
+checksum = "56fcee7ac4b4b815d38346ceb4f3a5d7ef18869c369e000cc7f622b51bcfa938"
 dependencies = [
  "bytes",
  "futures",
  "http",
  "http-body",
- "opendal-core",
+ "opendal-core 0.59.3",
  "reqwest 0.13.5",
 ]
 
 [[package]]
 name = "opendal-service-fs"
-version = "0.58.2"
+version = "0.59.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7ef1e1c45f3f89282a59073897e0d685e51385fed0aea771714789525cff996"
+checksum = "c14b25aa288453e1b9ed9b3c9024b467676ce4a3fed456441c9d6af8aa2643f3"
 dependencies = [
  "bytes",
  "log",
- "opendal-core",
+ "opendal-core 0.59.3",
  "serde",
  "tokio",
  "xattr",
@@ -3749,21 +3775,21 @@ dependencies = [
 
 [[package]]
 name = "opendal-service-http"
-version = "0.58.2"
+version = "0.59.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2ebcbdfad4b81a1e6dde70e898396e011dfd52b5f8639b2628656f7915d6f4c"
+checksum = "712154a72b9a1ae0e0859fa5efce0d7a813186f196cf52d52158cd3953227650"
 dependencies = [
  "http",
  "log",
- "opendal-core",
+ "opendal-core 0.59.3",
  "serde",
 ]
 
 [[package]]
 name = "opendal-service-s3"
-version = "0.58.2"
+version = "0.59.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c64335f9f24ccb62ac36f1d976342b48611a75ba61979813a4f78a4ebd94de42"
+checksum = "9de51cba3b83c8130e211045fd2b9d454c4b73f557ad88b71244c2ab943b2b05"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3771,7 +3797,7 @@ dependencies = [
  "http",
  "log",
  "md-5",
- "opendal-core",
+ "opendal-core 0.59.3",
  "quick-xml",
  "reqsign-aws-v4",
  "reqsign-core",
@@ -5000,12 +5026,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
-name = "static_assertions"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
 name = "std_prelude"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5107,18 +5127,18 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5522,12 +5542,12 @@ dependencies = [
 
 [[package]]
 name = "warc"
-version = "0.3.3"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1128c5c5645c792fd1ff140a0adae1dbccd35798a7a256d7205b3e5124980ef2"
+checksum = "3afd4100d197bbba734febd5eb3b854ebe6e5d42bde935f603a6732b9dedcc0d"
 dependencies = [
  "chrono",
- "nom 5.1.3",
+ "nom 7.1.3",
  "url",
  "uuid 0.8.2",
 ]
