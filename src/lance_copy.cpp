@@ -423,49 +423,71 @@ CopyFunction MakeLanceCopyFunction() {
 	return function;
 }
 
-// Removes SAMPLE_PERCENT / SAMPLE_ROWS from the COPY options and returns the equivalent DuckDB sample.
-unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &info) {
-	auto percent = info.options.find("sample_percent");
-	auto rows = info.options.find("sample_rows");
-	if (percent == info.options.end() && rows == info.options.end()) {
-		return nullptr;
-	}
-	if (percent != info.options.end() && rows != info.options.end()) {
-		throw BinderException("Only one of SAMPLE_PERCENT or SAMPLE_ROWS can be specified");
-	}
-	auto sample = make_uniq<SampleOptions>();
+enum class SampleKind : uint8_t { PERCENT, ROWS };
 
-	// Check percentage-based sampling.
-	if (percent != info.options.end()) {
-		if (percent->second.size() != 1 || percent->second[0].IsNull()) {
-			throw BinderException("SAMPLE_PERCENT requires one number between 0 and 100");
-		}
-		auto value = percent->second[0].CastAs(context, LogicalType::DOUBLE).GetValue<double>();
+struct SampleOptionSpec {
+	const char *name;
+	SampleKind kind;
+};
+
+constexpr SampleOptionSpec SAMPLE_OPTION_SPECS[] = {
+    {"sample_percent", SampleKind::PERCENT},
+    {"sample_rows", SampleKind::ROWS},
+};
+
+Value ParseSampleSize(ClientContext &context, SampleKind kind, const vector<Value> &values) {
+	switch (kind) {
+	case SampleKind::PERCENT: {
+		auto value = values[0].CastAs(context, LogicalType::DOUBLE).GetValue<double>();
 		if (std::isnan(value) || value < 0 || value > 100) {
 			throw InvalidInputException("SAMPLE_PERCENT must be between 0 and 100");
 		}
-		sample->sample_size = Value::DOUBLE(value);
-		sample->is_percentage = true;
-		sample->method = SampleMethod::BERNOULLI_SAMPLE;
-		info.options.erase(percent);
-		return sample;
+		return Value::DOUBLE(value);
 	}
+	case SampleKind::ROWS: {
+		auto value = values[0].CastAs(context, LogicalType::BIGINT).GetValue<int64_t>();
+		if (value < 0) {
+			throw InvalidInputException("SAMPLE_ROWS must be non-negative");
+		}
+		if (NumericCast<idx_t>(value) > SampleOptions::MAX_SAMPLE_ROWS) {
+			throw InvalidInputException("SAMPLE_ROWS must not exceed %llu", SampleOptions::MAX_SAMPLE_ROWS);
+		}
+		return Value::BIGINT(value);
+	}
+	}
+	throw InternalException("Unknown sample kind");
+}
 
-	// Check row-based sampling.
-	if (rows->second.size() != 1 || rows->second[0].IsNull()) {
-		throw BinderException("SAMPLE_ROWS requires one non-negative integer");
+SampleMethod GetSampleMethod(SampleKind kind) {
+	switch (kind) {
+	case SampleKind::PERCENT:
+		return SampleMethod::BERNOULLI_SAMPLE;
+	case SampleKind::ROWS:
+		return SampleMethod::RESERVOIR_SAMPLE;
 	}
-	auto value = rows->second[0].CastAs(context, LogicalType::BIGINT).GetValue<int64_t>();
-	if (value < 0) {
-		throw InvalidInputException("SAMPLE_ROWS must be non-negative");
+	throw InternalException("Unknown sample kind");
+}
+
+// Removes SAMPLE_PERCENT / SAMPLE_ROWS from the COPY options and returns the equivalent DuckDB sample.
+unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &info) {
+	unique_ptr<SampleOptions> sample;
+	for (const auto &spec : SAMPLE_OPTION_SPECS) {
+		auto entry = info.options.find(spec.name);
+		if (entry == info.options.end()) {
+			continue;
+		}
+		if (sample) {
+			throw BinderException("Only one of SAMPLE_PERCENT or SAMPLE_ROWS can be specified");
+		}
+		if (entry->second.size() != 1 || entry->second[0].IsNull()) {
+			throw BinderException("%s requires one value", StringUtil::Upper(spec.name));
+		}
+		sample = make_uniq<SampleOptions>();
+		sample->sample_size = ParseSampleSize(context, spec.kind, entry->second);
+		sample->is_percentage = spec.kind == SampleKind::PERCENT;
+		sample->method = GetSampleMethod(spec.kind);
+		info.options.erase(entry);
 	}
-	if (static_cast<idx_t>(value) > SampleOptions::MAX_SAMPLE_ROWS) {
-		throw InvalidInputException("SAMPLE_ROWS must not exceed %llu", SampleOptions::MAX_SAMPLE_ROWS);
-	}
-	sample->sample_size = Value::BIGINT(value);
-	sample->is_percentage = false;
-	sample->method = SampleMethod::RESERVOIR_SAMPLE;
-	info.options.erase(rows);
 	return sample;
 }
 
