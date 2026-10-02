@@ -9,4 +9,4 @@ SELECT extension_version, description
 FROM duckdb_extensions()
 WHERE extension_name = 'lance_conversion' AND loaded;
 ----
-0.1.1	Converts many data formats to Lance, including Parquet, Hugging Face datasets, and WARC.
+0.1.2	Converts many data formats to Lance, including Parquet, Hugging Face datasets, and WARC.
