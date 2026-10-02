@@ -11,8 +11,16 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/query_result.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/parsed_data/sample_options.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/statement/copy_statement.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
+
+#include <cmath>
 
 namespace duckdb {
 namespace {
@@ -415,15 +423,98 @@ CopyFunction MakeLanceCopyFunction() {
 	return function;
 }
 
+enum class SampleKind : uint8_t { PERCENT, ROWS };
+
+struct SampleOptionSpec {
+	const char *name;
+	SampleKind kind;
+};
+
+constexpr SampleOptionSpec SAMPLE_OPTION_SPECS[] = {
+    {"sample_percent", SampleKind::PERCENT},
+    {"sample_rows", SampleKind::ROWS},
+};
+
+Value ParseSampleSize(ClientContext &context, SampleKind kind, const vector<Value> &values) {
+	switch (kind) {
+	case SampleKind::PERCENT: {
+		auto value = values[0].CastAs(context, LogicalType::DOUBLE).GetValue<double>();
+		if (std::isnan(value) || value < 0 || value > 100) {
+			throw InvalidInputException("SAMPLE_PERCENT must be between 0 and 100");
+		}
+		return Value::DOUBLE(value);
+	}
+	case SampleKind::ROWS: {
+		auto value = values[0].CastAs(context, LogicalType::BIGINT).GetValue<int64_t>();
+		if (value < 0) {
+			throw InvalidInputException("SAMPLE_ROWS must be non-negative");
+		}
+		if (NumericCast<idx_t>(value) > SampleOptions::MAX_SAMPLE_ROWS) {
+			throw InvalidInputException("SAMPLE_ROWS must not exceed %llu", SampleOptions::MAX_SAMPLE_ROWS);
+		}
+		return Value::BIGINT(value);
+	}
+	}
+	throw InternalException("Unknown sample kind");
+}
+
+SampleMethod GetSampleMethod(SampleKind kind) {
+	switch (kind) {
+	case SampleKind::PERCENT:
+		return SampleMethod::BERNOULLI_SAMPLE;
+	case SampleKind::ROWS:
+		return SampleMethod::RESERVOIR_SAMPLE;
+	}
+	throw InternalException("Unknown sample kind");
+}
+
+// Removes SAMPLE_PERCENT / SAMPLE_ROWS from the COPY options and returns the equivalent DuckDB sample.
+unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &info) {
+	unique_ptr<SampleOptions> sample;
+	for (const auto &spec : SAMPLE_OPTION_SPECS) {
+		auto entry = info.options.find(spec.name);
+		if (entry == info.options.end()) {
+			continue;
+		}
+		if (sample) {
+			throw BinderException("Only one of SAMPLE_PERCENT or SAMPLE_ROWS can be specified");
+		}
+		if (entry->second.size() != 1 || entry->second[0].IsNull()) {
+			throw BinderException("%s requires one value", StringUtil::Upper(spec.name));
+		}
+		sample = make_uniq<SampleOptions>();
+		sample->sample_size = ParseSampleSize(context, spec.kind, entry->second);
+		sample->is_percentage = spec.kind == SampleKind::PERCENT;
+		sample->method = GetSampleMethod(spec.kind);
+		info.options.erase(entry);
+	}
+	return sample;
+}
+
+unique_ptr<QueryNode> ApplySample(unique_ptr<QueryNode> query, unique_ptr<SampleOptions> sample) {
+	auto subquery = make_uniq<SelectStatement>();
+	subquery->node = std::move(query);
+	auto result = make_uniq<SelectNode>();
+	result->select_list.push_back(make_uniq<StarExpression>());
+	result->from_table = make_uniq<SubqueryRef>(std::move(subquery));
+	result->sample = std::move(sample);
+	return std::move(result);
+}
+
 // Own the plan so DuckDB file rotation/overwrite options cannot operate on a dataset directory.
 BoundStatement LancePlan(Binder &binder, CopyStatement &statement) {
 	auto function = MakeLanceCopyFunction();
-	auto query = statement.info->select_statement->Copy();
+	auto info = statement.info->Copy();
+	auto query = info->select_statement->Copy();
+	auto sample = TakeSampleOptions(binder.context, *info);
+	if (sample) {
+		query = ApplySample(std::move(query), std::move(sample));
+	}
 	auto source = binder.Bind(*query);
 	QueryResult::DeduplicateColumns(source.names);
-	CopyFunctionBindInput input(*statement.info);
+	CopyFunctionBindInput input(*info);
 	auto data = LanceBind(binder.context, input, source.names, source.types);
-	auto copy = make_uniq<LogicalCopyToFile>(function, std::move(data), statement.info->Copy());
+	auto copy = make_uniq<LogicalCopyToFile>(function, std::move(data), std::move(info));
 	copy->file_path = statement.info->file_path;
 	copy->file_extension = "lance";
 	copy->use_tmp_file = false;

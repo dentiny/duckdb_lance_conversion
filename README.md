@@ -211,6 +211,27 @@ the default `Create` mode. The two options cannot be specified together.
 Other DuckDB file-layout options, including `PARTITION_BY`,
 `PER_THREAD_OUTPUT`, and `USE_TMP_FILE`, are rejected.
 
+### Sampling
+
+`SAMPLE_PERCENT` writes a random percentage of the source rows; each row is
+kept independently with that probability (Bernoulli sampling), so the written
+row count is approximate. `SAMPLE_ROWS` writes exactly that many uniformly
+random rows (reservoir sampling), or every row when the source is smaller:
+
+```sql
+COPY (SELECT * FROM read_parquet('events/*.parquet'))
+TO 'events_10pct.lance' (FORMAT LANCE, SAMPLE_PERCENT 10);
+
+COPY (SELECT * FROM read_huggingface('lhoestq/demo1'))
+TO 'demo1_sample.lance' (FORMAT LANCE, SAMPLE_ROWS 1000);
+```
+
+Sampling is applied to the query result before it is written, so the whole
+source is still read. `SAMPLE_PERCENT` accepts values from 0 to 100,
+`SAMPLE_ROWS` accepts non-negative integers, and the two options cannot be
+specified together. The returned row count is the number of sampled rows
+written.
+
 ### File and Blob configuration
 
 Size options are specified in bytes:
@@ -323,6 +344,9 @@ TO 'catalog.lance' (
 
     -- Omit both flags for Create mode; use APPEND instead to add rows.
     OVERWRITE,
+
+    -- Optional: write a sample instead of every row (or SAMPLE_ROWS n).
+    SAMPLE_PERCENT 10,
 
     -- Lance data and Blob v2 layout.
     TARGET_FILE_SIZE 536870912,

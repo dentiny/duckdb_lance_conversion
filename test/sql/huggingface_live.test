@@ -48,3 +48,32 @@ query I
 EXECUTE hf_scan;
 ----
 5
+
+query I
+COPY (
+    SELECT * FROM read_huggingface('lhoestq/demo1')
+) TO '__TEST_DIR__/huggingface_sample_rows.lance' (FORMAT LANCE, SAMPLE_ROWS 2);
+----
+2
+
+query I
+COPY (
+    SELECT * FROM read_huggingface('lhoestq/demo1')
+) TO '__TEST_DIR__/huggingface_sample_percent.lance' (FORMAT LANCE, SAMPLE_PERCENT 100);
+----
+5
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/huggingface_sample_rows.lance';
+----
+2
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/huggingface_sample_percent.lance';
+----
+5

@@ -44,6 +44,14 @@ COPY (SELECT * FROM read_parquet('__TEST_DIR__/lance_input.parquet') WHERE false
 ----
 0
 
+query I
+COPY (SELECT * FROM read_parquet('__TEST_DIR__/lance_input.parquet')) TO '__TEST_DIR__/parquet_sample_rows.lance' (FORMAT LANCE, SAMPLE_ROWS 100);
+----
+100
+
+statement ok
+COPY (SELECT * FROM read_parquet('__TEST_DIR__/lance_input.parquet')) TO '__TEST_DIR__/parquet_sample_percent.lance' (FORMAT LANCE, SAMPLE_PERCENT 50);
+
 # Load the official Lance reader only after exercising our FORMAT LANCE writer.
 restart no_extension_load
 
@@ -68,3 +76,14 @@ query I
 SELECT count(*) FROM '__TEST_DIR__/empty_conversion.lance';
 ----
 0
+
+query II
+SELECT count(*), count(DISTINCT i) FROM '__TEST_DIR__/parquet_sample_rows.lance';
+----
+100	100
+
+# Bernoulli sampling: 50% of 5000 rows, with a tolerance of about 7 standard deviations.
+query I
+SELECT count(*) BETWEEN 2250 AND 2750 FROM '__TEST_DIR__/parquet_sample_percent.lance';
+----
+true

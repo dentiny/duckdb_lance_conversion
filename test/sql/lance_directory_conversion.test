@@ -20,6 +20,22 @@ COPY (
 ----
 10
 
+query I
+COPY (
+    SELECT i, text
+    FROM read_parquet('__TEST_DIR__/parquet_directory/**/*.parquet')
+) TO '__TEST_DIR__/directory_sample_rows.lance' (FORMAT LANCE, SAMPLE_ROWS 4);
+----
+4
+
+query I
+COPY (
+    SELECT i, text
+    FROM read_parquet('__TEST_DIR__/parquet_directory/**/*.parquet')
+) TO '__TEST_DIR__/directory_sample_percent.lance' (FORMAT LANCE, SAMPLE_PERCENT 100);
+----
+10
+
 # Load the official Lance reader only after exercising our FORMAT LANCE writer.
 restart no_extension_load
 
@@ -39,3 +55,13 @@ SELECT i, text FROM '__TEST_DIR__/directory_conversion.lance' ORDER BY i;
 7	NULL
 8	row-8
 9	row-9
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/directory_sample_rows.lance';
+----
+4
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/directory_sample_percent.lance';
+----
+10
