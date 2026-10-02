@@ -434,6 +434,8 @@ unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &in
 		throw BinderException("Only one of SAMPLE_PERCENT or SAMPLE_ROWS can be specified");
 	}
 	auto sample = make_uniq<SampleOptions>();
+
+	// Check percentage-based sampling.
 	if (percent != info.options.end()) {
 		if (percent->second.size() != 1 || percent->second[0].IsNull()) {
 			throw BinderException("SAMPLE_PERCENT requires one number between 0 and 100");
@@ -448,6 +450,8 @@ unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &in
 		info.options.erase(percent);
 		return sample;
 	}
+
+	// Check row-based sampling.
 	if (rows->second.size() != 1 || rows->second[0].IsNull()) {
 		throw BinderException("SAMPLE_ROWS requires one non-negative integer");
 	}
