@@ -20,6 +20,8 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 
+#include <cmath>
+
 namespace duckdb {
 namespace {
 
@@ -437,8 +439,8 @@ unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &in
 			throw BinderException("SAMPLE_PERCENT requires one number between 0 and 100");
 		}
 		auto value = percent->second[0].CastAs(context, LogicalType::DOUBLE).GetValue<double>();
-		if (!(value >= 0 && value <= 100)) {
-			throw BinderException("SAMPLE_PERCENT must be between 0 and 100");
+		if (std::isnan(value) || value < 0 || value > 100) {
+			throw InvalidInputException("SAMPLE_PERCENT must be between 0 and 100");
 		}
 		sample->sample_size = Value::DOUBLE(value);
 		sample->is_percentage = true;
@@ -450,10 +452,10 @@ unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &in
 		}
 		auto value = rows->second[0].CastAs(context, LogicalType::BIGINT).GetValue<int64_t>();
 		if (value < 0) {
-			throw BinderException("SAMPLE_ROWS must be non-negative");
+			throw InvalidInputException("SAMPLE_ROWS must be non-negative");
 		}
 		if (static_cast<idx_t>(value) > SampleOptions::MAX_SAMPLE_ROWS) {
-			throw BinderException("SAMPLE_ROWS must not exceed %llu", SampleOptions::MAX_SAMPLE_ROWS);
+			throw InvalidInputException("SAMPLE_ROWS must not exceed %llu", SampleOptions::MAX_SAMPLE_ROWS);
 		}
 		sample->sample_size = Value::BIGINT(value);
 		sample->is_percentage = false;
