@@ -6,6 +6,7 @@
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -84,11 +85,39 @@ struct LanceBindData : public FunctionData {
 };
 
 struct LanceGlobalState : public GlobalFunctionData {
-	LanceConversionWriter *writer = nullptr;
+	LanceConversionDataset *dataset = nullptr;
+	// Receives every batch, in batch index order, under BATCH_COPY_TO_FILE.
+	LanceConversionWriter *ordered_writer = nullptr;
 	~LanceGlobalState() override {
-		lance_conversion_destroy(writer);
+		lance_conversion_writer_destroy(ordered_writer);
+		lance_conversion_destroy(dataset);
 	}
 };
+
+// REGULAR_COPY_TO_FILE and PARALLEL_COPY_TO_FILE give each sinking thread its own writer.
+struct LanceLocalState : public LocalFunctionData {
+	LanceConversionWriter *writer = nullptr;
+	~LanceLocalState() override {
+		lance_conversion_writer_destroy(writer);
+	}
+};
+
+// Stays in DuckDB's buffer-managed collection until flushed, so pending batches can spill.
+struct LancePreparedBatch : public PreparedBatchData {
+	unique_ptr<ColumnDataCollection> collection;
+};
+
+LanceConversionWriter *OpenLanceWriter(LanceConversionDataset *dataset) {
+	LanceConversionWriter *writer = nullptr;
+	ThrowIfLanceError(lance_conversion_writer_open(dataset, &writer), "Lance conversion");
+	return writer;
+}
+
+void PushLanceChunk(LanceConversionWriter *writer, const LanceBindData &bind, DataChunk &chunk) {
+	ArrowArrayWrapper array;
+	ArrowConverter::ToArrowArray(chunk, &array.arrow_array, bind.properties, {});
+	ThrowIfLanceError(lance_conversion_push(writer, &array.arrow_array), "Lance conversion");
+}
 
 void ValidateDuckDBType(const LogicalType &type) {
 	switch (type.id()) {
@@ -385,35 +414,75 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 		s3 = options.ToConfig();
 		s3_ptr = &s3;
 	}
-	ThrowIfLanceError(lance_conversion_open(path.c_str(), &schema.arrow_schema, &write_config, s3_ptr, &state->writer),
+	ThrowIfLanceError(lance_conversion_open(path.c_str(), &schema.arrow_schema, &write_config, s3_ptr, &state->dataset),
 	                  "Lance conversion");
 	return std::move(state);
 }
 
 unique_ptr<LocalFunctionData> LanceLocalInitialize(ExecutionContext &context, FunctionData &bind) {
-	return make_uniq<LocalFunctionData>();
+	return make_uniq<LanceLocalState>();
 }
 
 void LanceSinkChunk(ExecutionContext &context, FunctionData &bind_p, GlobalFunctionData &global_p,
-                    LocalFunctionData &local, DataChunk &input) {
+                    LocalFunctionData &local_p, DataChunk &input) {
+	auto &bind = bind_p.Cast<LanceBindData>();
+	auto &local = local_p.Cast<LanceLocalState>();
+	if (!local.writer) {
+		local.writer = OpenLanceWriter(global_p.Cast<LanceGlobalState>().dataset);
+	}
+	PushLanceChunk(local.writer, bind, input);
+}
+
+void LanceCombine(ExecutionContext &context, FunctionData &bind, GlobalFunctionData &global,
+                  LocalFunctionData &local_p) {
+	auto &local = local_p.Cast<LanceLocalState>();
+	if (local.writer) {
+		ThrowIfLanceError(lance_conversion_writer_finish(local.writer), "Lance conversion");
+	}
+}
+
+unique_ptr<PreparedBatchData> LancePrepareBatch(ClientContext &context, FunctionData &bind,
+                                                GlobalFunctionData &global,
+                                                unique_ptr<ColumnDataCollection> collection) {
+	auto result = make_uniq<LancePreparedBatch>();
+	result->collection = std::move(collection);
+	return std::move(result);
+}
+
+// DuckDB calls this for one batch at a time, in batch index order.
+void LanceFlushBatch(ClientContext &context, FunctionData &bind_p, GlobalFunctionData &global_p,
+                     PreparedBatchData &batch_p) {
 	auto &bind = bind_p.Cast<LanceBindData>();
 	auto &global = global_p.Cast<LanceGlobalState>();
-	ArrowArrayWrapper array;
-	ArrowConverter::ToArrowArray(input, &array.arrow_array, bind.properties, {});
-	ThrowIfLanceError(lance_conversion_push(global.writer, &array.arrow_array), "Lance conversion");
+	auto &batch = batch_p.Cast<LancePreparedBatch>();
+	if (!global.ordered_writer) {
+		global.ordered_writer = OpenLanceWriter(global.dataset);
+	}
+	for (auto &chunk : batch.collection->Chunks()) {
+		PushLanceChunk(global.ordered_writer, bind, chunk);
+	}
 }
 
 void LanceFinalize(ClientContext &context, FunctionData &bind, GlobalFunctionData &global_p) {
-	auto writer = global_p.Cast<LanceGlobalState>().writer;
-	ThrowIfLanceError(lance_conversion_finish(writer), "Lance conversion");
+	auto &global = global_p.Cast<LanceGlobalState>();
+	if (global.ordered_writer) {
+		ThrowIfLanceError(lance_conversion_writer_finish(global.ordered_writer), "Lance conversion");
+	}
+	ThrowIfLanceError(lance_conversion_finish(global.dataset), "Lance conversion");
 	LanceWriteMetrics metrics;
-	lance_conversion_get_metrics(writer, &metrics);
+	lance_conversion_get_metrics(global.dataset, &metrics);
 	auto &profiler = QueryProfiler::Get(context);
 	profiler.AddToCounter(MetricType::TOTAL_BYTES_READ, metrics.bytes_read);
 	profiler.AddToCounter(MetricType::TOTAL_BYTES_WRITTEN, metrics.bytes_written);
 }
 
-CopyFunctionExecutionMode LanceExecutionMode(bool preserve_order, bool supports_batch_index) {
+CopyFunctionExecutionMode LanceExecutionMode(bool preserve_insertion_order, bool supports_batch_index) {
+	if (!preserve_insertion_order) {
+		return CopyFunctionExecutionMode::PARALLEL_COPY_TO_FILE;
+	}
+	if (supports_batch_index) {
+		return CopyFunctionExecutionMode::BATCH_COPY_TO_FILE;
+	}
 	return CopyFunctionExecutionMode::REGULAR_COPY_TO_FILE;
 }
 
@@ -424,7 +493,10 @@ CopyFunction MakeLanceCopyFunction() {
 	function.copy_to_initialize_global = LanceInitialize;
 	function.copy_to_initialize_local = LanceLocalInitialize;
 	function.copy_to_sink = LanceSinkChunk;
+	function.copy_to_combine = LanceCombine;
 	function.copy_to_finalize = LanceFinalize;
+	function.prepare_batch = LancePrepareBatch;
+	function.flush_batch = LanceFlushBatch;
 	function.execution_mode = LanceExecutionMode;
 	return function;
 }

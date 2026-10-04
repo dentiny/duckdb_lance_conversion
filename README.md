@@ -211,6 +211,22 @@ the default `Create` mode. The two options cannot be specified together.
 Other DuckDB file-layout options, including `PARTITION_BY`,
 `PER_THREAD_OUTPUT`, and `USE_TMP_FILE`, are rejected.
 
+### Parallelism and row order
+
+Like DuckDB's Parquet writer, `FORMAT LANCE` follows the
+`preserve_insertion_order` setting:
+
+- With `SET preserve_insertion_order = false`, every DuckDB thread writes its
+  own Lance data files in parallel, and rows from different threads are
+  interleaved.
+- With the default `true`, queries that support batch indexes, such as table
+  scans and `read_parquet`, still run in parallel; their rows are written in
+  source order by one Lance writer.
+- Other queries run on a single thread.
+
+Either way, a COPY publishes one Lance dataset version for its data, committed
+after every thread finishes, plus one version per requested index.
+
 ### Sampling
 
 `SAMPLE_PERCENT` writes a random percentage of the source rows; each row is
@@ -240,6 +256,8 @@ Size options are specified in bytes:
 - `BLOB_DEDICATED_SIZE_THRESHOLD` defaults to 16 MiB. Values above it use
   dedicated storage; values between the two thresholds use packed storage.
 - `TARGET_FILE_SIZE` defaults to 512 MiB and is a soft maximum data-file size.
+  It applies to each writer: in a parallel write, every thread that receives
+  rows writes at least one data file.
 
 For example:
 
@@ -446,15 +464,18 @@ let result = LanceSink::new("output.lance", WriteOptions::default())
     .await?;
 ```
 
-Run these APIs inside a Tokio runtime. DuckDB uses the incremental `LanceWriter`
-adapter (`create`, `write_batch`, and `finish`) with a bounded channel. Dropping an
-unfinished writer closes its input and waits for the writer task to stop. An
-aborted write may leave uncommitted output. The synchronous FFI layer owns the
-runtime and waits for the task on destruction.
+Run these APIs inside a Tokio runtime. DuckDB uses `LanceDatasetWriter`: each
+thread pushes batches into its own `LanceFragmentWriter` (`write_batch`, then
+`finish`) through a bounded channel, and `LanceDatasetWriter::commit` publishes
+the fragments of every finished writer as one dataset version. `LanceWriter`
+wraps one dataset writer with one fragment writer. Dropping an unfinished
+fragment writer closes its input; its fragments are never committed but may be
+left as uncommitted output. The synchronous FFI layer owns the runtime and
+waits for writer tasks on destruction.
 
-The Lance sink rejects unsupported Arrow types, including `Map`,
-`Dictionary`, `Union`, `Null`, `Duration`, `Interval`, and decimal types other
-than `Decimal128`. It does not automatically cast them.
+The Lance sink rejects unsupported Arrow types, including `Union`, `Null`,
+`Duration`, `Interval`, and decimal types other than `Decimal128`. It does not
+automatically cast them.
 
 ## TODO
 
