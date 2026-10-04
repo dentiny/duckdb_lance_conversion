@@ -256,7 +256,7 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 	result->properties.arrow_use_list_view = false;
 	result->properties.produce_arrow_string_view = false;
 	result->properties.arrow_lossless_conversion = false;
-	result->properties.arrow_offset_size = ArrowOffsetSize::REGULAR;
+	result->properties.arrow_offset_size = ArrowOffsetSize::LARGE;
 	result->properties.arrow_output_version = ArrowFormatVersion::V1_0;
 	for (const auto &type : types) {
 		ValidateDuckDBType(type);
