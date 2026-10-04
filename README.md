@@ -213,19 +213,45 @@ Other DuckDB file-layout options, including `PARTITION_BY`,
 
 ### Parallelism and row order
 
-Like DuckDB's Parquet writer, `FORMAT LANCE` follows the
-`preserve_insertion_order` setting:
+`FORMAT LANCE` supports three write modes. DuckDB chooses one when it plans
+the COPY, using the same rules as its Parquet writer.
 
-- With `SET preserve_insertion_order = false`, every DuckDB thread writes its
-  own Lance data files in parallel, and rows from different threads are
-  interleaved.
-- With the default `true`, queries that support batch indexes, such as table
-  scans and `read_parquet`, still run in parallel; their rows are written in
-  source order by one Lance writer.
-- Other queries run on a single thread.
+| Mode | Used when | Query execution | Lance writers | Row order |
+| --- | --- | --- | --- | --- |
+| Parallel | Row order need not be preserved | Parallel | One per thread | Not preserved |
+| Batch | Row order must be preserved, and batch indexes are available | Parallel | One | Preserved |
+| Regular | Row order must be preserved, but batch indexes are unavailable | Single thread | One | Preserved |
 
-Either way, a COPY publishes one Lance dataset version for its data, committed
-after every thread finishes, plus one version per requested index.
+Row order need not be preserved when any of the following holds:
+
+- The COPY sets `PRESERVE_ORDER false`.
+- The query ends in `GROUP BY` or a join, whose output has no defined order.
+- `SET preserve_insertion_order = false`, and the query has no `ORDER BY`,
+  `LIMIT`, or streaming window function.
+
+`PRESERVE_ORDER true` forces row order to be preserved. Batch indexes are
+available when DuckDB runs with more than one thread and every source in the
+query supports them. Table scans, sorted results, and DuckDB's file readers
+such as `read_parquet`, `read_csv`, and `read_json` support batch indexes;
+`read_huggingface` and `read_warc` do not.
+
+For example, with the default settings:
+
+```sql
+-- Batch: an ordered table scan.
+COPY source TO 'a.lance' (FORMAT LANCE);
+-- Parallel: GROUP BY output has no order to preserve.
+COPY (SELECT bucket, count(*) FROM source GROUP BY bucket) TO 'b.lance' (FORMAT LANCE);
+-- Regular: read_huggingface does not support batch indexes.
+COPY (SELECT * FROM read_huggingface('lhoestq/demo1')) TO 'c.lance' (FORMAT LANCE);
+-- Parallel: order is explicitly not required.
+COPY (SELECT * FROM read_huggingface('lhoestq/demo1'))
+TO 'd.lance' (FORMAT LANCE, PRESERVE_ORDER false);
+```
+
+`EXPLAIN COPY ...` shows `BATCH_COPY_TO_FILE` for the batch mode. In every
+mode, a COPY publishes one Lance dataset version for its data, committed after
+every thread finishes, plus one version per requested index.
 
 ### Sampling
 

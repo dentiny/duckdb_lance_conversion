@@ -83,6 +83,13 @@ void lance_conversion_error_free(char *error);
 // them as one dataset version in lance_conversion_finish.
 char *lance_conversion_open(const char *path, const struct ArrowSchema *schema, const struct LanceWriteConfig *config,
                             const struct LanceS3Config *s3, struct LanceConversionDataset **output);
+char *lance_conversion_finish(struct LanceConversionDataset *dataset);
+void lance_conversion_get_metrics(const struct LanceConversionDataset *dataset, struct LanceWriteMetrics *output);
+// Never throws across the ABI.
+void lance_conversion_destroy(struct LanceConversionDataset *dataset);
+
+// Writers write data files for one dataset write, so several threads can write
+// in parallel; a writer itself is not thread-safe.
 // Safe to call concurrently on one dataset until lance_conversion_finish.
 char *lance_conversion_writer_open(const struct LanceConversionDataset *dataset, struct LanceConversionWriter **output);
 // Takes ownership of array on import and clears its release callback.
@@ -91,10 +98,6 @@ char *lance_conversion_push(struct LanceConversionWriter *writer, struct ArrowAr
 char *lance_conversion_writer_finish(struct LanceConversionWriter *writer);
 // Aborts an unfinished writer; its fragments are not committed. Never throws across the ABI.
 void lance_conversion_writer_destroy(struct LanceConversionWriter *writer);
-char *lance_conversion_finish(struct LanceConversionDataset *dataset);
-void lance_conversion_get_metrics(const struct LanceConversionDataset *dataset, struct LanceWriteMetrics *output);
-// Never throws across the ABI.
-void lance_conversion_destroy(struct LanceConversionDataset *dataset);
 
 char *lance_huggingface_open(const char *dataset, const char *config, const char *split, const char *token,
                              int32_t preserve_insertion_order, uint64_t max_read_parallelism,
