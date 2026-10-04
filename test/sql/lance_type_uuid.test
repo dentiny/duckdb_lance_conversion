@@ -1,0 +1,40 @@
+# name: test/sql/lance_type_uuid.test
+# description: UUID is stored as its canonical string form
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT *
+    FROM (VALUES
+        (
+            '00112233-4455-6677-8899-aabbccddeeff'::UUID,
+            ['ffffffff-ffff-ffff-ffff-ffffffffffff'::UUID, NULL]
+        ),
+        (NULL::UUID, NULL::UUID[])
+    ) t(id, ids)
+) TO '__TEST_DIR__/uuid.lance' (FORMAT LANCE);
+----
+2
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query II
+SELECT typeof(id), typeof(ids) FROM '__TEST_DIR__/uuid.lance' LIMIT 1;
+----
+VARCHAR	VARCHAR[]
+
+query II
+SELECT
+    count(*) FILTER (
+        WHERE id = '00112233-4455-6677-8899-aabbccddeeff'
+          AND ids = ['ffffffff-ffff-ffff-ffff-ffffffffffff', NULL]
+    ) = 1,
+    count(*) FILTER (WHERE id IS NULL AND ids IS NULL) = 1
+FROM '__TEST_DIR__/uuid.lance';
+----
+true	true

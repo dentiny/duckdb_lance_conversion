@@ -39,9 +39,11 @@ fn validate_type(data_type: &DataType) -> Result<()> {
         | DataType::Time32(_)
         | DataType::Time64(_)
         | DataType::Timestamp(_, _) => Ok(()),
-        DataType::List(field) | DataType::LargeList(field) | DataType::FixedSizeList(field, _) => {
-            validate_type(field.data_type())
-        }
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => validate_type(field.data_type()),
+        DataType::Dictionary(key, value) if key.is_dictionary_key_type() => validate_type(value),
         DataType::Struct(fields) => {
             for field in fields {
                 validate_type(field.data_type())?;

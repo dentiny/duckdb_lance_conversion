@@ -250,10 +250,14 @@ async fn open_operator(
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Int32Array, RecordBatch};
+    use arrow_array::{FixedSizeBinaryArray, Int32Array, RecordBatch, StringArray};
+    use arrow_schema::extension::{ExtensionType, Json, Uuid};
+    use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
     use opendal::services::Fs;
+    use parquet::arrow::{arrow_writer::ArrowWriterOptions, AsyncArrowWriter};
     use tempfile::TempDir;
+    use tokio::fs::{self, File};
 
     use super::super::test_util::write_parquet_shard;
     use super::*;
@@ -373,6 +377,45 @@ mod tests {
             .collect::<Vec<_>>();
         values.sort_unstable();
         assert_eq!(values, [1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn parquet_uuid_and_json_keep_canonical_extension_types() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("default/train/1.parquet");
+        fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::FixedSizeBinary(16), true).with_extension_type(Uuid),
+            Field::new("doc", DataType::Utf8, true).with_extension_type(Json::default()),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(FixedSizeBinaryArray::try_from_iter([[0xAB_u8; 16]].into_iter()).unwrap()),
+                Arc::new(StringArray::from(vec![r#"{"a":1}"#])),
+            ],
+        )
+        .unwrap();
+        // Without the embedded Arrow schema, the reader must derive the
+        // extension types from the Parquet UUID and JSON logical types.
+        let options = ArrowWriterOptions::new().with_skip_arrow_metadata(true);
+        let file = File::create(&path).await.unwrap();
+        let mut writer = AsyncArrowWriter::try_new_with_options(file, schema, options).unwrap();
+        writer.write(&batch).await.unwrap();
+        writer.close().await.unwrap();
+
+        let (schema, _) = open_operator(
+            fs_operator(&root),
+            "default/train/",
+            1024,
+            true,
+            8,
+            Arc::new(ReadMetrics::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(schema.field(0).extension_type_name(), Some(Uuid::NAME));
+        assert_eq!(schema.field(1).extension_type_name(), Some(Json::NAME));
     }
 
     #[tokio::test]
