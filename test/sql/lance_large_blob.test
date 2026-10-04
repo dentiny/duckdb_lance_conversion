@@ -1,0 +1,24 @@
+# name: test/sql/lance_large_blob.test
+# description: A single 2048-row chunk whose BLOB column exceeds 2 GiB must not overflow 32-bit Arrow offsets
+# group: [sql]
+
+require lance_conversion
+
+# 2048 rows * 1,100,000 bytes = 2,252,800,000 bytes > INT32_MAX (2,147,483,647)
+query I
+COPY (
+    SELECT i AS id, repeat('x', 1100000)::BLOB AS payload
+    FROM range(2048) t(i)
+) TO '__TEST_DIR__/large_blob.lance' (FORMAT LANCE);
+----
+2048
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query II
+SELECT count(*), sum(id) FROM '__TEST_DIR__/large_blob.lance';
+----
+2048	2096128
