@@ -1,0 +1,48 @@
+# name: test/sql/lance_type_map.test
+# description: MAP round trip through Lance
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (
+    SELECT *
+    FROM (VALUES
+        (MAP {'a': 1, 'b': NULL}, [MAP {'x': [1, 2]}]),
+        (MAP {}::MAP(VARCHAR, INTEGER), []::MAP(VARCHAR, INTEGER[])[]),
+        (NULL::MAP(VARCHAR, INTEGER), NULL::MAP(VARCHAR, INTEGER[])[])
+    ) t(m, nested)
+) TO '__TEST_DIR__/map.lance' (FORMAT LANCE);
+----
+3
+
+statement error
+COPY (SELECT MAP {'a': INTERVAL 1 DAY} AS m) TO '__TEST_DIR__/map_interval.lance' (FORMAT LANCE);
+----
+FORMAT LANCE does not support INTERVAL
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query II
+SELECT typeof(m), typeof(nested) FROM '__TEST_DIR__/map.lance' LIMIT 1;
+----
+MAP(VARCHAR, INTEGER)	MAP(VARCHAR, INTEGER[])[]
+
+query IIII
+SELECT
+    count(*) FILTER (
+        WHERE map_keys(m) = ['a', 'b']
+          AND map_values(m)[1] = 1
+          AND map_values(m)[2] IS NULL
+          AND map_keys(nested[1]) = ['x']
+          AND map_values(nested[1])[1] = [1, 2]
+    ) = 1,
+    count(*) FILTER (WHERE cardinality(m) = 0 AND len(nested) = 0) = 1,
+    count(*) FILTER (WHERE m IS NULL AND nested IS NULL) = 1,
+    count(*) = 3
+FROM '__TEST_DIR__/map.lance';
+----
+true	true	true	true

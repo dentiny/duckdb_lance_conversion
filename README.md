@@ -368,21 +368,24 @@ index columns. Indexes are created after the data write succeeds.
 ### Types and conversion limits
 
 Supported DuckDB types are booleans, signed/unsigned integers through 64 bits,
-float/double, decimal, varchar, blob, date/time/timestamp (including
-`TIMESTAMPTZ`), and recursively supported `LIST`, fixed-size `ARRAY`, and `STRUCT`.
-Nested arrays are accepted when every child type is supported.
+float/double, decimal, varchar, blob, `UUID`, `ENUM`, date/time/timestamp
+(including `TIMESTAMPTZ`), and recursively supported `LIST`, fixed-size `ARRAY`,
+`STRUCT`, and `MAP`. Nested types are accepted when every child type is supported.
+`UUID` is stored as its canonical 36-character string. `ENUM` is stored as a
+dictionary-encoded string; DuckDB uses an 8-bit dictionary key for up to 255
+values and wider keys beyond that, and Lance rejects `APPEND` when the key
+width differs from the existing dataset.
 
 Types outside this list are rejected, including:
 
 - `HUGEINT` and `UHUGEINT` (128-bit integers)
-- `UUID`
-- `MAP`, `ENUM`, and `UNION`
+- `UNION`
 - `INTERVAL`
 - `TIME WITH TIME ZONE` (`TIMETZ`)
 - Untyped `NULL` (for example, `SELECT NULL AS value`)
 
 Explicitly cast unsupported columns to a supported type before exporting,
-for example `uuid_column::VARCHAR` or `NULL::INTEGER`. NULL values within
+for example `interval_column::VARCHAR` or `NULL::INTEGER`. NULL values within
 supported typed columns are allowed.
 
 Top-level `BLOB` columns use Lance Blob v2 storage. Depending on the reader,

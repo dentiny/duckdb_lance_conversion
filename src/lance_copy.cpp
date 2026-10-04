@@ -114,9 +114,15 @@ void ValidateDuckDBType(const LogicalType &type) {
 	case LogicalTypeId::TIMESTAMP_MS:
 	case LogicalTypeId::TIMESTAMP_NS:
 	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::UUID:
+	case LogicalTypeId::ENUM:
 		return;
 	case LogicalTypeId::LIST:
 		ValidateDuckDBType(ListType::GetChildType(type));
+		return;
+	case LogicalTypeId::MAP:
+		ValidateDuckDBType(MapType::KeyType(type));
+		ValidateDuckDBType(MapType::ValueType(type));
 		return;
 	case LogicalTypeId::ARRAY:
 		ValidateDuckDBType(ArrayType::GetChildType(type));
