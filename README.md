@@ -231,22 +231,23 @@ Row order need not be preserved when any of the following holds:
 
 `PRESERVE_ORDER true` forces row order to be preserved. Batch indexes are
 available when DuckDB runs with more than one thread and every source in the
-query supports them. Table scans, sorted results, and DuckDB's file readers
-such as `read_parquet`, `read_csv`, and `read_json` support batch indexes;
-`read_huggingface` and `read_warc` do not.
+query supports them. Table scans, sorted results, `read_huggingface`,
+`read_warc`, and DuckDB's file readers such as `read_parquet`, `read_csv`, and
+`read_json` support batch indexes.
 
-For example, with the default settings:
+For example:
 
 ```sql
--- Batch: an ordered table scan.
-COPY source TO 'a.lance' (FORMAT LANCE);
+-- Batch: an ordered read.
+COPY (SELECT * FROM read_huggingface('lhoestq/demo1')) TO 'a.lance' (FORMAT LANCE);
 -- Parallel: GROUP BY output has no order to preserve.
 COPY (SELECT bucket, count(*) FROM source GROUP BY bucket) TO 'b.lance' (FORMAT LANCE);
--- Regular: read_huggingface does not support batch indexes.
-COPY (SELECT * FROM read_huggingface('lhoestq/demo1')) TO 'c.lance' (FORMAT LANCE);
 -- Parallel: order is explicitly not required.
 COPY (SELECT * FROM read_huggingface('lhoestq/demo1'))
-TO 'd.lance' (FORMAT LANCE, PRESERVE_ORDER false);
+TO 'c.lance' (FORMAT LANCE, PRESERVE_ORDER false);
+-- Regular: batch indexes are never used with a single thread.
+SET threads = 1;
+COPY source TO 'd.lance' (FORMAT LANCE);
 ```
 
 `EXPLAIN COPY ...` shows `BATCH_COPY_TO_FILE` for the batch mode. In every

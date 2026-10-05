@@ -1,5 +1,6 @@
 #include "warc_scan.hpp"
 
+#include "arrow_source_scan.hpp"
 #include "function_metadata.hpp"
 #include "lance_conversion.h"
 #include "lance_ffi.hpp"
@@ -89,6 +90,7 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 void RegisterWarcScanFunction(ExtensionLoader &loader) {
 	TableFunction function("read_warc", {LogicalType::VARCHAR}, SourceMetricsArrowScan, BindWarc,
 	                       ArrowTableFunction::ArrowScanInitGlobal, ArrowTableFunction::ArrowScanInitLocal);
+	function.get_partition_data = ArrowSourceGetPartitionData;
 	function.get_metrics = SourceMetricsGetMetrics;
 	function.table_scan_progress = SourceMetricsProgress;
 	function.projection_pushdown = true;
