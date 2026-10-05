@@ -213,46 +213,10 @@ Other DuckDB file-layout options, including `PARTITION_BY`,
 
 ### Parallelism and row order
 
-`FORMAT LANCE` supports three write modes. DuckDB chooses one when it plans
-the COPY, using the same rules as its Parquet writer.
-
-| Mode | Used when | Query execution | Lance writers | Row order |
-| --- | --- | --- | --- | --- |
-| Parallel | Row order need not be preserved | Parallel | One per thread | Not preserved |
-| Batch | Row order must be preserved, and batch indexes are available | Parallel | One | Preserved |
-| Regular | Row order must be preserved, but batch indexes are unavailable | Single thread | One | Preserved |
-
-Row order need not be preserved when any of the following holds:
-
-- The COPY sets `PRESERVE_ORDER false`.
-- The query ends in `GROUP BY` or a join, whose output has no defined order.
-- `SET preserve_insertion_order = false`, and the query has no `ORDER BY`,
-  `LIMIT`, or streaming window function.
-
-`PRESERVE_ORDER true` forces row order to be preserved. Batch indexes are
-available when DuckDB runs with more than one thread and every source in the
-query supports them. Table scans, sorted results, `read_huggingface`,
-`read_warc`, and DuckDB's file readers such as `read_parquet`, `read_csv`, and
-`read_json` support batch indexes.
-
-For example:
-
-```sql
--- Batch: an ordered read.
-COPY (SELECT * FROM read_huggingface('lhoestq/demo1')) TO 'a.lance' (FORMAT LANCE);
--- Parallel: GROUP BY output has no order to preserve.
-COPY (SELECT bucket, count(*) FROM source GROUP BY bucket) TO 'b.lance' (FORMAT LANCE);
--- Parallel: order is explicitly not required.
-COPY (SELECT * FROM read_huggingface('lhoestq/demo1'))
-TO 'c.lance' (FORMAT LANCE, PRESERVE_ORDER false);
--- Regular: batch indexes are never used with a single thread.
-SET threads = 1;
-COPY source TO 'd.lance' (FORMAT LANCE);
-```
-
-`EXPLAIN COPY ...` shows `BATCH_COPY_TO_FILE` for the batch mode. In every
-mode, a COPY publishes one Lance dataset version for its data, committed after
-every thread finishes, plus one version per requested index.
+Every DuckDB thread runs its own Lance writer only when row order need not be
+preserved, so `PRESERVE_ORDER false` gives the fastest writes. See
+[Performance Notes](docs/performance_notes.md) for how DuckDB picks between
+parallel, batch, and regular writes, and for benchmark results.
 
 ### Sampling
 
