@@ -9,7 +9,7 @@ use lance_index::{
 };
 use lance_linalg::distance::MetricType;
 
-use super::lance::WriteOptions;
+use super::WriteOptions;
 use crate::error::ResultExt;
 use crate::{Error, Result};
 

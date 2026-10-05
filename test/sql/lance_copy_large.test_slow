@@ -1,0 +1,172 @@
+# name: test/sql/lance_copy_large.test_slow
+# description: Large parallel and order-preserving COPY to Lance commits every writer's fragments exactly once
+# group: [sql]
+
+require lance_conversion
+
+statement ok
+SET threads = 8;
+
+# 10M rows span ~80 row groups, so the table scan feeds many threads and supports batch indexes.
+statement ok
+CREATE TABLE source AS
+SELECT
+    i AS id,
+    (i % 1000)::INTEGER AS bucket,
+    'row-' || i AS name,
+    (i * 0.5)::DOUBLE AS score,
+    [i % 7, i % 11]::INTEGER[] AS tags
+FROM range(10000000) t(i);
+
+# Without insertion order every thread writes its own fragments.
+
+statement ok
+SET preserve_insertion_order = false;
+
+query II
+EXPLAIN COPY (SELECT * FROM source) TO '__TEST_DIR__/large_explain.lance' (FORMAT LANCE);
+----
+physical_plan	<!REGEX>:.*BATCH_COPY_TO_FILE.*
+
+query I
+COPY (SELECT * FROM source) TO '__TEST_DIR__/large_parallel.lance' (FORMAT LANCE);
+----
+10000000
+
+query I
+COPY (SELECT * FROM source WHERE id < 5000000) TO '__TEST_DIR__/large_append.lance' (FORMAT LANCE);
+----
+5000000
+
+query I
+COPY (SELECT * FROM source WHERE id >= 5000000) TO '__TEST_DIR__/large_append.lance' (FORMAT LANCE, APPEND);
+----
+5000000
+
+query I
+COPY (SELECT * FROM source WHERE id < 1000) TO '__TEST_DIR__/large_overwrite.lance' (FORMAT LANCE);
+----
+1000
+
+query I
+COPY (SELECT * FROM source) TO '__TEST_DIR__/large_overwrite.lance' (FORMAT LANCE, OVERWRITE);
+----
+10000000
+
+query I
+COPY (SELECT * FROM source WHERE id < 0) TO '__TEST_DIR__/large_empty.lance' (FORMAT LANCE);
+----
+0
+
+query I
+COPY (SELECT * FROM source) TO '__TEST_DIR__/large_indexed.lance' (
+    FORMAT LANCE,
+    SCALAR_INDEX_COLUMNS (id)
+);
+----
+10000000
+
+query I
+COPY (
+    SELECT id, repeat(chr(65 + (id % 26)::INTEGER), 1024)::BLOB AS payload
+    FROM source
+    WHERE id < 200000
+) TO '__TEST_DIR__/large_blob_parallel.lance' (FORMAT LANCE);
+----
+200000
+
+# With insertion order, batches are converted in parallel and written in batch index order.
+
+statement ok
+SET preserve_insertion_order = true;
+
+query II
+EXPLAIN COPY (SELECT * FROM source) TO '__TEST_DIR__/large_explain.lance' (FORMAT LANCE);
+----
+physical_plan	<REGEX>:.*BATCH_COPY_TO_FILE.*
+
+query I
+COPY (SELECT * FROM source) TO '__TEST_DIR__/large_ordered.lance' (FORMAT LANCE);
+----
+10000000
+
+# Each COPY is one dataset version, no matter how many writers produced fragments.
+
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/large_parallel.lance/_versions/*.manifest');
+----
+1
+
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/large_append.lance/_versions/*.manifest');
+----
+2
+
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/large_overwrite.lance/_versions/*.manifest');
+----
+2
+
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/large_empty.lance/_versions/*.manifest');
+----
+1
+
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/large_indexed.lance/_versions/*.manifest');
+----
+2
+
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/large_ordered.lance/_versions/*.manifest');
+----
+1
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+statement ok
+SET threads = 8;
+
+# No row may be lost or committed twice.
+
+foreach dataset large_parallel large_append large_overwrite large_indexed large_ordered
+
+query IIIIII
+SELECT count(*), count(DISTINCT id), min(id), max(id), sum(id), sum(bucket)
+FROM '__TEST_DIR__/${dataset}.lance';
+----
+10000000	10000000	0	9999999	49999995000000	4995000000
+
+query I
+SELECT count(*)
+FROM '__TEST_DIR__/${dataset}.lance'
+WHERE bucket <> id % 1000 OR name <> 'row-' || id OR score <> id * 0.5 OR tags <> [id % 7, id % 11]::INTEGER[];
+----
+0
+
+endloop
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/large_empty.lance';
+----
+0
+
+query III
+SELECT count(*), count(DISTINCT id), sum(id) FROM '__TEST_DIR__/large_blob_parallel.lance';
+----
+200000	200000	19999900000
+
+# A single-threaded scan returns the ordered COPY in source order.
+
+statement ok
+SET threads = 1;
+
+query I
+SELECT count(*)
+FROM (SELECT id, row_number() OVER () - 1 AS position FROM '__TEST_DIR__/large_ordered.lance')
+WHERE id <> position;
+----
+0

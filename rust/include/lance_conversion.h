@@ -6,6 +6,7 @@
 struct ArrowSchema;
 struct ArrowArray;
 struct ArrowArrayStream;
+struct LanceConversionDataset;
 struct LanceConversionWriter;
 struct HuggingFaceStreamFactory;
 struct WarcStreamFactory;
@@ -78,15 +79,30 @@ extern "C" {
 
 // NULL means success. Free each owned error with lance_conversion_error_free.
 void lance_conversion_error_free(char *error);
+// A dataset write collects the fragments of any number of writers and commits
+// them as one dataset version in lance_conversion_finish.
 char *lance_conversion_open(const char *path, const struct ArrowSchema *schema, const struct LanceWriteConfig *config,
-                            const struct LanceS3Config *s3, struct LanceConversionWriter **output);
+                            const struct LanceS3Config *s3, struct LanceConversionDataset **output);
+char *lance_conversion_finish(struct LanceConversionDataset *dataset);
+void lance_conversion_get_metrics(const struct LanceConversionDataset *dataset, struct LanceWriteMetrics *output);
+void lance_conversion_destroy(struct LanceConversionDataset *dataset);
+
+// Writers write data files for one dataset write, so several threads can write
+// in parallel; a writer itself is not thread-safe.
+// Opens a writer that writes data files in a background task. On success, *output owns the writer; free it
+// with lance_conversion_writer_destroy. On error, *output is NULL. Threads may open writers on one dataset
+// concurrently, but not concurrently with lance_conversion_finish. Fragments of writers finished after
+// lance_conversion_finish are never committed.
+char *lance_conversion_writer_open(const struct LanceConversionDataset *dataset, struct LanceConversionWriter **output);
 // Takes ownership of array on import and clears its release callback.
 char *lance_conversion_push(struct LanceConversionWriter *writer, struct ArrowArray *array);
-char *lance_conversion_finish(struct LanceConversionWriter *writer);
-void lance_conversion_get_metrics(const struct LanceConversionWriter *writer, struct LanceWriteMetrics *output);
-// Aborts unfinished writes. Never throws across the ABI.
-void lance_conversion_destroy(struct LanceConversionWriter *writer);
+// Waits for the writer's pending data files, then adds its fragments to the dataset commit, in call order.
+// Returns NULL on success; on error, none of this writer's rows are committed. Call at most once per writer.
+char *lance_conversion_writer_finish(struct LanceConversionWriter *writer);
+// Aborts an unfinished writer; its fragments are not committed. Never throws across the ABI.
+void lance_conversion_writer_destroy(struct LanceConversionWriter *writer);
 
+// Huggingface related functions.
 char *lance_huggingface_open(const char *dataset, const char *config, const char *split, const char *token,
                              int32_t preserve_insertion_order, uint64_t max_read_parallelism,
                              struct HuggingFaceStreamFactory **output);
@@ -95,6 +111,7 @@ char *lance_huggingface_get_stream(struct HuggingFaceStreamFactory *factory, str
 void lance_huggingface_get_metrics(const struct HuggingFaceStreamFactory *factory, struct LanceReadMetrics *output);
 void lance_huggingface_destroy(struct HuggingFaceStreamFactory *factory);
 
+// Warc related functions.
 char *lance_warc_open(const char *path, const char *index_path, const struct LanceS3Config *s3,
                       uint64_t max_read_parallelism, struct WarcStreamFactory **output);
 char *lance_warc_get_schema(const struct WarcStreamFactory *factory, struct ArrowSchema *output);

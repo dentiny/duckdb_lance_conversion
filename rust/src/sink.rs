@@ -7,8 +7,9 @@ use futures::Stream;
 use crate::Result;
 
 mod lance;
-mod lance_index;
-pub use lance::{LanceSink, LanceWriter, WriteMode, WriteOptions};
+pub use lance::{
+    LanceDatasetWriter, LanceFragmentWriter, LanceSink, LanceWriter, WriteMode, WriteOptions,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WriteSummary {

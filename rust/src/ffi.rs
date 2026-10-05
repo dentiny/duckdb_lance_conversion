@@ -13,8 +13,9 @@ use futures::TryStreamExt;
 
 use crate::source::ReadMetrics;
 use crate::{
-    warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceWriter, Result,
-    S3StorageConfig, WarcSource, WriteMode, WriteOptions, WriteSummary,
+    warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceDatasetWriter,
+    LanceFragmentWriter, Result, S3StorageConfig, WarcSource, WriteMode, WriteOptions,
+    WriteSummary,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -80,10 +81,17 @@ pub struct LanceWriteMetrics {
     bytes_written: u64,
 }
 
-pub struct LanceConversionWriter {
-    sink: LanceWriter,
-    runtime: tokio::runtime::Runtime,
+/// Shared by concurrent DuckDB threads: only `lance_conversion_finish` and
+/// `lance_conversion_destroy` require exclusive access.
+pub struct LanceConversionDataset {
+    writer: Option<LanceDatasetWriter>,
+    runtime: Arc<tokio::runtime::Runtime>,
     summary: Option<WriteSummary>,
+}
+
+pub struct LanceConversionWriter {
+    writer: LanceFragmentWriter,
+    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 struct ArrowBatchReader {
@@ -259,7 +267,7 @@ pub unsafe extern "C" fn lance_conversion_open(
     schema: *const FFI_ArrowSchema,
     config: *const LanceWriteConfig,
     s3: *const LanceS3Config,
-    output: *mut *mut LanceConversionWriter,
+    output: *mut *mut LanceConversionDataset,
 ) -> *mut c_char {
     call(|| {
         if path.is_null() || schema.is_null() || config.is_null() || output.is_null() {
@@ -318,14 +326,40 @@ pub unsafe extern "C" fn lance_conversion_open(
                 config.bloom_filter_index_column_count,
             )?,
         };
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
-        let sink = runtime.block_on(LanceWriter::create(path, schema, options))?;
-        *output = Box::into_raw(Box::new(LanceConversionWriter {
-            sink,
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?,
+        );
+        let writer = runtime.block_on(LanceDatasetWriter::create(path, schema, options))?;
+        *output = Box::into_raw(Box::new(LanceConversionDataset {
+            writer: Some(writer),
             runtime,
             summary: None,
+        }));
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_conversion_writer_open(
+    dataset: *const LanceConversionDataset,
+    output: *mut *mut LanceConversionWriter,
+) -> *mut c_char {
+    call(|| {
+        if dataset.is_null() || output.is_null() {
+            return Err(Error::message("null fragment writer argument"));
+        }
+        *output = ptr::null_mut();
+        let dataset = &*dataset;
+        let writer = dataset
+            .writer
+            .as_ref()
+            .ok_or_else(|| Error::message("Lance dataset writer is already finished"))?;
+        let _runtime = dataset.runtime.enter();
+        *output = Box::into_raw(Box::new(LanceConversionWriter {
+            writer: writer.fragment_writer(),
+            runtime: dataset.runtime.clone(),
         }));
         Ok(())
     })
@@ -343,37 +377,65 @@ pub unsafe extern "C" fn lance_conversion_push(
         let writer = &mut *writer;
         // Move Arrow ownership; the C++ wrapper sees an empty release callback.
         let array = ptr::replace(array, FFI_ArrowArray::empty());
-        let data_type = DataType::Struct(writer.sink.schema().fields().clone());
+        let data_type = DataType::Struct(writer.writer.schema().fields().clone());
         let data = from_ffi_and_data_type(array, data_type)?;
         let array = StructArray::from(data);
-        let batch = RecordBatch::try_new(writer.sink.schema().clone(), array.columns().to_vec())?;
-        writer.runtime.block_on(writer.sink.write_batch(batch))
+        let batch = RecordBatch::try_new(writer.writer.schema().clone(), array.columns().to_vec())?;
+        writer.runtime.block_on(writer.writer.write_batch(batch))
     })
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lance_conversion_finish(
+pub unsafe extern "C" fn lance_conversion_writer_finish(
     writer: *mut LanceConversionWriter,
 ) -> *mut c_char {
     call(|| {
         if writer.is_null() {
-            return Err(Error::message("null writer"));
+            return Err(Error::message("null fragment writer"));
         }
         let writer = &mut *writer;
-        writer.summary = Some(writer.runtime.block_on(writer.sink.finish())?);
+        writer.runtime.block_on(writer.writer.finish())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_conversion_writer_destroy(writer: *mut LanceConversionWriter) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !writer.is_null() {
+            let mut writer = Box::from_raw(writer);
+            let LanceConversionWriter { writer, runtime } = &mut *writer;
+            runtime.block_on(writer.abort());
+        }
+    }));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_conversion_finish(
+    dataset: *mut LanceConversionDataset,
+) -> *mut c_char {
+    call(|| {
+        if dataset.is_null() {
+            return Err(Error::message("null writer"));
+        }
+        let dataset = &mut *dataset;
+        let writer = dataset
+            .writer
+            .take()
+            .ok_or_else(|| Error::message("Lance dataset writer is already finished"))?;
+        dataset.summary = Some(dataset.runtime.block_on(writer.commit())?);
         Ok(())
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn lance_conversion_get_metrics(
-    writer: *const LanceConversionWriter,
+    dataset: *const LanceConversionDataset,
     output: *mut LanceWriteMetrics,
 ) {
-    if writer.is_null() || output.is_null() {
+    if dataset.is_null() || output.is_null() {
         return;
     }
-    let metrics = match &(*writer).summary {
+    let metrics = match &(*dataset).summary {
         Some(summary) => LanceWriteMetrics {
             bytes_read: summary.bytes_read,
             bytes_written: summary.bytes_written,
@@ -384,12 +446,10 @@ pub unsafe extern "C" fn lance_conversion_get_metrics(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lance_conversion_destroy(writer: *mut LanceConversionWriter) {
+pub unsafe extern "C" fn lance_conversion_destroy(dataset: *mut LanceConversionDataset) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        if !writer.is_null() {
-            let mut writer = Box::from_raw(writer);
-            let LanceConversionWriter { sink, runtime, .. } = &mut *writer;
-            runtime.block_on(sink.abort());
+        if !dataset.is_null() {
+            drop(Box::from_raw(dataset));
         }
     }));
 }
