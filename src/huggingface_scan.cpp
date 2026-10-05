@@ -1,5 +1,6 @@
 #include "huggingface_scan.hpp"
 
+#include "arrow_source_scan.hpp"
 #include "function_metadata.hpp"
 #include "lance_ffi.hpp"
 #include "lance_conversion.h"
@@ -89,6 +90,7 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
 	TableFunction function("read_huggingface", {LogicalType::VARCHAR}, SourceMetricsArrowScan, BindHuggingFace,
 	                       ArrowTableFunction::ArrowScanInitGlobal, ArrowTableFunction::ArrowScanInitLocal);
+	function.get_partition_data = ArrowSourceGetPartitionData;
 	function.get_metrics = SourceMetricsGetMetrics;
 	function.table_scan_progress = SourceMetricsProgress;
 	function.named_parameters["config"] = LogicalType::VARCHAR;

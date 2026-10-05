@@ -441,8 +441,7 @@ void LanceCombine(ExecutionContext &context, FunctionData &bind, GlobalFunctionD
 	}
 }
 
-unique_ptr<PreparedBatchData> LancePrepareBatch(ClientContext &context, FunctionData &bind,
-                                                GlobalFunctionData &global,
+unique_ptr<PreparedBatchData> LancePrepareBatch(ClientContext &context, FunctionData &bind, GlobalFunctionData &global,
                                                 unique_ptr<ColumnDataCollection> collection) {
 	auto result = make_uniq<LancePreparedBatch>();
 	result->collection = std::move(collection);

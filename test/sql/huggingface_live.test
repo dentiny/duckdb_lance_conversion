@@ -4,6 +4,15 @@
 
 require lance_conversion
 
+statement ok
+SET threads = 4;
+
+# read_huggingface supports batch indexes, so an order-preserving COPY runs in parallel.
+query II
+EXPLAIN COPY (SELECT * FROM read_huggingface('lhoestq/demo1')) TO '__TEST_DIR__/huggingface_explain.lance' (FORMAT LANCE);
+----
+physical_plan	<REGEX>:.*BATCH_COPY_TO_FILE.*
+
 query I
 COPY (
     SELECT * FROM read_huggingface('lhoestq/demo1')
