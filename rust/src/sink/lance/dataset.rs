@@ -205,11 +205,6 @@ impl LanceDatasetWriter {
             Err(lance::Error::DatasetNotFound { .. } | lance::Error::NotFound { .. }) => None,
             Err(error) => return Err(error).context("opening Lance destination"),
         };
-        if matches!(options.mode, WriteMode::Create) && dataset.is_some() {
-            return Err(Error::invalid_argument(format!(
-                "Lance dataset already exists: {uri}"
-            )));
-        }
         let params = WriteParams {
             mode: options.mode,
             max_bytes_per_file: options.target_file_size,
