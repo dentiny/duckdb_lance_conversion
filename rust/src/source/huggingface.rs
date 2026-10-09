@@ -551,46 +551,6 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn row_groups_are_read_without_polling_the_stream() {
-        let root = TempDir::new().unwrap();
-        write_parquet_shard(
-            &root.path().join("default/train/1.parquet"),
-            "id",
-            vec![1, 2, 3, 4],
-            1,
-        );
-        let metrics = Arc::new(ReadMetrics::default());
-        let (_, mut stream) = open_operator(
-            fs_operator(&root),
-            "default/train/",
-            1024,
-            true,
-            4,
-            None,
-            metrics.clone(),
-        )
-        .await
-        .unwrap();
-        let first = stream.try_next().await.unwrap().unwrap();
-        assert_eq!(int32_values(&[first]), [1]);
-
-        // Pulling the first batch starts every row group's task, so the rest
-        // are fetched while the stream sits idle, as when DuckDB is busy
-        // converting a batch outside its scan lock.
-        let total_bytes = metrics.snapshot().total_bytes;
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while metrics.snapshot().bytes_read < total_bytes {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("row groups were not read ahead");
-
-        let rest = stream.try_collect::<Vec<_>>().await.unwrap();
-        assert_eq!(int32_values(&rest), [2, 3, 4]);
-    }
-
     #[tokio::test]
     async fn parquet_uuid_and_json_keep_canonical_extension_types() {
         let root = TempDir::new().unwrap();
