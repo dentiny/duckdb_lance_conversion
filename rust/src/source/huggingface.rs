@@ -24,6 +24,7 @@ pub struct HuggingFaceSource {
     token: Option<String>,
     batch_size: usize,
     preserve_insertion_order: bool,
+    projection: Option<Vec<usize>>,
     read_options: SourceReadOptions,
     opendal_config: OpendalConfig,
     metrics: Arc<ReadMetrics>,
@@ -38,6 +39,7 @@ impl HuggingFaceSource {
             token: None,
             batch_size: DEFAULT_BATCH_SIZE,
             preserve_insertion_order: true,
+            projection: None,
             read_options: SourceReadOptions::default(),
             opendal_config: OpendalConfig::default(),
             metrics: Arc::new(ReadMetrics::default()),
@@ -66,6 +68,13 @@ impl HuggingFaceSource {
 
     pub fn with_preserve_insertion_order(mut self, preserve: bool) -> Self {
         self.preserve_insertion_order = preserve;
+        self
+    }
+
+    /// Reads only these top-level columns, in this order. An empty list reads
+    /// every column.
+    pub fn with_projection(mut self, projection: Vec<usize>) -> Self {
+        self.projection = Some(projection);
         self
     }
 
@@ -212,6 +221,7 @@ impl BatchSource for HuggingFaceSource {
             self.batch_size,
             self.preserve_insertion_order,
             read_options.max_read_parallelism,
+            self.projection,
             self.metrics,
         )
         .await
@@ -229,6 +239,7 @@ async fn open_operator(
     batch_size: usize,
     preserve_insertion_order: bool,
     max_read_parallelism: usize,
+    projection: Option<Vec<usize>>,
     metrics: Arc<ReadMetrics>,
 ) -> Result<(SchemaRef, BatchStream)> {
     let mut lister = operator.lister_with(prefix).recursive(true).await?;
@@ -251,6 +262,7 @@ async fn open_operator(
         batch_size,
         preserve_insertion_order,
         max_read_parallelism,
+        projection,
         metrics,
     )
     .await
@@ -340,6 +352,7 @@ mod tests {
             1024,
             true,
             8,
+            None,
             metrics.clone(),
         )
         .await
@@ -365,6 +378,7 @@ mod tests {
             1024,
             false,
             8,
+            None,
             Arc::new(ReadMetrics::default()),
         )
         .await
@@ -385,6 +399,137 @@ mod tests {
             .collect::<Vec<_>>();
         values.sort_unstable();
         assert_eq!(values, [1, 2, 3, 4]);
+    }
+
+    async fn write_wide_shard(path: &std::path::Path, ids: Vec<i32>) {
+        fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("score", DataType::Int32, false),
+        ]));
+        let names = ids.iter().map(|id| format!("row-{id}")).collect::<Vec<_>>();
+        let scores = ids.iter().map(|id| id * 10).collect::<Vec<_>>();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(ids)),
+                Arc::new(StringArray::from(names)),
+                Arc::new(Int32Array::from(scores)),
+            ],
+        )
+        .unwrap();
+        let file = File::create(path).await.unwrap();
+        let mut writer = AsyncArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).await.unwrap();
+        writer.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn projection_reads_requested_columns_in_requested_order() {
+        let root = TempDir::new().unwrap();
+        write_wide_shard(&root.path().join("default/train/1.parquet"), vec![1, 2]).await;
+        write_wide_shard(&root.path().join("default/train/2.parquet"), vec![3, 4]).await;
+
+        for preserve_insertion_order in [true, false] {
+            let (schema, stream) = open_operator(
+                fs_operator(&root),
+                "default/train/",
+                1024,
+                preserve_insertion_order,
+                8,
+                Some(vec![2, 0]),
+                Arc::new(ReadMetrics::default()),
+            )
+            .await
+            .unwrap();
+            let names = |schema: &Schema| {
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect::<Vec<_>>()
+            };
+            // DuckDB maps Arrow children to projected columns by position.
+            assert_eq!(names(&*schema), ["score", "id"]);
+            let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+            let mut rows = Vec::new();
+            for batch in &batches {
+                assert_eq!(names(&*batch.schema()), ["score", "id"]);
+                let scores = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap();
+                let ids = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap();
+                rows.extend(
+                    scores
+                        .values()
+                        .iter()
+                        .copied()
+                        .zip(ids.values().iter().copied()),
+                );
+            }
+            rows.sort_unstable();
+            assert_eq!(rows, [(10, 1), (20, 2), (30, 3), (40, 4)]);
+        }
+
+        // Unselected column chunks are never fetched.
+        let mut bytes_read = Vec::new();
+        for projection in [None, Some(vec![0])] {
+            let metrics = Arc::new(ReadMetrics::default());
+            let (_, stream) = open_operator(
+                fs_operator(&root),
+                "default/train/",
+                1024,
+                true,
+                8,
+                projection,
+                metrics.clone(),
+            )
+            .await
+            .unwrap();
+            stream.try_collect::<Vec<_>>().await.unwrap();
+            bytes_read.push(metrics.snapshot().bytes_read);
+        }
+        assert!(
+            bytes_read[1] < bytes_read[0],
+            "projected read {} bytes, full read {} bytes",
+            bytes_read[1],
+            bytes_read[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn projection_rejects_repeated_and_unknown_columns() {
+        let root = TempDir::new().unwrap();
+        write_wide_shard(&root.path().join("default/train/1.parquet"), vec![1]).await;
+        for (projection, message) in [
+            (vec![0, 0], "duplicate Parquet column index: 0"),
+            (vec![3], "invalid Parquet column index: 3"),
+        ] {
+            for preserve_insertion_order in [true, false] {
+                let error = match open_operator(
+                    fs_operator(&root),
+                    "default/train/",
+                    1024,
+                    preserve_insertion_order,
+                    8,
+                    Some(projection.clone()),
+                    Arc::new(ReadMetrics::default()),
+                )
+                .await
+                {
+                    Ok(_) => panic!("projection {projection:?} should fail"),
+                    Err(error) => error,
+                };
+                assert!(error.to_string().contains(message), "{error}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -418,6 +563,7 @@ mod tests {
             1024,
             true,
             8,
+            None,
             Arc::new(ReadMetrics::default()),
         )
         .await
@@ -435,6 +581,7 @@ mod tests {
             1024,
             true,
             8,
+            None,
             Arc::new(ReadMetrics::default()),
         )
         .await
@@ -462,6 +609,7 @@ mod tests {
             1024,
             false,
             8,
+            None,
             Arc::new(ReadMetrics::default()),
         )
         .await

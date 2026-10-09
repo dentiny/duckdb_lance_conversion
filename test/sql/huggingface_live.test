@@ -43,6 +43,33 @@ FROM read_huggingface(
 ----
 5
 
+# Projected columns, selected out of file order, must match a full read.
+statement ok
+CREATE TABLE hf_full AS SELECT * FROM read_huggingface('lhoestq/demo1');
+
+query I
+SELECT count(*) FROM (
+    SELECT star, id FROM read_huggingface('lhoestq/demo1')
+    EXCEPT ALL
+    SELECT star, id FROM hf_full
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+    SELECT version_id, package_name FROM read_huggingface('lhoestq/demo1', preserve_insertion_order = false)
+    EXCEPT ALL
+    SELECT version_id, package_name FROM hf_full
+);
+----
+0
+
+query I
+SELECT count(star) FROM read_huggingface('lhoestq/demo1');
+----
+5
+
 statement error
 SELECT *
 FROM read_huggingface(

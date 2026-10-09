@@ -131,11 +131,12 @@ pub struct HuggingFaceStreamFactory {
 }
 
 impl HuggingFaceStreamFactory {
-    fn open_reader(&self) -> Result<ArrowBatchReader> {
+    fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
         let mut source = HuggingFaceSource::new(&self.dataset)
             .with_config(&self.config)
             .with_split(&self.split)
             .with_preserve_insertion_order(self.preserve_insertion_order)
+            .with_projection(projection)
             .with_max_read_parallelism(self.max_read_parallelism)
             .with_opendal_config(self.opendal_config)
             .with_metrics(self.metrics.clone());
@@ -204,6 +205,34 @@ unsafe fn string_list(values: *const *const c_char, count: usize) -> Result<Vec<
                 return Err(Error::message("null string list value"));
             }
             Ok(CStr::from_ptr(*value).to_str()?.to_owned())
+        })
+        .collect()
+}
+
+/// Resolves DuckDB's projected column names to indexes into `schema`, in
+/// projection order. An empty projection reads every column.
+unsafe fn projected_columns(
+    schema: &Schema,
+    columns: *const *const c_char,
+    column_count: usize,
+    source: &str,
+) -> Result<Vec<usize>> {
+    if column_count == 0 {
+        return Ok(Vec::new());
+    }
+    if columns.is_null() {
+        return Err(Error::message(format!("null {source} projection")));
+    }
+    std::slice::from_raw_parts(columns, column_count)
+        .iter()
+        .map(|&column| {
+            if column.is_null() {
+                return Err(Error::message(format!("null {source} column name")));
+            }
+            let name = CStr::from_ptr(column).to_str()?;
+            schema
+                .index_of(name)
+                .map_err(|_| Error::message(format!("unknown {source} column: {name}")))
         })
         .collect()
 }
@@ -560,6 +589,8 @@ pub unsafe extern "C" fn lance_huggingface_get_schema(
 #[no_mangle]
 pub unsafe extern "C" fn lance_huggingface_get_stream(
     factory: *mut HuggingFaceStreamFactory,
+    columns: *const *const c_char,
+    column_count: usize,
     output: *mut FFI_ArrowArrayStream,
 ) -> *mut c_char {
     call(|| {
@@ -567,10 +598,16 @@ pub unsafe extern "C" fn lance_huggingface_get_stream(
             return Err(Error::message("null Hugging Face stream argument"));
         }
         let factory = &mut *factory;
-        let reader = factory.reader.take();
-        let reader = match reader {
-            Some(reader) => reader,
-            None => factory.open_reader()?,
+        let projection = projected_columns(&factory.schema, columns, column_count, "Hugging Face")?;
+        // The reader opened at bind time reads every column in schema order.
+        let reads_every_column = projection.is_empty()
+            || projection
+                .iter()
+                .copied()
+                .eq(0..factory.schema.fields().len());
+        let reader = match factory.reader.take() {
+            Some(reader) if reads_every_column => reader,
+            _ => factory.open_reader(projection)?,
         };
         ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
         Ok(())
@@ -663,27 +700,7 @@ pub unsafe extern "C" fn lance_warc_get_stream(
         if factory.is_null() || output.is_null() {
             return Err(Error::message("null WARC stream argument"));
         }
-        if column_count != 0 && columns.is_null() {
-            return Err(Error::message("null WARC projection"));
-        }
-        let schema = warc_schema();
-        let columns = if column_count == 0 {
-            &[]
-        } else {
-            std::slice::from_raw_parts(columns, column_count)
-        };
-        let projection = columns
-            .iter()
-            .map(|&column| {
-                if column.is_null() {
-                    return Err(Error::message("null WARC column name"));
-                }
-                let name = CStr::from_ptr(column).to_str()?;
-                schema
-                    .index_of(name)
-                    .map_err(|_| Error::message(format!("unknown WARC column: {name}")))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let projection = projected_columns(&warc_schema(), columns, column_count, "WARC")?;
         let reader = (&*factory).open_reader(projection)?;
         ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
         Ok(())

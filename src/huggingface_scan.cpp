@@ -34,10 +34,15 @@ private:
 	std::unique_ptr<HuggingFaceStreamFactory, decltype(&lance_huggingface_destroy)> factory;
 };
 
-unique_ptr<ArrowArrayStreamWrapper> ProduceHuggingFaceStream(uintptr_t factory_ptr, ArrowStreamParameters &) {
+unique_ptr<ArrowArrayStreamWrapper> ProduceHuggingFaceStream(uintptr_t factory_ptr, ArrowStreamParameters &parameters) {
 	auto result = make_uniq<ArrowArrayStreamWrapper>();
+	vector<const char *> columns;
+	columns.reserve(parameters.projected_columns.columns.size());
+	for (const auto &column : parameters.projected_columns.columns) {
+		columns.push_back(column.c_str());
+	}
 	ThrowIfLanceError(lance_huggingface_get_stream(reinterpret_cast<HuggingFaceStreamFactory *>(factory_ptr),
-	                                               &result->arrow_array_stream),
+	                                               columns.data(), columns.size(), &result->arrow_array_stream),
 	                  "Hugging Face reader");
 	return result;
 }
@@ -80,7 +85,6 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	names = result->arrow_table.GetNames();
 	return_types = result->arrow_table.GetTypes();
 	result->all_types = return_types;
-	result->projection_pushdown_enabled = false;
 	if (return_types.empty()) {
 		throw InvalidInputException("Hugging Face dataset must have at least one column");
 	}
@@ -95,6 +99,7 @@ void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
 	function.get_partition_data = ArrowSourceGetPartitionData;
 	function.get_metrics = SourceMetricsGetMetrics;
 	function.table_scan_progress = SourceMetricsProgress;
+	function.projection_pushdown = true;
 	function.named_parameters["config"] = LogicalType::VARCHAR;
 	function.named_parameters["split"] = LogicalType::VARCHAR;
 	function.named_parameters["preserve_insertion_order"] = LogicalType::BOOLEAN;
