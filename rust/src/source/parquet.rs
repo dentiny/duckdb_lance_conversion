@@ -13,9 +13,15 @@ use crate::{Error, Result};
 /// Top-level columns to read. A Parquet projection mask always yields columns
 /// in file order, so `order` maps the file-order output back to the requested
 /// order.
+///
+/// For example, requesting columns `[2, 0]` of file columns `[a, b, c]` gives
+/// `roots = [0, 2]`, so the reader yields `[a, c]`; `order = [1, 0]` then
+/// reorders each batch to the requested `[c, a]`.
 #[derive(Clone)]
 struct ColumnProjection {
+    /// Requested column indices in file order, used to build the projection mask.
     roots: Vec<usize>,
+    /// For each requested column, its position in the file-order output.
     order: Vec<usize>,
 }
 

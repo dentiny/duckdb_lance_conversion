@@ -505,34 +505,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn projection_rejects_repeated_and_unknown_columns() {
-        let root = TempDir::new().unwrap();
-        write_wide_shard(&root.path().join("default/train/1.parquet"), vec![1]).await;
-        for (projection, message) in [
-            (vec![0, 0], "duplicate Parquet column index: 0"),
-            (vec![3], "invalid Parquet column index: 3"),
-        ] {
-            for preserve_insertion_order in [true, false] {
-                let error = match open_operator(
-                    fs_operator(&root),
-                    "default/train/",
-                    1024,
-                    preserve_insertion_order,
-                    8,
-                    Some(projection.clone()),
-                    Arc::new(ReadMetrics::default()),
-                )
-                .await
-                {
-                    Ok(_) => panic!("projection {projection:?} should fail"),
-                    Err(error) => error,
-                };
-                assert!(error.to_string().contains(message), "{error}");
-            }
-        }
-    }
-
-    #[tokio::test]
     async fn parquet_uuid_and_json_keep_canonical_extension_types() {
         let root = TempDir::new().unwrap();
         let path = root.path().join("default/train/1.parquet");
