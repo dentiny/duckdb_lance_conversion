@@ -22,21 +22,6 @@ impl ReadMetrics {
     pub(crate) fn set_total_bytes(&self, bytes: u64) {
         self.total_bytes.store(bytes, Ordering::Relaxed);
     }
-
-    /// Scales the expected total by `selected / all`, for reads that fetch only
-    /// part of each file. Requires `selected <= all`.
-    pub(crate) fn scale_total_bytes(&self, selected: u64, all: u64) {
-        if all == 0 {
-            return;
-        }
-        let _ = self
-            .total_bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
-                let scaled = u128::from(total) * u128::from(selected) / u128::from(all);
-                Some(u64::try_from(scaled).unwrap_or(total))
-            });
-    }
-
     pub(crate) fn snapshot(&self) -> ReadMetricsSnapshot {
         ReadMetricsSnapshot {
             bytes_read: self.bytes_read.load(Ordering::Relaxed),

@@ -111,7 +111,7 @@ impl HuggingFaceSource {
         Ok(())
     }
 
-    async fn parquet_files(&self) -> Result<(String, Vec<String>, u64)> {
+    async fn parquet_files(&self) -> Result<(String, Vec<String>)> {
         let client = reqwest::Client::new();
         let mut request = client.get(PARQUET_API_URL).query(&[
             ("dataset", self.dataset.as_str()),
@@ -129,7 +129,6 @@ impl HuggingFaceSource {
             .json::<HuggingFaceParquetResponse>()
             .await?;
         let mut endpoint = None;
-        let mut total_bytes = 0_u64;
         let mut paths = Vec::new();
         for file in response
             .parquet_files
@@ -146,13 +145,12 @@ impl HuggingFaceSource {
                 ));
             }
             endpoint = Some(file_endpoint);
-            total_bytes = total_bytes.saturating_add(file.size);
             paths.push(path);
         }
         paths.sort_unstable();
         let endpoint =
             endpoint.ok_or_else(|| Error::message("source contains no Parquet shards"))?;
-        Ok((endpoint, paths, total_bytes))
+        Ok((endpoint, paths))
     }
 }
 
@@ -166,7 +164,6 @@ struct HuggingFaceParquetFile {
     config: String,
     split: String,
     url: String,
-    size: u64,
 }
 
 fn hugging_face_location(uri: &str) -> Result<(String, String)> {
@@ -185,23 +182,19 @@ fn hugging_face_location(uri: &str) -> Result<(String, String)> {
 }
 
 #[cfg(test)]
-fn parquet_paths(entries: impl IntoIterator<Item = (String, bool, u64)>) -> (Vec<String>, u64) {
-    let mut total_bytes = 0_u64;
+fn parquet_paths(entries: impl IntoIterator<Item = (String, bool)>) -> Vec<String> {
     let mut paths: Vec<_> = entries
         .into_iter()
-        .filter_map(|(path, is_file, content_length)| {
+        .filter_map(|(path, is_file)| {
             let is_parquet = is_file
                 && path
                     .rsplit_once('.')
                     .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("parquet"));
-            is_parquet.then(|| {
-                total_bytes = total_bytes.saturating_add(content_length);
-                path
-            })
+            is_parquet.then_some(path)
         })
         .collect();
     paths.sort_unstable();
-    (paths, total_bytes)
+    paths
 }
 
 impl BatchSource for HuggingFaceSource {
@@ -212,8 +205,7 @@ impl BatchSource for HuggingFaceSource {
         self.validate()?;
         self.opendal_config.validate()?;
         let read_options = self.read_options.validate()?;
-        let (endpoint, paths, total_bytes) = self.parquet_files().await?;
-        self.metrics.set_total_bytes(total_bytes);
+        let (endpoint, paths) = self.parquet_files().await?;
         let operator = self.operator(&endpoint)?;
         open_parquet_paths(
             operator,
@@ -245,17 +237,12 @@ async fn open_operator(
     let mut lister = operator.lister_with(prefix).recursive(true).await?;
     let mut entries = Vec::new();
     while let Some(entry) = lister.try_next().await? {
-        entries.push((
-            entry.path().to_owned(),
-            entry.metadata().is_file(),
-            entry.metadata().content_length(),
-        ));
+        entries.push((entry.path().to_owned(), entry.metadata().is_file()));
     }
-    let (paths, total_bytes) = parquet_paths(entries);
+    let paths = parquet_paths(entries);
     if paths.is_empty() {
         return Err(Error::message("source contains no Parquet shards"));
     }
-    metrics.set_total_bytes(total_bytes);
     open_parquet_paths(
         operator,
         paths,
@@ -301,33 +288,28 @@ mod tests {
 
     #[test]
     fn filters_and_sorts_parquet_shards() {
-        let (paths, total_bytes) = parquet_paths([
+        let paths = parquet_paths([
             (
                 /*path=*/ "default/train/2.parquet".into(),
                 /*is_file=*/ true,
-                /*content_length=*/ 20,
             ),
             (
                 /*path=*/ "default/train/_metadata".into(),
                 /*is_file=*/ true,
-                /*content_length=*/ 40,
             ),
             (
                 /*path=*/ "default/train/1.PARQUET".into(),
                 /*is_file=*/ true,
-                /*content_length=*/ 10,
             ),
             (
                 /*path=*/ "default/train/directory.parquet".into(),
                 /*is_file=*/ false,
-                /*content_length=*/ 80,
             ),
         ]);
         assert_eq!(
             paths,
             vec!["default/train/1.PARQUET", "default/train/2.parquet"]
         );
-        assert_eq!(total_bytes, 30);
     }
 
     #[tokio::test]
@@ -496,7 +478,9 @@ mod tests {
                 .await
                 .unwrap();
                 stream.try_collect::<Vec<_>>().await.unwrap();
-                snapshots.push(metrics.snapshot());
+                let snapshot = metrics.snapshot();
+                assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
+                snapshots.push(snapshot);
             }
             let (full, projected) = (snapshots[0], snapshots[1]);
             assert!(

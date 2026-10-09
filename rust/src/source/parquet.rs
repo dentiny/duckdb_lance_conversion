@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
 use futures::{stream, StreamExt, TryStreamExt};
-use parquet::arrow::async_reader::{ParquetRecordBatchStream, ParquetRecordBatchStreamBuilder};
+use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::ProjectionMask;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::schema::types::SchemaDescriptor;
@@ -18,7 +18,6 @@ use crate::{Error, Result};
 /// For example, requesting columns `[2, 0]` of file columns `[a, b, c]` gives
 /// `roots = [0, 2]`, so the reader yields `[a, c]`; `order = [1, 0]` then
 /// reorders each batch to the requested `[c, a]`.
-#[derive(Clone)]
 struct ColumnProjection {
     /// Requested column indices in file order, used to build the projection mask.
     roots: Vec<usize>,
@@ -64,189 +63,28 @@ impl ColumnProjection {
     }
 }
 
-/// Returns the column chunk bytes that `mask` selects and the column chunk
-/// bytes of the whole file.
-fn column_chunk_bytes(metadata: &ParquetMetaData, mask: &ProjectionMask) -> (u64, u64) {
-    let mut selected = 0_u64;
-    let mut all = 0_u64;
-    for row_group in metadata.row_groups() {
-        for (leaf, column) in row_group.columns().iter().enumerate() {
-            let (_, length) = column.byte_range();
-            all = all.saturating_add(length);
-            if mask.leaf_included(leaf) {
-                selected = selected.saturating_add(length);
-            }
-        }
-    }
-    (selected, all)
+/// Returns the column chunk bytes that `mask` selects, or every column
+/// chunk's bytes without a mask.
+fn column_chunk_bytes(metadata: &ParquetMetaData, mask: Option<&ProjectionMask>) -> u64 {
+    metadata
+        .row_groups()
+        .iter()
+        .flat_map(|row_group| row_group.columns().iter().enumerate())
+        .filter(|(leaf, _)| mask.is_none_or(|mask| mask.leaf_included(*leaf)))
+        .map(|(_, column)| column.byte_range().1)
+        .fold(0, u64::saturating_add)
 }
 
-/// When `estimate_total_bytes` is set, the projected share of this file's
-/// column chunk bytes scales the expected total for progress reporting.
-async fn open_parquet(
-    operator: opendal::Operator,
-    path: String,
-    batch_size: usize,
-    projection: Option<&ColumnProjection>,
-    estimate_total_bytes: bool,
-    metrics: Arc<ReadMetrics>,
-) -> Result<ParquetRecordBatchStream<OpendalParquetReader>> {
-    let builder = ParquetRecordBatchStreamBuilder::new(OpendalParquetReader::new(
-        operator,
-        path,
-        metrics.clone(),
-    ))
-    .await?
-    .with_batch_size(batch_size);
-    let builder = match projection {
-        Some(projection) => {
-            let mask =
-                projection.mask(builder.parquet_schema(), builder.schema().fields().len())?;
-            if estimate_total_bytes {
-                let (selected, all) = column_chunk_bytes(builder.metadata(), &mask);
-                metrics.scale_total_bytes(selected, all);
-            }
-            builder.with_projection(mask)
-        }
-        None => builder,
-    };
-    Ok(builder.build()?)
-}
-
-async fn open_parquet_in_order(
-    operator: opendal::Operator,
-    paths: Vec<String>,
-    batch_size: usize,
-    projection: Option<ColumnProjection>,
-    metrics: Arc<ReadMetrics>,
-) -> Result<(SchemaRef, BatchStream)> {
-    let mut paths = paths.into_iter();
-    let first_path = paths
-        .next()
-        .ok_or_else(|| Error::message("Parquet source contains no .parquet files"))?;
-    // Later footers are not loaded yet, so the first file's projected share
-    // estimates every file's.
-    let reader = open_parquet(
-        operator.clone(),
-        first_path,
-        batch_size,
-        projection.as_ref(),
-        /*estimate_total_bytes=*/ true,
-        metrics.clone(),
-    )
-    .await?;
-    let schema = reader.schema().clone();
-    let expected_schema = schema.clone();
-    let open_remaining = move |path: String| {
-        let operator = operator.clone();
-        let expected_schema = expected_schema.clone();
-        let projection = projection.clone();
-        let metrics = metrics.clone();
-        async move {
-            let reader = open_parquet(
-                operator,
-                path.clone(),
-                batch_size,
-                projection.as_ref(),
-                /*estimate_total_bytes=*/ false,
-                metrics,
-            )
-            .await?;
-            if reader.schema() != &expected_schema {
-                return Err(Error::message(format!(
-                    "Parquet schema does not match the first file: {path}"
-                )));
-            }
-            Ok(reader.map_err(Error::from))
-        }
-    };
-    let remaining = stream::iter(paths).then(open_remaining).try_flatten();
-    let batches = reader.map_err(Error::from).chain(remaining);
-    Ok((schema, Box::pin(batches)))
-}
-
-/// Opens one reader per row group and merges their batches as they become
+/// Opens multiple Parquet files as one Arrow batch stream, with one reader per
+/// row group.
+///
+/// File footers are loaded concurrently, at most `max_read_parallelism` at a
+/// time, but retained in `paths` order: the first file defines the returned
+/// schema, and every file must match it before any batch is emitted. When
+/// `preserve_insertion_order` is `true`, row groups are read one at a time in
+/// `paths` order. When it is `false`, at most `max_read_parallelism` row-group
+/// readers are active at once and batches are emitted as soon as they are
 /// available.
-///
-/// File metadata is loaded concurrently but retained in `paths` order so the
-/// first file defines the expected schema. All files are validated before any
-/// batches are emitted. At most `max_read_parallelism` row-group readers are
-/// active at once; values above the total row-group count are effectively
-/// capped. Batch order is intentionally nondeterministic.
-async fn open_parquet_row_groups(
-    operator: opendal::Operator,
-    paths: Vec<String>,
-    batch_size: usize,
-    max_read_parallelism: usize,
-    projection: Option<ColumnProjection>,
-    metrics: Arc<ReadMetrics>,
-) -> Result<(SchemaRef, BatchStream)> {
-    let (schema, files) = load_parquet_metadata(
-        operator.clone(),
-        paths,
-        max_read_parallelism,
-        metrics.clone(),
-    )
-    .await?;
-    let mut row_groups = Vec::new();
-    let mut selected_bytes = 0_u64;
-    let mut all_bytes = 0_u64;
-    for file in files {
-        let mask = projection
-            .as_ref()
-            .map(|projection| {
-                projection.mask(file.metadata.parquet_schema(), schema.fields().len())
-            })
-            .transpose()?;
-        if let Some(mask) = &mask {
-            let (selected, all) = column_chunk_bytes(file.metadata.metadata(), mask);
-            selected_bytes = selected_bytes.saturating_add(selected);
-            all_bytes = all_bytes.saturating_add(all);
-        }
-        for index in 0..file.metadata.metadata().num_row_groups() {
-            row_groups.push((
-                file.path.clone(),
-                file.metadata.clone(),
-                mask.clone(),
-                index,
-            ));
-        }
-    }
-    metrics.scale_total_bytes(selected_bytes, all_bytes);
-    let schema = match &projection {
-        Some(projection) => Arc::new(schema.project(&projection.roots)?),
-        None => schema,
-    };
-    let parallelism = row_groups.len().min(max_read_parallelism).max(1);
-    let readers = stream::iter(row_groups).map(move |(path, metadata, mask, row_group)| {
-        let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
-            OpendalParquetReader::new(operator.clone(), path, metrics.clone()),
-            metadata,
-        )
-        .with_batch_size(batch_size)
-        .with_row_groups(vec![row_group]);
-        let builder = match mask {
-            Some(mask) => builder.with_projection(mask),
-            None => builder,
-        };
-        builder
-            .build()
-            .map(|reader| reader.map_err(Error::from))
-            .map_err(Error::from)
-    });
-    Ok((
-        schema,
-        Box::pin(readers.try_flatten_unordered(Some(parallelism))),
-    ))
-}
-
-/// Opens multiple Parquet files as one Arrow batch stream.
-///
-/// The first path defines the returned schema, and every subsequent file must
-/// match it. When `preserve_insertion_order` is `true`, files and row groups
-/// are read sequentially in `paths` order. When it is `false`, file metadata
-/// and row groups are read concurrently, batches are emitted as soon as they
-/// are available, and `max_read_parallelism` caps both phases.
 ///
 /// `projection` lists top-level column indices in output order; only those
 /// columns are fetched and decoded. `None` or an empty list reads every
@@ -274,23 +112,61 @@ pub(crate) async fn open_parquet_paths(
         return Err(Error::message("max_read_parallelism must be positive"));
     }
     let projection = projection.map(ColumnProjection::new).transpose()?.flatten();
-    let (schema, batches) = if preserve_insertion_order {
-        open_parquet_in_order(operator, paths, batch_size, projection.clone(), metrics).await?
-    } else {
-        open_parquet_row_groups(
-            operator,
-            paths,
-            batch_size,
-            max_read_parallelism,
-            projection.clone(),
-            metrics,
+    let (schema, files) = load_parquet_metadata(
+        operator.clone(),
+        paths,
+        max_read_parallelism,
+        metrics.clone(),
+    )
+    .await?;
+    let mut row_groups = Vec::new();
+    let mut unread_bytes = 0_u64;
+    for file in files {
+        let mask = projection
+            .as_ref()
+            .map(|projection| {
+                projection.mask(file.metadata.parquet_schema(), schema.fields().len())
+            })
+            .transpose()?;
+        unread_bytes = unread_bytes
+            .saturating_add(column_chunk_bytes(file.metadata.metadata(), mask.as_ref()));
+        for index in 0..file.metadata.metadata().num_row_groups() {
+            row_groups.push((
+                file.path.clone(),
+                file.metadata.clone(),
+                mask.clone(),
+                index,
+            ));
+        }
+    }
+    // Every footer has been read; only the selected column chunks remain.
+    metrics.set_total_bytes(metrics.snapshot().bytes_read.saturating_add(unread_bytes));
+    let parallelism = row_groups.len().min(max_read_parallelism).max(1);
+    let readers = stream::iter(row_groups).map(move |(path, metadata, mask, row_group)| {
+        let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
+            OpendalParquetReader::new(operator.clone(), path, metrics.clone()),
+            metadata,
         )
-        .await?
+        .with_batch_size(batch_size)
+        .with_row_groups(vec![row_group]);
+        let builder = match mask {
+            Some(mask) => builder.with_projection(mask),
+            None => builder,
+        };
+        builder
+            .build()
+            .map(|reader| reader.map_err(Error::from))
+            .map_err(Error::from)
+    });
+    let batches: BatchStream = if preserve_insertion_order {
+        Box::pin(readers.try_flatten())
+    } else {
+        Box::pin(readers.try_flatten_unordered(Some(parallelism)))
     };
-    let Some(ColumnProjection { order, .. }) = projection else {
+    let Some(ColumnProjection { roots, order }) = projection else {
         return Ok((schema, batches));
     };
-    let schema = Arc::new(schema.project(&order)?);
+    let schema = Arc::new(schema.project(&roots)?.project(&order)?);
     let batches = batches.map(move |batch| batch.and_then(|batch| Ok(batch.project(&order)?)));
     Ok((schema, Box::pin(batches)))
 }
