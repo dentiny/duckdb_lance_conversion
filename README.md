@@ -145,13 +145,16 @@ output path must not exist, even as an empty directory.
 Face dataset. `config` and `split` default to `default` and `train`.
 `preserve_insertion_order` defaults to `true`, which emits sorted Parquet
 shards and their row groups in order while reading later row groups ahead. Set
-it to `false` to emit batches from concurrent row groups as they become ready. Either way, every shard's
-Parquet footer is loaded concurrently before the first batch.
+it to `false` to emit batches from concurrent row groups as they become ready.
+Either way, every shard's Parquet footer is loaded concurrently before the
+first batch.
 `max_read_parallelism` defaults to `8`, limits concurrent footer and row-group
 reads, and is capped by the total row-group count. Each row group is decoded
 in the background, and `read_ahead_bytes` (default 32 MiB) caps the decoded
 data each concurrent read may queue before DuckDB consumes it, so queued data
-stays near `max_read_parallelism * read_ahead_bytes`:
+stays near `max_read_parallelism * read_ahead_bytes`. Set it to `0` to disable
+read-ahead: row groups are then decoded only while DuckDB pulls batches, one
+at a time in order when `preserve_insertion_order` is `true`:
 
 ```sql
 COPY (

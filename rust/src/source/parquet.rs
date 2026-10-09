@@ -141,14 +141,16 @@ fn column_chunk_bytes(metadata: &ParquetMetaData, mask: Option<&ProjectionMask>)
 /// Each row group may queue up to `read_ahead_bytes` of decoded batches ahead
 /// of the consumer, so decoded data waiting to be consumed stays below about
 /// `max_read_parallelism * read_ahead_bytes`, plus one batch per row group.
+/// A `read_ahead_bytes` of zero disables read-ahead: row groups are read only
+/// while the stream is polled, so ordered reads go one row group at a time.
 ///
 /// `projection` lists top-level column indices in output order; only those
 /// columns are fetched and decoded. `None` or an empty list reads every
 /// column.
 ///
-/// Returns an error when `paths` is empty, any numeric option is zero, a
-/// projected index is out of range, a file cannot be opened, or schemas
-/// differ.
+/// Returns an error when `paths` is empty, `batch_size` or
+/// `max_read_parallelism` is zero, a projected index is out of range, a file
+/// cannot be opened, or schemas differ.
 pub(crate) async fn open_parquet_paths(
     operator: opendal::Operator,
     paths: Vec<String>,
@@ -164,9 +166,6 @@ pub(crate) async fn open_parquet_paths(
     }
     if max_read_parallelism == 0 {
         return Err(Error::message("max_read_parallelism must be positive"));
-    }
-    if read_ahead_bytes == 0 {
-        return Err(Error::message("read_ahead_bytes must be positive"));
     }
     let projection = projection.and_then(ColumnProjection::new);
     let (schema, files) = load_parquet_metadata(
@@ -221,7 +220,12 @@ pub(crate) async fn open_parquet_paths(
         };
         builder
             .build()
-            .map(|reader| spawn_row_group(reader, read_ahead_bytes))
+            .map(|reader| -> BatchStream {
+                match read_ahead_bytes {
+                    0 => Box::pin(reader.map_err(Error::from)),
+                    _ => spawn_row_group(reader, read_ahead_bytes),
+                }
+            })
             .map_err(Error::from)
     });
     // A row group starts reading as soon as it is pulled from `readers`, so

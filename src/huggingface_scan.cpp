@@ -74,9 +74,6 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	if (read_ahead_bytes_entry != input.named_parameters.end()) {
 		read_ahead_bytes = read_ahead_bytes_entry->second.GetValue<uint64_t>();
 	}
-	if (read_ahead_bytes == 0) {
-		throw InvalidInputException("read_ahead_bytes must be positive");
-	}
 
 	string token;
 	KeyValueSecretReader secret_reader(*context.db, "huggingface", "hf://datasets/" + dataset);

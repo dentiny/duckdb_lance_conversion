@@ -87,7 +87,7 @@ impl HuggingFaceSource {
     }
 
     /// Caps the decoded bytes each concurrent row-group read may queue ahead
-    /// of the consumer.
+    /// of the consumer; zero disables read-ahead.
     pub fn with_read_ahead_bytes(mut self, read_ahead_bytes: usize) -> Self {
         self.read_ahead_bytes = read_ahead_bytes;
         self
@@ -245,31 +245,6 @@ async fn open_operator(
     projection: Option<Vec<usize>>,
     metrics: Arc<ReadMetrics>,
 ) -> Result<(SchemaRef, BatchStream)> {
-    open_operator_with_read_ahead(
-        operator,
-        prefix,
-        batch_size,
-        preserve_insertion_order,
-        max_read_parallelism,
-        DEFAULT_READ_AHEAD_BYTES,
-        projection,
-        metrics,
-    )
-    .await
-}
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-async fn open_operator_with_read_ahead(
-    operator: Operator,
-    prefix: &str,
-    batch_size: usize,
-    preserve_insertion_order: bool,
-    max_read_parallelism: usize,
-    read_ahead_bytes: usize,
-    projection: Option<Vec<usize>>,
-    metrics: Arc<ReadMetrics>,
-) -> Result<(SchemaRef, BatchStream)> {
     let mut lister = operator.lister_with(prefix).recursive(true).await?;
     let mut entries = Vec::new();
     while let Some(entry) = lister.try_next().await? {
@@ -285,7 +260,7 @@ async fn open_operator_with_read_ahead(
         batch_size,
         preserve_insertion_order,
         max_read_parallelism,
-        read_ahead_bytes,
+        DEFAULT_READ_AHEAD_BYTES,
         projection,
         metrics,
     )
@@ -542,83 +517,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn ordered_read_ahead_keeps_row_group_order() {
+    async fn read_ahead_reads_every_row() {
         let root = TempDir::new().unwrap();
+        let mut paths = Vec::new();
         for (file, values) in [(1, 0..20), (2, 20..45), (3, 45..60)] {
-            write_parquet_shard(
-                &root.path().join(format!("default/train/{file}.parquet")),
-                "id",
-                values.collect(),
-                3,
-            );
+            let path = format!("default/train/{file}.parquet");
+            write_parquet_shard(&root.path().join(&path), "id", values.collect(), 3);
+            paths.push(path);
         }
-        let (_, stream) = open_operator(
-            fs_operator(&root),
-            "default/train/",
-            2,
-            true,
-            4,
-            None,
-            Arc::new(ReadMetrics::default()),
-        )
-        .await
-        .unwrap();
-        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
-        assert_eq!(int32_values(&batches), (0..60).collect::<Vec<_>>());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn tiny_read_ahead_budget_reads_every_row() {
-        let root = TempDir::new().unwrap();
-        for (file, values) in [(1, 0..10), (2, 10..25)] {
-            write_parquet_shard(
-                &root.path().join(format!("default/train/{file}.parquet")),
-                "id",
-                values.collect(),
-                4,
-            );
-        }
-        // Every batch exceeds a 1-byte budget, so each row group queues one
-        // batch at a time; ordered read-ahead must not stall on it.
-        for preserve_insertion_order in [true, false] {
-            let (_, stream) = open_operator_with_read_ahead(
-                fs_operator(&root),
-                "default/train/",
-                1,
-                preserve_insertion_order,
-                4,
-                1,
-                None,
-                Arc::new(ReadMetrics::default()),
-            )
-            .await
-            .unwrap();
-            let batches = stream.try_collect::<Vec<_>>().await.unwrap();
-            let mut values = int32_values(&batches);
-            if !preserve_insertion_order {
-                values.sort_unstable();
+        // A 1-byte budget is smaller than every batch, so each row group
+        // queues one batch at a time; ordered read-ahead must not stall on it.
+        for read_ahead_bytes in [DEFAULT_READ_AHEAD_BYTES, 1, 0] {
+            for preserve_insertion_order in [true, false] {
+                let (_, stream) = open_parquet_paths(
+                    fs_operator(&root),
+                    paths.clone(),
+                    2,
+                    preserve_insertion_order,
+                    4,
+                    read_ahead_bytes,
+                    None,
+                    Arc::new(ReadMetrics::default()),
+                )
+                .await
+                .unwrap();
+                let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+                let mut values = int32_values(&batches);
+                if !preserve_insertion_order {
+                    values.sort_unstable();
+                }
+                assert_eq!(values, (0..60).collect::<Vec<_>>());
             }
-            assert_eq!(values, (0..25).collect::<Vec<_>>());
         }
-
-        let error = match open_operator_with_read_ahead(
-            fs_operator(&root),
-            "default/train/",
-            1024,
-            true,
-            4,
-            0,
-            None,
-            Arc::new(ReadMetrics::default()),
-        )
-        .await
-        {
-            Ok(_) => panic!("a zero read-ahead budget should fail"),
-            Err(error) => error,
-        };
-        assert!(error
-            .to_string()
-            .contains("read_ahead_bytes must be positive"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
