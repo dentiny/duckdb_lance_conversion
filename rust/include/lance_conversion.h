@@ -121,7 +121,9 @@ char *lance_huggingface_open(const char *dataset, const char *config, const char
                              const struct LanceOpendalConfig *opendal_config, int32_t preserve_insertion_order,
                              uint64_t max_read_parallelism, struct HuggingFaceStreamFactory **output);
 char *lance_huggingface_get_schema(const struct HuggingFaceStreamFactory *factory, struct ArrowSchema *output);
-char *lance_huggingface_get_stream(struct HuggingFaceStreamFactory *factory, struct ArrowArrayStream *output);
+// columns lists the projected column names in output order; column_count 0 reads every column.
+char *lance_huggingface_get_stream(struct HuggingFaceStreamFactory *factory, const char *const *columns,
+                                   size_t column_count, struct ArrowArrayStream *output);
 void lance_huggingface_get_metrics(const struct HuggingFaceStreamFactory *factory, struct LanceReadMetrics *output);
 void lance_huggingface_destroy(struct HuggingFaceStreamFactory *factory);
 

@@ -24,6 +24,7 @@ pub struct HuggingFaceSource {
     token: Option<String>,
     batch_size: usize,
     preserve_insertion_order: bool,
+    projection: Option<Vec<usize>>,
     read_options: SourceReadOptions,
     opendal_config: OpendalConfig,
     metrics: Arc<ReadMetrics>,
@@ -38,6 +39,7 @@ impl HuggingFaceSource {
             token: None,
             batch_size: DEFAULT_BATCH_SIZE,
             preserve_insertion_order: true,
+            projection: None,
             read_options: SourceReadOptions::default(),
             opendal_config: OpendalConfig::default(),
             metrics: Arc::new(ReadMetrics::default()),
@@ -66,6 +68,13 @@ impl HuggingFaceSource {
 
     pub fn with_preserve_insertion_order(mut self, preserve: bool) -> Self {
         self.preserve_insertion_order = preserve;
+        self
+    }
+
+    /// Reads only these top-level columns, in this order. An empty list reads
+    /// every column.
+    pub fn with_projection(mut self, projection: Vec<usize>) -> Self {
+        self.projection = Some(projection);
         self
     }
 
@@ -102,7 +111,7 @@ impl HuggingFaceSource {
         Ok(())
     }
 
-    async fn parquet_files(&self) -> Result<(String, Vec<String>, u64)> {
+    async fn parquet_files(&self) -> Result<(String, Vec<String>)> {
         let client = reqwest::Client::new();
         let mut request = client.get(PARQUET_API_URL).query(&[
             ("dataset", self.dataset.as_str()),
@@ -120,7 +129,6 @@ impl HuggingFaceSource {
             .json::<HuggingFaceParquetResponse>()
             .await?;
         let mut endpoint = None;
-        let mut total_bytes = 0_u64;
         let mut paths = Vec::new();
         for file in response
             .parquet_files
@@ -137,13 +145,12 @@ impl HuggingFaceSource {
                 ));
             }
             endpoint = Some(file_endpoint);
-            total_bytes = total_bytes.saturating_add(file.size);
             paths.push(path);
         }
         paths.sort_unstable();
         let endpoint =
             endpoint.ok_or_else(|| Error::message("source contains no Parquet shards"))?;
-        Ok((endpoint, paths, total_bytes))
+        Ok((endpoint, paths))
     }
 }
 
@@ -157,7 +164,6 @@ struct HuggingFaceParquetFile {
     config: String,
     split: String,
     url: String,
-    size: u64,
 }
 
 fn hugging_face_location(uri: &str) -> Result<(String, String)> {
@@ -176,23 +182,19 @@ fn hugging_face_location(uri: &str) -> Result<(String, String)> {
 }
 
 #[cfg(test)]
-fn parquet_paths(entries: impl IntoIterator<Item = (String, bool, u64)>) -> (Vec<String>, u64) {
-    let mut total_bytes = 0_u64;
+fn parquet_paths(entries: impl IntoIterator<Item = (String, bool)>) -> Vec<String> {
     let mut paths: Vec<_> = entries
         .into_iter()
-        .filter_map(|(path, is_file, content_length)| {
+        .filter_map(|(path, is_file)| {
             let is_parquet = is_file
                 && path
                     .rsplit_once('.')
                     .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("parquet"));
-            is_parquet.then(|| {
-                total_bytes = total_bytes.saturating_add(content_length);
-                path
-            })
+            is_parquet.then_some(path)
         })
         .collect();
     paths.sort_unstable();
-    (paths, total_bytes)
+    paths
 }
 
 impl BatchSource for HuggingFaceSource {
@@ -203,8 +205,7 @@ impl BatchSource for HuggingFaceSource {
         self.validate()?;
         self.opendal_config.validate()?;
         let read_options = self.read_options.validate()?;
-        let (endpoint, paths, total_bytes) = self.parquet_files().await?;
-        self.metrics.set_total_bytes(total_bytes);
+        let (endpoint, paths) = self.parquet_files().await?;
         let operator = self.operator(&endpoint)?;
         open_parquet_paths(
             operator,
@@ -212,6 +213,7 @@ impl BatchSource for HuggingFaceSource {
             self.batch_size,
             self.preserve_insertion_order,
             read_options.max_read_parallelism,
+            self.projection,
             self.metrics,
         )
         .await
@@ -229,28 +231,25 @@ async fn open_operator(
     batch_size: usize,
     preserve_insertion_order: bool,
     max_read_parallelism: usize,
+    projection: Option<Vec<usize>>,
     metrics: Arc<ReadMetrics>,
 ) -> Result<(SchemaRef, BatchStream)> {
     let mut lister = operator.lister_with(prefix).recursive(true).await?;
     let mut entries = Vec::new();
     while let Some(entry) = lister.try_next().await? {
-        entries.push((
-            entry.path().to_owned(),
-            entry.metadata().is_file(),
-            entry.metadata().content_length(),
-        ));
+        entries.push((entry.path().to_owned(), entry.metadata().is_file()));
     }
-    let (paths, total_bytes) = parquet_paths(entries);
+    let paths = parquet_paths(entries);
     if paths.is_empty() {
         return Err(Error::message("source contains no Parquet shards"));
     }
-    metrics.set_total_bytes(total_bytes);
     open_parquet_paths(
         operator,
         paths,
         batch_size,
         preserve_insertion_order,
         max_read_parallelism,
+        projection,
         metrics,
     )
     .await
@@ -289,33 +288,28 @@ mod tests {
 
     #[test]
     fn filters_and_sorts_parquet_shards() {
-        let (paths, total_bytes) = parquet_paths([
+        let paths = parquet_paths([
             (
                 /*path=*/ "default/train/2.parquet".into(),
                 /*is_file=*/ true,
-                /*content_length=*/ 20,
             ),
             (
                 /*path=*/ "default/train/_metadata".into(),
                 /*is_file=*/ true,
-                /*content_length=*/ 40,
             ),
             (
                 /*path=*/ "default/train/1.PARQUET".into(),
                 /*is_file=*/ true,
-                /*content_length=*/ 10,
             ),
             (
                 /*path=*/ "default/train/directory.parquet".into(),
                 /*is_file=*/ false,
-                /*content_length=*/ 80,
             ),
         ]);
         assert_eq!(
             paths,
             vec!["default/train/1.PARQUET", "default/train/2.parquet"]
         );
-        assert_eq!(total_bytes, 30);
     }
 
     #[tokio::test]
@@ -340,6 +334,7 @@ mod tests {
             1024,
             true,
             8,
+            None,
             metrics.clone(),
         )
         .await
@@ -365,6 +360,7 @@ mod tests {
             1024,
             false,
             8,
+            None,
             Arc::new(ReadMetrics::default()),
         )
         .await
@@ -385,6 +381,111 @@ mod tests {
             .collect::<Vec<_>>();
         values.sort_unstable();
         assert_eq!(values, [1, 2, 3, 4]);
+    }
+
+    async fn write_wide_shard(path: &std::path::Path, ids: Vec<i32>) {
+        fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("score", DataType::Int32, false),
+        ]));
+        let names = ids.iter().map(|id| format!("row-{id}")).collect::<Vec<_>>();
+        let scores = ids.iter().map(|id| id * 10).collect::<Vec<_>>();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(ids)),
+                Arc::new(StringArray::from(names)),
+                Arc::new(Int32Array::from(scores)),
+            ],
+        )
+        .unwrap();
+        let file = File::create(path).await.unwrap();
+        let mut writer = AsyncArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).await.unwrap();
+        writer.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn projection_reads_requested_columns_in_requested_order() {
+        let root = TempDir::new().unwrap();
+        write_wide_shard(&root.path().join("default/train/1.parquet"), vec![1, 2]).await;
+        write_wide_shard(&root.path().join("default/train/2.parquet"), vec![3, 4]).await;
+
+        for preserve_insertion_order in [true, false] {
+            let (schema, stream) = open_operator(
+                fs_operator(&root),
+                "default/train/",
+                1024,
+                preserve_insertion_order,
+                8,
+                Some(vec![2, 0]),
+                Arc::new(ReadMetrics::default()),
+            )
+            .await
+            .unwrap();
+            let names = |schema: &Schema| {
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect::<Vec<_>>()
+            };
+            // DuckDB maps Arrow children to projected columns by position.
+            assert_eq!(names(&schema), ["score", "id"]);
+            let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+            let mut rows = Vec::new();
+            for batch in &batches {
+                assert_eq!(names(&batch.schema()), ["score", "id"]);
+                let scores = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap();
+                let ids = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap();
+                rows.extend(
+                    scores
+                        .values()
+                        .iter()
+                        .copied()
+                        .zip(ids.values().iter().copied()),
+                );
+            }
+            rows.sort_unstable();
+            assert_eq!(rows, [(10, 1), (20, 2), (30, 3), (40, 4)]);
+        }
+
+        // Unselected column chunks are never fetched, and progress expects
+        // exactly the bytes that are read.
+        let mut snapshots = Vec::new();
+        for projection in [None, Some(vec![0])] {
+            let metrics = Arc::new(ReadMetrics::default());
+            let (_, stream) = open_operator(
+                fs_operator(&root),
+                "default/train/",
+                1024,
+                true,
+                8,
+                projection,
+                metrics.clone(),
+            )
+            .await
+            .unwrap();
+            stream.try_collect::<Vec<_>>().await.unwrap();
+            let snapshot = metrics.snapshot();
+            assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
+            snapshots.push(snapshot);
+        }
+        let (full, projected) = (snapshots[0], snapshots[1]);
+        assert!(
+            projected.bytes_read < full.bytes_read,
+            "projected read {projected:?}, full read {full:?}"
+        );
     }
 
     #[tokio::test]
@@ -418,6 +519,7 @@ mod tests {
             1024,
             true,
             8,
+            None,
             Arc::new(ReadMetrics::default()),
         )
         .await
@@ -435,6 +537,7 @@ mod tests {
             1024,
             true,
             8,
+            None,
             Arc::new(ReadMetrics::default()),
         )
         .await
@@ -462,6 +565,7 @@ mod tests {
             1024,
             false,
             8,
+            None,
             Arc::new(ReadMetrics::default()),
         )
         .await
