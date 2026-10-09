@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lance_storage_defaults.h"
+
 struct ArrowSchema;
 struct ArrowArray;
 struct ArrowArrayStream;
@@ -23,12 +25,12 @@ struct LanceS3Config {
 
 // Snapshot of the connection's OpenDAL extension settings. Durations are milliseconds.
 struct LanceOpendalConfig {
-	uint64_t timeout_ms = 60000;
-	uint64_t io_timeout_ms = 10000;
-	uint64_t retry_max_times = 3;
-	uint64_t retry_min_delay_ms = 1000;
-	uint64_t retry_max_delay_ms = 60000;
-	double retry_factor = 2.0;
+	uint64_t timeout_ms = LANCE_DEFAULT_STORAGE_TIMEOUT_MS;
+	uint64_t io_timeout_ms = LANCE_DEFAULT_STORAGE_IO_TIMEOUT_MS;
+	uint64_t retry_max_times = LANCE_DEFAULT_STORAGE_RETRY_MAX_TIMES;
+	uint64_t retry_min_delay_ms = LANCE_DEFAULT_STORAGE_RETRY_MIN_DELAY_MS;
+	uint64_t retry_max_delay_ms = LANCE_DEFAULT_STORAGE_RETRY_MAX_DELAY_MS;
+	double retry_factor = LANCE_DEFAULT_STORAGE_RETRY_FACTOR;
 };
 
 enum LanceWriteMode : int32_t {
@@ -92,7 +94,7 @@ void lance_conversion_error_free(char *error);
 // A dataset write collects the fragments of any number of writers and commits
 // them as one dataset version in lance_conversion_finish.
 char *lance_conversion_open(const char *path, const struct ArrowSchema *schema, const struct LanceWriteConfig *config,
-                            const struct LanceS3Config *s3, const struct LanceOpendalConfig *opendal,
+                            const struct LanceS3Config *s3, const struct LanceOpendalConfig *opendal_config,
                             struct LanceConversionDataset **output);
 char *lance_conversion_finish(struct LanceConversionDataset *dataset);
 void lance_conversion_get_metrics(const struct LanceConversionDataset *dataset, struct LanceWriteMetrics *output);
@@ -115,7 +117,7 @@ void lance_conversion_writer_destroy(struct LanceConversionWriter *writer);
 
 // Huggingface related functions.
 char *lance_huggingface_open(const char *dataset, const char *config, const char *split, const char *token,
-                             const struct LanceOpendalConfig *opendal, int32_t preserve_insertion_order,
+                             const struct LanceOpendalConfig *opendal_config, int32_t preserve_insertion_order,
                              uint64_t max_read_parallelism, struct HuggingFaceStreamFactory **output);
 char *lance_huggingface_get_schema(const struct HuggingFaceStreamFactory *factory, struct ArrowSchema *output);
 char *lance_huggingface_get_stream(struct HuggingFaceStreamFactory *factory, struct ArrowArrayStream *output);
@@ -124,7 +126,7 @@ void lance_huggingface_destroy(struct HuggingFaceStreamFactory *factory);
 
 // Warc related functions.
 char *lance_warc_open(const char *path, const char *index_path, const struct LanceS3Config *s3,
-                      const struct LanceOpendalConfig *opendal, uint64_t max_read_parallelism,
+                      const struct LanceOpendalConfig *opendal_config, uint64_t max_read_parallelism,
                       struct WarcStreamFactory **output);
 char *lance_warc_get_schema(const struct WarcStreamFactory *factory, struct ArrowSchema *output);
 char *lance_warc_get_stream(const struct WarcStreamFactory *factory, const char *const *columns, size_t column_count,

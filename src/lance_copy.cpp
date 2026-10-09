@@ -414,10 +414,10 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 		s3 = options.ToConfig();
 		s3_ptr = &s3;
 	}
-	auto opendal = ReadOpendalConfig(context);
-	ThrowIfLanceError(
-	    lance_conversion_open(path.c_str(), &schema.arrow_schema, &write_config, s3_ptr, &opendal, &state->dataset),
-	    "Lance conversion");
+	auto opendal_config = ReadOpendalConfig(context);
+	ThrowIfLanceError(lance_conversion_open(path.c_str(), &schema.arrow_schema, &write_config, s3_ptr, &opendal_config,
+	                                        &state->dataset),
+	                  "Lance conversion");
 	return std::move(state);
 }
 

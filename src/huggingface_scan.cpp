@@ -66,10 +66,10 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	KeyValueSecretReader secret_reader(*context.db, "huggingface", "hf://datasets/" + dataset);
 	secret_reader.TryGetSecretKey("token", token);
 
-	auto opendal = ReadOpendalConfig(context);
+	auto opendal_config = ReadOpendalConfig(context);
 	HuggingFaceStreamFactory *factory = nullptr;
 	ThrowIfLanceError(lance_huggingface_open(dataset.c_str(), config.c_str(), split.c_str(),
-	                                         token.empty() ? nullptr : token.c_str(), &opendal,
+	                                         token.empty() ? nullptr : token.c_str(), &opendal_config,
 	                                         preserve_insertion_order, read_options.max_read_parallelism, &factory),
 	                  "Hugging Face reader");
 	auto dependency = make_shared_ptr<HuggingFaceMetricsDependency>(factory);
