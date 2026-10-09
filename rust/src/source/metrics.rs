@@ -22,6 +22,7 @@ impl ReadMetrics {
     pub(crate) fn set_total_bytes(&self, bytes: u64) {
         self.total_bytes.store(bytes, Ordering::Relaxed);
     }
+
     pub(crate) fn snapshot(&self) -> ReadMetricsSnapshot {
         ReadMetricsSnapshot {
             bytes_read: self.bytes_read.load(Ordering::Relaxed),

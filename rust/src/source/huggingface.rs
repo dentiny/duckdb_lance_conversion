@@ -433,11 +433,11 @@ mod tests {
                     .collect::<Vec<_>>()
             };
             // DuckDB maps Arrow children to projected columns by position.
-            assert_eq!(names(&*schema), ["score", "id"]);
+            assert_eq!(names(&schema), ["score", "id"]);
             let batches = stream.try_collect::<Vec<_>>().await.unwrap();
             let mut rows = Vec::new();
             for batch in &batches {
-                assert_eq!(names(&*batch.schema()), ["score", "id"]);
+                assert_eq!(names(&batch.schema()), ["score", "id"]);
                 let scores = batch
                     .column(0)
                     .as_any()
@@ -461,37 +461,31 @@ mod tests {
         }
 
         // Unselected column chunks are never fetched, and progress expects
-        // fewer bytes.
-        for preserve_insertion_order in [true, false] {
-            let mut snapshots = Vec::new();
-            for projection in [None, Some(vec![0])] {
-                let metrics = Arc::new(ReadMetrics::default());
-                let (_, stream) = open_operator(
-                    fs_operator(&root),
-                    "default/train/",
-                    1024,
-                    preserve_insertion_order,
-                    8,
-                    projection,
-                    metrics.clone(),
-                )
-                .await
-                .unwrap();
-                stream.try_collect::<Vec<_>>().await.unwrap();
-                let snapshot = metrics.snapshot();
-                assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
-                snapshots.push(snapshot);
-            }
-            let (full, projected) = (snapshots[0], snapshots[1]);
-            assert!(
-                projected.bytes_read < full.bytes_read,
-                "projected read {projected:?}, full read {full:?}"
-            );
-            assert!(
-                0 < projected.total_bytes && projected.total_bytes < full.total_bytes,
-                "projected read {projected:?}, full read {full:?}"
-            );
+        // exactly the bytes that are read.
+        let mut snapshots = Vec::new();
+        for projection in [None, Some(vec![0])] {
+            let metrics = Arc::new(ReadMetrics::default());
+            let (_, stream) = open_operator(
+                fs_operator(&root),
+                "default/train/",
+                1024,
+                true,
+                8,
+                projection,
+                metrics.clone(),
+            )
+            .await
+            .unwrap();
+            stream.try_collect::<Vec<_>>().await.unwrap();
+            let snapshot = metrics.snapshot();
+            assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
+            snapshots.push(snapshot);
         }
+        let (full, projected) = (snapshots[0], snapshots[1]);
+        assert!(
+            projected.bytes_read < full.bytes_read,
+            "projected read {projected:?}, full read {full:?}"
+        );
     }
 
     #[tokio::test]

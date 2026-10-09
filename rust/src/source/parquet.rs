@@ -5,7 +5,6 @@ use futures::{stream, StreamExt, TryStreamExt};
 use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::ProjectionMask;
 use parquet::file::metadata::ParquetMetaData;
-use parquet::schema::types::SchemaDescriptor;
 
 use super::parquet_metadata::{load_parquet_metadata, OpendalParquetReader};
 use super::{BatchStream, ReadMetrics};
@@ -27,39 +26,18 @@ struct ColumnProjection {
 
 impl ColumnProjection {
     /// Returns `None` for an empty request, which reads every column.
-    fn new(columns: Vec<usize>) -> Result<Option<Self>> {
+    fn new(columns: Vec<usize>) -> Option<Self> {
         if columns.is_empty() {
-            return Ok(None);
+            return None;
         }
         let mut roots = columns.clone();
         roots.sort_unstable();
-        if let Some(pair) = roots.windows(2).find(|pair| pair[0] == pair[1]) {
-            return Err(Error::message(format!(
-                "duplicate Parquet column index: {}",
-                pair[0]
-            )));
-        }
+        roots.dedup();
         let order = columns
             .iter()
             .map(|column| roots.partition_point(|root| root < column))
             .collect();
-        Ok(Some(Self { roots, order }))
-    }
-
-    fn mask(
-        &self,
-        parquet_schema: &SchemaDescriptor,
-        field_count: usize,
-    ) -> Result<ProjectionMask> {
-        if let Some(&index) = self.roots.last().filter(|&&index| index >= field_count) {
-            return Err(Error::message(format!(
-                "invalid Parquet column index: {index}"
-            )));
-        }
-        Ok(ProjectionMask::roots(
-            parquet_schema,
-            self.roots.iter().copied(),
-        ))
+        Some(Self { roots, order })
     }
 }
 
@@ -91,8 +69,8 @@ fn column_chunk_bytes(metadata: &ParquetMetaData, mask: Option<&ProjectionMask>)
 /// column.
 ///
 /// Returns an error when `paths` is empty, either numeric option is zero, a
-/// projected index is invalid or repeated, a file cannot be opened, or
-/// schemas differ.
+/// projected index is out of range, a file cannot be opened, or schemas
+/// differ.
 pub(crate) async fn open_parquet_paths(
     operator: opendal::Operator,
     paths: Vec<String>,
@@ -105,13 +83,10 @@ pub(crate) async fn open_parquet_paths(
     if batch_size == 0 {
         return Err(Error::message("batch_size must be positive"));
     }
-    if paths.is_empty() {
-        return Err(Error::message("Parquet source contains no .parquet files"));
-    }
     if max_read_parallelism == 0 {
         return Err(Error::message("max_read_parallelism must be positive"));
     }
-    let projection = projection.map(ColumnProjection::new).transpose()?.flatten();
+    let projection = projection.and_then(ColumnProjection::new);
     let (schema, files) = load_parquet_metadata(
         operator.clone(),
         paths,
@@ -119,15 +94,25 @@ pub(crate) async fn open_parquet_paths(
         metrics.clone(),
     )
     .await?;
+    // Projecting the schema rejects out-of-range indices, which would panic in
+    // `ProjectionMask::roots`.
+    let schema = match &projection {
+        Some(projection) => Arc::new(
+            schema
+                .project(&projection.roots)?
+                .project(&projection.order)?,
+        ),
+        None => schema,
+    };
     let mut row_groups = Vec::new();
     let mut unread_bytes = 0_u64;
     for file in files {
-        let mask = projection
-            .as_ref()
-            .map(|projection| {
-                projection.mask(file.metadata.parquet_schema(), schema.fields().len())
-            })
-            .transpose()?;
+        let mask = projection.as_ref().map(|projection| {
+            ProjectionMask::roots(
+                file.metadata.parquet_schema(),
+                projection.roots.iter().copied(),
+            )
+        });
         unread_bytes = unread_bytes
             .saturating_add(column_chunk_bytes(file.metadata.metadata(), mask.as_ref()));
         for index in 0..file.metadata.metadata().num_row_groups() {
@@ -141,7 +126,6 @@ pub(crate) async fn open_parquet_paths(
     }
     // Every footer has been read; only the selected column chunks remain.
     metrics.set_total_bytes(metrics.snapshot().bytes_read.saturating_add(unread_bytes));
-    let parallelism = row_groups.len().min(max_read_parallelism).max(1);
     let readers = stream::iter(row_groups).map(move |(path, metadata, mask, row_group)| {
         let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
             OpendalParquetReader::new(operator.clone(), path, metrics.clone()),
@@ -161,12 +145,11 @@ pub(crate) async fn open_parquet_paths(
     let batches: BatchStream = if preserve_insertion_order {
         Box::pin(readers.try_flatten())
     } else {
-        Box::pin(readers.try_flatten_unordered(Some(parallelism)))
+        Box::pin(readers.try_flatten_unordered(Some(max_read_parallelism)))
     };
-    let Some(ColumnProjection { roots, order }) = projection else {
+    let Some(ColumnProjection { order, .. }) = projection else {
         return Ok((schema, batches));
     };
-    let schema = Arc::new(schema.project(&roots)?.project(&order)?);
     let batches = batches.map(move |batch| batch.and_then(|batch| Ok(batch.project(&order)?)));
     Ok((schema, Box::pin(batches)))
 }
