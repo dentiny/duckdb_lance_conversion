@@ -124,6 +124,7 @@ pub struct HuggingFaceStreamFactory {
     token: Option<String>,
     preserve_insertion_order: bool,
     max_read_parallelism: usize,
+    read_ahead_bytes: usize,
     opendal_config: OpendalConfig,
     schema: SchemaRef,
     reader: Option<ArrowBatchReader>,
@@ -138,6 +139,7 @@ impl HuggingFaceStreamFactory {
             .with_preserve_insertion_order(self.preserve_insertion_order)
             .with_projection(projection)
             .with_max_read_parallelism(self.max_read_parallelism)
+            .with_read_ahead_bytes(self.read_ahead_bytes)
             .with_opendal_config(self.opendal_config)
             .with_metrics(self.metrics.clone());
         if let Some(token) = &self.token {
@@ -508,6 +510,7 @@ pub unsafe extern "C" fn lance_huggingface_open(
     opendal_config: *const OpendalConfig,
     preserve_insertion_order: i32,
     max_read_parallelism: u64,
+    read_ahead_bytes: u64,
     output: *mut *mut HuggingFaceStreamFactory,
 ) -> *mut c_char {
     call(|| {
@@ -522,12 +525,15 @@ pub unsafe extern "C" fn lance_huggingface_open(
         let opendal_config = parse_opendal_config(opendal_config)?;
         let max_read_parallelism = usize::try_from(max_read_parallelism)
             .map_err(|_| Error::message("max_read_parallelism is too large"))?;
+        // A budget beyond the address space cannot be reached anyway.
+        let read_ahead_bytes = usize::try_from(read_ahead_bytes).unwrap_or(usize::MAX);
         let metrics = Arc::new(ReadMetrics::default());
         let mut source = HuggingFaceSource::new(&dataset)
             .with_config(&config)
             .with_split(&split)
             .with_preserve_insertion_order(preserve_insertion_order != 0)
             .with_max_read_parallelism(max_read_parallelism)
+            .with_read_ahead_bytes(read_ahead_bytes)
             .with_opendal_config(opendal_config)
             .with_metrics(metrics.clone());
         if let Some(token) = &token {
@@ -542,6 +548,7 @@ pub unsafe extern "C" fn lance_huggingface_open(
             token,
             preserve_insertion_order: preserve_insertion_order != 0,
             max_read_parallelism,
+            read_ahead_bytes,
             opendal_config,
             schema,
             reader: Some(reader),

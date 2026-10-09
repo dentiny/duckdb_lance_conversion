@@ -143,12 +143,15 @@ output path must not exist, even as an empty directory.
 
 `read_huggingface` reads the Parquet representation published for a Hugging
 Face dataset. `config` and `split` default to `default` and `train`.
-`preserve_insertion_order` defaults to `true`, which reads sorted Parquet
-shards and their row groups sequentially. Set it to `false` to read row groups
-concurrently, emitting batches as they become ready. Either way, every shard's
+`preserve_insertion_order` defaults to `true`, which emits sorted Parquet
+shards and their row groups in order while reading later row groups ahead. Set
+it to `false` to emit batches from concurrent row groups as they become ready. Either way, every shard's
 Parquet footer is loaded concurrently before the first batch.
 `max_read_parallelism` defaults to `8`, limits concurrent footer and row-group
-reads, and is capped by the total row-group count:
+reads, and is capped by the total row-group count. Each row group is decoded
+in the background, and `read_ahead_bytes` (default 32 MiB) caps the decoded
+data each concurrent read may queue before DuckDB consumes it, so queued data
+stays near `max_read_parallelism * read_ahead_bytes`:
 
 ```sql
 COPY (
@@ -157,7 +160,8 @@ COPY (
         config = 'default',
         split = 'train',
         preserve_insertion_order = false,
-        max_read_parallelism = 8
+        max_read_parallelism = 8,
+        read_ahead_bytes = 67108864
     )
 )
 TO 'demo1.lance' (FORMAT LANCE);

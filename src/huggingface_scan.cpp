@@ -18,6 +18,9 @@
 namespace duckdb {
 namespace {
 
+// Matches DEFAULT_READ_AHEAD_BYTES in rust/src/source/huggingface.rs.
+constexpr uint64_t DEFAULT_READ_AHEAD_BYTES = 32 * 1024 * 1024;
+
 class HuggingFaceMetricsDependency final : public SourceMetricsDependency {
 public:
 	explicit HuggingFaceMetricsDependency(HuggingFaceStreamFactory *factory_p)
@@ -66,6 +69,14 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 		preserve_insertion_order = preserve_insertion_order_entry->second.GetValue<bool>();
 	}
 	auto read_options = SourceReadOptions::From(input);
+	auto read_ahead_bytes = DEFAULT_READ_AHEAD_BYTES;
+	auto read_ahead_bytes_entry = input.named_parameters.find("read_ahead_bytes");
+	if (read_ahead_bytes_entry != input.named_parameters.end()) {
+		read_ahead_bytes = read_ahead_bytes_entry->second.GetValue<uint64_t>();
+	}
+	if (read_ahead_bytes == 0) {
+		throw InvalidInputException("read_ahead_bytes must be positive");
+	}
 
 	string token;
 	KeyValueSecretReader secret_reader(*context.db, "huggingface", "hf://datasets/" + dataset);
@@ -75,7 +86,8 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	HuggingFaceStreamFactory *factory = nullptr;
 	ThrowIfLanceError(lance_huggingface_open(dataset.c_str(), config.c_str(), split.c_str(),
 	                                         token.empty() ? nullptr : token.c_str(), &opendal_config,
-	                                         preserve_insertion_order, read_options.max_read_parallelism, &factory),
+	                                         preserve_insertion_order, read_options.max_read_parallelism,
+	                                         read_ahead_bytes, &factory),
 	                  "Hugging Face reader");
 	auto dependency = make_shared_ptr<HuggingFaceMetricsDependency>(factory);
 	auto result = make_uniq<ArrowScanFunctionData>(ProduceHuggingFaceStream, reinterpret_cast<uintptr_t>(factory),
@@ -103,11 +115,12 @@ void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
 	function.named_parameters["config"] = LogicalType::VARCHAR;
 	function.named_parameters["split"] = LogicalType::VARCHAR;
 	function.named_parameters["preserve_insertion_order"] = LogicalType::BOOLEAN;
+	function.named_parameters["read_ahead_bytes"] = LogicalType::UBIGINT;
 	SourceReadOptions::Register(function);
 	RegisterTableFunctionWithMetadata(
 	    loader, std::move(function),
 	    /*parameter_names=*/
-	    {"dataset", "config", "split", "preserve_insertion_order", "max_read_parallelism"},
+	    {"dataset", "config", "split", "preserve_insertion_order", "max_read_parallelism", "read_ahead_bytes"},
 	    /*description=*/"Reads a Hugging Face dataset's Parquet files.",
 	    /*examples=*/ {"SELECT * FROM read_huggingface('lhoestq/demo1');"},
 	    /*categories=*/ {"lance_conversion", "reader"});
