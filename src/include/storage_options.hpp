@@ -6,6 +6,10 @@
 namespace duckdb {
 
 class ClientContext;
+class ExtensionLoader;
+
+void RegisterOpendalSettings(ExtensionLoader &loader);
+LanceOpendalConfig ReadOpendalConfig(ClientContext &context);
 
 struct LanceS3Options {
 	string endpoint;

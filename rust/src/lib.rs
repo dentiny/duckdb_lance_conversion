@@ -21,4 +21,4 @@ pub use source::{
     warc_schema, BatchSource, BatchStream, HuggingFaceSource, SourceReadOptions, WarcSource,
     DEFAULT_MAX_READ_PARALLELISM,
 };
-pub use storage::S3StorageConfig;
+pub use storage::{OpendalConfig, S3StorageConfig};

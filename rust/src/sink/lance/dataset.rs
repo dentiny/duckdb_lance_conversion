@@ -174,7 +174,11 @@ impl LanceDatasetWriter {
             .as_ref()
             .to_str()
             .ok_or_else(|| Error::message("destination must be valid UTF-8"))?;
-        let destination = OpendalStorage::from_path(destination_path, options.s3_config.as_ref())?;
+        let destination = OpendalStorage::from_path(
+            destination_path,
+            options.s3_config.as_ref(),
+            &options.opendal_config,
+        )?;
         if destination.object_path.as_ref().is_empty() {
             return Err(Error::message(
                 "Lance destination must not be a storage root",

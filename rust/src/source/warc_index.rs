@@ -12,7 +12,7 @@ use serde_json::Value;
 use super::warc::stream_records;
 use super::{BatchStream, ReadMetrics};
 use crate::storage::OpendalStorage;
-use crate::{Error, Result, S3StorageConfig};
+use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WarcIndexEntry {
@@ -186,13 +186,14 @@ pub(super) async fn open_indexed_warc(
     gzipped: bool,
     index_path: &str,
     s3_config: Option<&S3StorageConfig>,
+    opendal_config: &OpendalConfig,
     batch_size: usize,
     projection: Vec<usize>,
     schema: SchemaRef,
     max_read_parallelism: usize,
     metrics: Arc<ReadMetrics>,
 ) -> Result<(SchemaRef, BatchStream)> {
-    let index_storage = OpendalStorage::from_path(index_path, s3_config)?;
+    let index_storage = OpendalStorage::from_path(index_path, s3_config, opendal_config)?;
     let index_object_path = index_storage.object_path.to_string();
     if index_object_path.is_empty() {
         return Err(Error::message("WARC index must not be a storage root"));
