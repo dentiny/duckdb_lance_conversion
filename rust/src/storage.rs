@@ -52,7 +52,7 @@ impl OpendalConfig {
         ] {
             if value == 0 {
                 return Err(Error::invalid_argument(format!(
-                    "lance_conversion_opendal_{name} must be positive"
+                    "lance_conversion_storage_{name} must be positive"
                 )));
             }
             if std::time::Instant::now()
@@ -60,13 +60,13 @@ impl OpendalConfig {
                 .is_none()
             {
                 return Err(Error::invalid_argument(format!(
-                    "lance_conversion_opendal_{name} is too large"
+                    "lance_conversion_storage_{name} is too large"
                 )));
             }
         }
         if self.retry_max_delay_ms < self.retry_min_delay_ms {
             return Err(Error::invalid_argument(
-                "lance_conversion_opendal_retry_max_delay_ms must be at least retry_min_delay_ms",
+                "lance_conversion_storage_retry_max_delay_ms must be at least retry_min_delay_ms",
             ));
         }
         if !self.retry_factor.is_finite()
@@ -74,11 +74,11 @@ impl OpendalConfig {
             || self.retry_factor > f32::MAX as f64
         {
             return Err(Error::invalid_argument(
-                "lance_conversion_opendal_retry_factor must be finite and between 1 and f32::MAX",
+                "lance_conversion_storage_retry_factor must be finite and between 1 and f32::MAX",
             ));
         }
         usize::try_from(self.retry_max_times).map_err(|_| {
-            Error::invalid_argument("lance_conversion_opendal_retry_max_times is too large")
+            Error::invalid_argument("lance_conversion_storage_retry_max_times is too large")
         })?;
         Ok(self)
     }
