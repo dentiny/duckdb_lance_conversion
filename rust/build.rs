@@ -8,24 +8,31 @@ fn main() {
     let mut generated =
         String::from("// Generated from include/lance_storage_defaults.h. Do not edit.\n");
     for line in source.lines() {
-        let Some(definition) = line.trim().strip_prefix("#define ") else {
+        let Some(definition) = line.trim().strip_prefix("inline constexpr ") else {
             continue;
         };
-        let mut tokens = definition.split_whitespace();
+        let definition = definition.strip_suffix(';').expect("constant semicolon");
+        let (declaration, value) = definition.split_once('=').expect("constant initializer");
+        let mut tokens = declaration.split_whitespace();
+        let cpp_type = tokens.next().expect("constant type");
         let name = tokens.next().expect("constant name");
         if !name.starts_with("LANCE_DEFAULT_STORAGE_") {
             continue;
         }
-        let value = tokens.next().expect("constant value");
-        assert!(tokens.next().is_none(), "{name} must be a numeric literal");
-        let rust_type = if name.ends_with("_FACTOR") {
-            value
-                .parse::<f64>()
-                .expect("floating-point storage default");
-            "f64"
-        } else {
-            value.parse::<u64>().expect("integer storage default");
-            "u64"
+        assert!(tokens.next().is_none(), "unexpected tokens in {name}");
+        let value = value.trim();
+        let rust_type = match cpp_type {
+            "uint64_t" => {
+                value.parse::<u64>().expect("integer storage default");
+                "u64"
+            }
+            "double" => {
+                value
+                    .parse::<f64>()
+                    .expect("floating-point storage default");
+                "f64"
+            }
+            _ => panic!("unsupported storage default type: {cpp_type}"),
         };
         generated.push_str(&format!("pub const {name}: {rust_type} = {value};\n"));
     }
