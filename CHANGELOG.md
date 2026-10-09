@@ -1,3 +1,20 @@
+# 0.1.4
+
+## Added
+
+- Add per-attempt timeouts and exponential-backoff retries for S3 WARC reads, Hugging Face Parquet reads, and S3 Lance writes, configured through the `lance_conversion_storage_*` settings ([#40]).
+- Push column projection down into `read_huggingface`, so only the selected Parquet column chunks are fetched and decoded, and progress counts only those bytes ([#41]).
+- Decode `read_huggingface` row groups in the background, up to `max_read_parallelism` at a time, so reading continues while DuckDB processes earlier batches. The new `read_ahead_bytes` option (default 32 MiB, `0` to disable) caps the decoded data each row group may queue ([#42]).
+
+## Changed
+
+- `read_huggingface` now loads every shard's Parquet footer concurrently before the first batch, in both ordered and unordered modes ([#41]).
+- With `preserve_insertion_order = true` (the default), `read_huggingface` now reads later row groups ahead while still emitting them in order, instead of reading one row group at a time ([#42]).
+
+[#40]: https://github.com/dentiny/duckdb_lance_conversion/pull/40
+[#41]: https://github.com/dentiny/duckdb_lance_conversion/pull/41
+[#42]: https://github.com/dentiny/duckdb_lance_conversion/pull/42
+
 # 0.1.3
 
 ## Added
@@ -6,6 +23,7 @@
 - Support batch indexes in `read_huggingface` and `read_warc`, so order-preserving COPY from these readers uses the parallel batch mode ([#38]).
 - Support `UUID` (stored as a canonical string), `ENUM` (stored as a dictionary-encoded string), and `MAP` columns ([#36]).
 - Keep the canonical Arrow `UUID` and `JSON` extension types when reading Hugging Face Parquet shards ([#36]).
+- Add [performance notes](docs/performance_notes.md) ([#39]).
 
 ## Fixed
 
@@ -17,6 +35,7 @@
 [#36]: https://github.com/dentiny/duckdb_lance_conversion/pull/36
 [#37]: https://github.com/dentiny/duckdb_lance_conversion/pull/37
 [#38]: https://github.com/dentiny/duckdb_lance_conversion/pull/38
+[#39]: https://github.com/dentiny/duckdb_lance_conversion/pull/39
 
 # 0.1.2
 
