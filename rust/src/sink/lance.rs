@@ -7,7 +7,7 @@ use futures::{Stream, TryStreamExt};
 pub use lance::dataset::write::WriteMode;
 
 use super::{BatchSink, WriteSummary};
-use crate::{Error, Result, S3StorageConfig};
+use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 mod column_storage;
 mod dataset;
@@ -26,6 +26,7 @@ const DEFAULT_STORAGE_VERSION: &str = "stable";
 pub struct WriteOptions {
     pub mode: WriteMode,
     pub s3_config: Option<S3StorageConfig>,
+    pub opendal_config: OpendalConfig,
     pub blob_inline_size_threshold: Option<usize>,
     pub blob_dedicated_size_threshold: Option<usize>,
     pub target_file_size: usize,
@@ -44,6 +45,7 @@ impl Default for WriteOptions {
         Self {
             mode: WriteMode::Create,
             s3_config: None,
+            opendal_config: OpendalConfig::default(),
             blob_inline_size_threshold: Some(DEFAULT_BLOB_INLINE_SIZE_THRESHOLD),
             blob_dedicated_size_threshold: Some(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
             target_file_size: DEFAULT_TARGET_FILE_SIZE,

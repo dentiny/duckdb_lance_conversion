@@ -17,7 +17,7 @@ use warc::{Record, StreamingBody, WarcHeader, WarcReader};
 use super::warc_index::open_indexed_warc;
 use super::{BatchSource, BatchStream, MetricsReader, ReadMetrics, SourceReadOptions};
 use crate::storage::OpendalStorage;
-use crate::{Error, Result, S3StorageConfig};
+use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
 // A batch crosses Arrow -> DuckDB -> Arrow and may remain queued while Lance
@@ -100,6 +100,7 @@ pub struct WarcSource {
     path: String,
     batch_size: usize,
     s3_config: Option<S3StorageConfig>,
+    opendal_config: OpendalConfig,
     projection: Option<Vec<usize>>,
     read_options: SourceReadOptions,
     index_path: Option<String>,
@@ -112,6 +113,7 @@ impl WarcSource {
             path: path.into(),
             batch_size: DEFAULT_BATCH_SIZE,
             s3_config: None,
+            opendal_config: OpendalConfig::default(),
             projection: None,
             read_options: SourceReadOptions::default(),
             index_path: None,
@@ -126,6 +128,11 @@ impl WarcSource {
 
     pub fn with_s3_config(mut self, config: S3StorageConfig) -> Self {
         self.s3_config = Some(config);
+        self
+    }
+
+    pub fn with_opendal_config(mut self, config: OpendalConfig) -> Self {
+        self.opendal_config = config;
         self
     }
 
@@ -182,7 +189,8 @@ impl BatchSource for WarcSource {
                 })
                 .collect::<Result<Vec<_>>>()?;
         let schema = Arc::new(Schema::new(fields));
-        let storage = OpendalStorage::from_path(&self.path, self.s3_config.as_ref())?;
+        let storage =
+            OpendalStorage::from_path(&self.path, self.s3_config.as_ref(), &self.opendal_config)?;
         let path = storage.object_path.to_string();
         if path.is_empty() {
             return Err(Error::message("WARC input must not be a storage root"));
@@ -195,6 +203,7 @@ impl BatchSource for WarcSource {
                 gzipped,
                 &index_path,
                 self.s3_config.as_ref(),
+                &self.opendal_config,
                 self.batch_size,
                 projection,
                 schema,

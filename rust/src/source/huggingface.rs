@@ -11,7 +11,7 @@ use url::Url;
 use super::parquet::open_parquet_paths;
 use super::{BatchSource, BatchStream, ReadMetrics, SourceReadOptions};
 use crate::error::ResultExt;
-use crate::{Error, Result};
+use crate::{Error, OpendalConfig, Result};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
 const PARQUET_REVISION: &str = "refs/convert/parquet";
@@ -25,6 +25,7 @@ pub struct HuggingFaceSource {
     batch_size: usize,
     preserve_insertion_order: bool,
     read_options: SourceReadOptions,
+    opendal_config: OpendalConfig,
     metrics: Arc<ReadMetrics>,
 }
 
@@ -38,6 +39,7 @@ impl HuggingFaceSource {
             batch_size: DEFAULT_BATCH_SIZE,
             preserve_insertion_order: true,
             read_options: SourceReadOptions::default(),
+            opendal_config: OpendalConfig::default(),
             metrics: Arc::new(ReadMetrics::default()),
         }
     }
@@ -72,6 +74,11 @@ impl HuggingFaceSource {
         self
     }
 
+    pub fn with_opendal_config(mut self, config: OpendalConfig) -> Self {
+        self.opendal_config = config;
+        self
+    }
+
     pub(crate) fn with_metrics(mut self, metrics: Arc<ReadMetrics>) -> Self {
         self.metrics = metrics;
         self
@@ -83,7 +90,7 @@ impl HuggingFaceSource {
         if let Some(token) = &self.token {
             builder = builder.token(token);
         }
-        Ok(Operator::new(builder)?)
+        self.opendal_config.apply(Operator::new(builder)?)
     }
 
     fn validate(&self) -> Result<()> {
@@ -194,6 +201,7 @@ impl BatchSource for HuggingFaceSource {
             return Err(Error::message("batch_size must be positive"));
         }
         self.validate()?;
+        self.opendal_config.validate()?;
         let read_options = self.read_options.validate()?;
         let (endpoint, paths, total_bytes) = self.parquet_files().await?;
         self.metrics.set_total_bytes(total_bytes);

@@ -6,6 +6,7 @@
 #include "lance_conversion.h"
 #include "source_metrics.hpp"
 #include "source_options.hpp"
+#include "storage_options.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table/arrow.hpp"
@@ -65,10 +66,11 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	KeyValueSecretReader secret_reader(*context.db, "huggingface", "hf://datasets/" + dataset);
 	secret_reader.TryGetSecretKey("token", token);
 
+	auto opendal = ReadOpendalConfig(context);
 	HuggingFaceStreamFactory *factory = nullptr;
 	ThrowIfLanceError(lance_huggingface_open(dataset.c_str(), config.c_str(), split.c_str(),
-	                                         token.empty() ? nullptr : token.c_str(), preserve_insertion_order,
-	                                         read_options.max_read_parallelism, &factory),
+	                                         token.empty() ? nullptr : token.c_str(), &opendal,
+	                                         preserve_insertion_order, read_options.max_read_parallelism, &factory),
 	                  "Hugging Face reader");
 	auto dependency = make_shared_ptr<HuggingFaceMetricsDependency>(factory);
 	auto result = make_uniq<ArrowScanFunctionData>(ProduceHuggingFaceStream, reinterpret_cast<uintptr_t>(factory),

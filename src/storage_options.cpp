@@ -2,9 +2,92 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/secret/secret.hpp"
 
+#include <cmath>
+#include <limits>
+
 namespace duckdb {
+
+namespace {
+
+struct OpendalIntegerSetting {
+	const char *name;
+	const char *description;
+	uint64_t LanceOpendalConfig::*member;
+	bool allow_zero;
+};
+
+const OpendalIntegerSetting OPENDAL_INTEGER_SETTINGS[] = {
+    {"lance_conversion_opendal_timeout_ms", "OpenDAL control operation timeout per attempt, in milliseconds",
+     &LanceOpendalConfig::timeout_ms, false},
+    {"lance_conversion_opendal_io_timeout_ms",
+     "OpenDAL IO operation and body method timeout per attempt, in milliseconds", &LanceOpendalConfig::io_timeout_ms,
+     false},
+    {"lance_conversion_opendal_retry_max_times",
+     "Maximum OpenDAL retries after the initial attempt (0 disables retries)", &LanceOpendalConfig::retry_max_times,
+     true},
+    {"lance_conversion_opendal_retry_min_delay_ms", "OpenDAL initial retry backoff, in milliseconds",
+     &LanceOpendalConfig::retry_min_delay_ms, false},
+    {"lance_conversion_opendal_retry_max_delay_ms",
+     "OpenDAL maximum exponential retry backoff before jitter, in milliseconds",
+     &LanceOpendalConfig::retry_max_delay_ms, false},
+};
+
+void SetPositiveOpendalDuration(ClientContext &, SetScope, Value &value) {
+	if (value.IsNull() || value.GetValue<int64_t>() <= 0) {
+		throw InvalidInputException("OpenDAL timeout and retry delay settings must be positive");
+	}
+}
+
+void SetOpendalRetryCount(ClientContext &, SetScope, Value &value) {
+	if (value.IsNull() || value.GetValue<int64_t>() < 0) {
+		throw InvalidInputException("OpenDAL retry_max_times must be non-negative");
+	}
+}
+
+void SetOpendalRetryFactor(ClientContext &, SetScope, Value &value) {
+	auto factor = value.IsNull() ? 0 : value.GetValue<double>();
+	if (!std::isfinite(factor) || factor < 1 || factor > std::numeric_limits<float>::max()) {
+		throw InvalidInputException("OpenDAL retry_factor must be finite and between 1 and f32::MAX");
+	}
+}
+
+Value GetOpendalSetting(ClientContext &context, const char *name) {
+	Value value;
+	if (!context.TryGetCurrentSetting(name, value)) {
+		throw InternalException("Missing OpenDAL setting: %s", name);
+	}
+	return value;
+}
+
+} // namespace
+
+void RegisterOpendalSettings(ExtensionLoader &loader) {
+	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
+	LanceOpendalConfig defaults;
+	for (const auto &setting : OPENDAL_INTEGER_SETTINGS) {
+		config.AddExtensionOption(setting.name, setting.description, LogicalType::BIGINT,
+		                          Value::BIGINT(defaults.*setting.member),
+		                          setting.allow_zero ? SetOpendalRetryCount : SetPositiveOpendalDuration);
+	}
+	config.AddExtensionOption("lance_conversion_opendal_retry_factor", "OpenDAL exponential retry backoff multiplier",
+	                          LogicalType::DOUBLE, Value::DOUBLE(defaults.retry_factor), SetOpendalRetryFactor);
+}
+
+LanceOpendalConfig ReadOpendalConfig(ClientContext &context) {
+	LanceOpendalConfig result;
+	for (const auto &setting : OPENDAL_INTEGER_SETTINGS) {
+		result.*setting.member = GetOpendalSetting(context, setting.name).GetValue<uint64_t>();
+	}
+	result.retry_factor = GetOpendalSetting(context, "lance_conversion_opendal_retry_factor").GetValue<double>();
+	if (result.retry_max_delay_ms < result.retry_min_delay_ms) {
+		throw InvalidInputException("lance_conversion_opendal_retry_max_delay_ms must be at least retry_min_delay_ms");
+	}
+	return result;
+}
 
 LanceS3Config LanceS3Options::ToConfig() const {
 	LanceS3Config result;

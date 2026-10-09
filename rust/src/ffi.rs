@@ -14,8 +14,8 @@ use futures::TryStreamExt;
 use crate::source::ReadMetrics;
 use crate::{
     warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceDatasetWriter,
-    LanceFragmentWriter, Result, S3StorageConfig, WarcSource, WriteMode, WriteOptions,
-    WriteSummary,
+    LanceFragmentWriter, OpendalConfig, Result, S3StorageConfig, WarcSource, WriteMode,
+    WriteOptions, WriteSummary,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -124,6 +124,7 @@ pub struct HuggingFaceStreamFactory {
     token: Option<String>,
     preserve_insertion_order: bool,
     max_read_parallelism: usize,
+    opendal_config: OpendalConfig,
     schema: SchemaRef,
     reader: Option<ArrowBatchReader>,
     metrics: Arc<ReadMetrics>,
@@ -136,6 +137,7 @@ impl HuggingFaceStreamFactory {
             .with_split(&self.split)
             .with_preserve_insertion_order(self.preserve_insertion_order)
             .with_max_read_parallelism(self.max_read_parallelism)
+            .with_opendal_config(self.opendal_config)
             .with_metrics(self.metrics.clone());
         if let Some(token) = &self.token {
             source = source.with_token(token);
@@ -149,6 +151,7 @@ pub struct WarcStreamFactory {
     index_path: Option<String>,
     s3_config: Option<S3StorageConfig>,
     max_read_parallelism: usize,
+    opendal_config: OpendalConfig,
     metrics: Arc<ReadMetrics>,
 }
 
@@ -157,6 +160,7 @@ impl WarcStreamFactory {
         let mut source = WarcSource::new(&self.path)
             .with_projection(projection)
             .with_max_read_parallelism(self.max_read_parallelism)
+            .with_opendal_config(self.opendal_config)
             .with_metrics(self.metrics.clone());
         if let Some(index_path) = &self.index_path {
             source = source.with_index_path(index_path);
@@ -202,6 +206,10 @@ unsafe fn string_list(values: *const *const c_char, count: usize) -> Result<Vec<
             Ok(CStr::from_ptr(*value).to_str()?.to_owned())
         })
         .collect()
+}
+
+unsafe fn opendal_config(config: *const OpendalConfig) -> Result<OpendalConfig> {
+    config.as_ref().copied().unwrap_or_default().validate()
 }
 
 unsafe fn s3_config(config: *const LanceS3Config) -> Result<Option<S3StorageConfig>> {
@@ -267,6 +275,7 @@ pub unsafe extern "C" fn lance_conversion_open(
     schema: *const FFI_ArrowSchema,
     config: *const LanceWriteConfig,
     s3: *const LanceS3Config,
+    opendal: *const OpendalConfig,
     output: *mut *mut LanceConversionDataset,
 ) -> *mut c_char {
     call(|| {
@@ -280,6 +289,7 @@ pub unsafe extern "C" fn lance_conversion_open(
         let options = WriteOptions {
             mode: write_mode(config.mode)?,
             s3_config: s3_config(s3)?,
+            opendal_config: opendal_config(opendal)?,
             blob_inline_size_threshold: optional_threshold(
                 config.blob_inline_size_threshold,
                 "blob inline size threshold",
@@ -460,6 +470,7 @@ pub unsafe extern "C" fn lance_huggingface_open(
     config: *const c_char,
     split: *const c_char,
     token: *const c_char,
+    opendal: *const OpendalConfig,
     preserve_insertion_order: i32,
     max_read_parallelism: u64,
     output: *mut *mut HuggingFaceStreamFactory,
@@ -473,6 +484,7 @@ pub unsafe extern "C" fn lance_huggingface_open(
         let config = CStr::from_ptr(config).to_str()?.to_owned();
         let split = CStr::from_ptr(split).to_str()?.to_owned();
         let token = optional_string(token)?;
+        let opendal_config = opendal_config(opendal)?;
         let max_read_parallelism = usize::try_from(max_read_parallelism)
             .map_err(|_| Error::message("max_read_parallelism is too large"))?;
         let metrics = Arc::new(ReadMetrics::default());
@@ -481,6 +493,7 @@ pub unsafe extern "C" fn lance_huggingface_open(
             .with_split(&split)
             .with_preserve_insertion_order(preserve_insertion_order != 0)
             .with_max_read_parallelism(max_read_parallelism)
+            .with_opendal_config(opendal_config)
             .with_metrics(metrics.clone());
         if let Some(token) = &token {
             source = source.with_token(token);
@@ -494,6 +507,7 @@ pub unsafe extern "C" fn lance_huggingface_open(
             token,
             preserve_insertion_order: preserve_insertion_order != 0,
             max_read_parallelism,
+            opendal_config,
             schema,
             reader: Some(reader),
             metrics,
@@ -571,6 +585,7 @@ pub unsafe extern "C" fn lance_warc_open(
     path: *const c_char,
     index_path: *const c_char,
     s3: *const LanceS3Config,
+    opendal: *const OpendalConfig,
     max_read_parallelism: u64,
     output: *mut *mut WarcStreamFactory,
 ) -> *mut c_char {
@@ -591,6 +606,7 @@ pub unsafe extern "C" fn lance_warc_open(
             path,
             index_path,
             s3_config: s3_config(s3)?,
+            opendal_config: opendal_config(opendal)?,
             max_read_parallelism,
             metrics,
         }));

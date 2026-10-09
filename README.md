@@ -42,6 +42,44 @@ COPY (
 TO '/absolute/path/output.lance' (FORMAT LANCE);
 ```
 
+### OpenDAL timeouts and retries
+
+The extension's S3 readers and Lance destination, and Hugging Face HTTP Parquet
+reader, use a TimeoutLayer inside a RetryLayer. Each attempt has its own deadline;
+these settings do not impose a total query deadline. Local filesystem operators
+are not layered. DuckDB's own readers (such as `read_parquet`) and the Hugging
+Face dataset discovery API are outside these OpenDAL settings.
+
+| Extension setting | Default | Meaning |
+| --- | --- | --- |
+| `lance_conversion_opendal_timeout_ms` | `60000` | Control operation timeout per attempt, such as `stat` |
+| `lance_conversion_opendal_io_timeout_ms` | `10000` | Timeout per IO operation and reader/writer body method |
+| `lance_conversion_opendal_retry_max_times` | `3` | Retries after the initial attempt; `0` disables retries |
+| `lance_conversion_opendal_retry_min_delay_ms` | `1000` | Initial exponential backoff |
+| `lance_conversion_opendal_retry_max_delay_ms` | `60000` | Maximum exponential backoff before jitter |
+| `lance_conversion_opendal_retry_factor` | `2.0` | Backoff multiplier, finite and at least `1` |
+
+Durations are positive milliseconds. Maximum delay must be at least minimum
+delay; incompatible combinations are rejected when opening a reader or writer.
+Jitter uses OpenDAL's default. Only temporary errors, including timeouts, are
+retried. Lance's own download
+retry policy also remains in effect above OpenDAL.
+
+```sql
+SET lance_conversion_opendal_timeout_ms = 30000;
+SET lance_conversion_opendal_io_timeout_ms = 30000;
+SET lance_conversion_opendal_retry_max_times = 5;
+SET lance_conversion_opendal_retry_min_delay_ms = 500;
+SET lance_conversion_opendal_retry_max_delay_ms = 10000;
+SET lance_conversion_opendal_retry_factor = 2.0;
+```
+
+Settings default to session scope. The extension copies the current connection's
+settings when it opens a reader or writer, including WARC index reads and Lance
+metadata/data/index operations. Subsequent changes do not alter existing
+operators. Use `RESET <setting>` to restore a default, and inspect them through
+`duckdb_settings()`.
+
 ### Source examples
 
 `COPY` can consume a table, a view, or any DuckDB query. The source does not

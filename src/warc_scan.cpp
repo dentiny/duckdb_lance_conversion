@@ -70,8 +70,9 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 		s3_ptr = &s3;
 	}
 
+	auto opendal = ReadOpendalConfig(context);
 	WarcStreamFactory *factory = nullptr;
-	ThrowIfLanceError(lance_warc_open(path.c_str(), index_path.empty() ? nullptr : index_path.c_str(), s3_ptr,
+	ThrowIfLanceError(lance_warc_open(path.c_str(), index_path.empty() ? nullptr : index_path.c_str(), s3_ptr, &opendal,
 	                                  read_options.max_read_parallelism, &factory),
 	                  "WARC reader");
 	auto dependency = make_shared_ptr<WarcMetricsDependency>(factory);
