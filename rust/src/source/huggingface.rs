@@ -14,6 +14,7 @@ use crate::error::ResultExt;
 use crate::{Error, OpendalConfig, Result};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
+pub const DEFAULT_READ_AHEAD_BYTES: usize = 32 * 1024 * 1024;
 const PARQUET_REVISION: &str = "refs/convert/parquet";
 const PARQUET_API_URL: &str = "https://datasets-server.huggingface.co/parquet";
 
@@ -26,6 +27,7 @@ pub struct HuggingFaceSource {
     preserve_insertion_order: bool,
     projection: Option<Vec<usize>>,
     read_options: SourceReadOptions,
+    read_ahead_bytes: usize,
     opendal_config: OpendalConfig,
     metrics: Arc<ReadMetrics>,
 }
@@ -41,6 +43,7 @@ impl HuggingFaceSource {
             preserve_insertion_order: true,
             projection: None,
             read_options: SourceReadOptions::default(),
+            read_ahead_bytes: DEFAULT_READ_AHEAD_BYTES,
             opendal_config: OpendalConfig::default(),
             metrics: Arc::new(ReadMetrics::default()),
         }
@@ -80,6 +83,13 @@ impl HuggingFaceSource {
 
     pub fn with_max_read_parallelism(mut self, max_read_parallelism: usize) -> Self {
         self.read_options.max_read_parallelism = max_read_parallelism;
+        self
+    }
+
+    /// Caps the decoded bytes each concurrent row-group read may queue ahead
+    /// of the consumer; zero disables read-ahead.
+    pub fn with_read_ahead_bytes(mut self, read_ahead_bytes: usize) -> Self {
+        self.read_ahead_bytes = read_ahead_bytes;
         self
     }
 
@@ -213,6 +223,7 @@ impl BatchSource for HuggingFaceSource {
             self.batch_size,
             self.preserve_insertion_order,
             read_options.max_read_parallelism,
+            self.read_ahead_bytes,
             self.projection,
             self.metrics,
         )
@@ -249,6 +260,7 @@ async fn open_operator(
         batch_size,
         preserve_insertion_order,
         max_read_parallelism,
+        DEFAULT_READ_AHEAD_BYTES,
         projection,
         metrics,
     )
@@ -284,6 +296,7 @@ mod tests {
             source.read_options.max_read_parallelism,
             super::super::DEFAULT_MAX_READ_PARALLELISM
         );
+        assert_eq!(source.read_ahead_bytes, DEFAULT_READ_AHEAD_BYTES);
     }
 
     #[test]
@@ -486,6 +499,56 @@ mod tests {
             projected.bytes_read < full.bytes_read,
             "projected read {projected:?}, full read {full:?}"
         );
+    }
+
+    fn int32_values(batches: &[RecordBatch]) -> Vec<i32> {
+        batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn read_ahead_reads_every_row() {
+        let root = TempDir::new().unwrap();
+        let mut paths = Vec::new();
+        for (file, values) in [(1, 0..20), (2, 20..45), (3, 45..60)] {
+            let path = format!("default/train/{file}.parquet");
+            write_parquet_shard(&root.path().join(&path), "id", values.collect(), 3);
+            paths.push(path);
+        }
+        // A 1-byte budget is smaller than every batch, so each row group
+        // queues one batch at a time; ordered read-ahead must not stall on it.
+        for read_ahead_bytes in [DEFAULT_READ_AHEAD_BYTES, 1, 0] {
+            for preserve_insertion_order in [true, false] {
+                let (_, stream) = open_parquet_paths(
+                    fs_operator(&root),
+                    paths.clone(),
+                    2,
+                    preserve_insertion_order,
+                    4,
+                    read_ahead_bytes,
+                    None,
+                    Arc::new(ReadMetrics::default()),
+                )
+                .await
+                .unwrap();
+                let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+                let mut values = int32_values(&batches);
+                if !preserve_insertion_order {
+                    values.sort_unstable();
+                }
+                assert_eq!(values, (0..60).collect::<Vec<_>>());
+            }
+        }
     }
 
     #[tokio::test]

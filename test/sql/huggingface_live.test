@@ -80,6 +80,18 @@ FROM read_huggingface(
 ----
 max_read_parallelism must be positive
 
+# Zero disables read-ahead; a budget smaller than any batch still reads every
+# row, one batch at a time.
+query I
+SELECT count(*) FROM read_huggingface('lhoestq/demo1', read_ahead_bytes = 0);
+----
+5
+
+query I
+SELECT count(*) FROM read_huggingface('lhoestq/demo1', read_ahead_bytes = 1);
+----
+5
+
 query I
 EXECUTE hf_scan;
 ----

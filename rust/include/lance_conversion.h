@@ -119,7 +119,8 @@ void lance_conversion_writer_destroy(struct LanceConversionWriter *writer);
 // Huggingface related functions.
 char *lance_huggingface_open(const char *dataset, const char *config, const char *split, const char *token,
                              const struct LanceOpendalConfig *opendal_config, int32_t preserve_insertion_order,
-                             uint64_t max_read_parallelism, struct HuggingFaceStreamFactory **output);
+                             uint64_t max_read_parallelism, uint64_t read_ahead_bytes,
+                             struct HuggingFaceStreamFactory **output);
 char *lance_huggingface_get_schema(const struct HuggingFaceStreamFactory *factory, struct ArrowSchema *output);
 // columns lists the projected column names in output order; column_count 0 reads every column.
 char *lance_huggingface_get_stream(struct HuggingFaceStreamFactory *factory, const char *const *columns,
