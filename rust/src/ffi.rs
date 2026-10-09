@@ -262,6 +262,12 @@ fn call(operation: impl FnOnce() -> Result<()>) -> *mut c_char {
     CString::new(error.replace('\0', "\\0")).unwrap().into_raw()
 }
 
+/// Return the Rust-defined defaults to C++ without duplicating their values.
+#[no_mangle]
+pub extern "C" fn lance_opendal_default_config() -> OpendalConfig {
+    OpendalConfig::default()
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn lance_conversion_error_free(error: *mut c_char) {
     if !error.is_null() {

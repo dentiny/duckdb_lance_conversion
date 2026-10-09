@@ -3,8 +3,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "lance_storage_defaults.h"
-
 struct ArrowSchema;
 struct ArrowArray;
 struct ArrowArrayStream;
@@ -25,12 +23,12 @@ struct LanceS3Config {
 
 // Snapshot of the connection's OpenDAL extension settings. Durations are milliseconds.
 struct LanceOpendalConfig {
-	uint64_t timeout_ms = LANCE_DEFAULT_STORAGE_TIMEOUT_MS;
-	uint64_t io_timeout_ms = LANCE_DEFAULT_STORAGE_IO_TIMEOUT_MS;
-	uint64_t retry_max_times = LANCE_DEFAULT_STORAGE_RETRY_MAX_TIMES;
-	uint64_t retry_min_delay_ms = LANCE_DEFAULT_STORAGE_RETRY_MIN_DELAY_MS;
-	uint64_t retry_max_delay_ms = LANCE_DEFAULT_STORAGE_RETRY_MAX_DELAY_MS;
-	double retry_factor = LANCE_DEFAULT_STORAGE_RETRY_FACTOR;
+	uint64_t timeout_ms;
+	uint64_t io_timeout_ms;
+	uint64_t retry_max_times;
+	uint64_t retry_min_delay_ms;
+	uint64_t retry_max_delay_ms;
+	double retry_factor;
 };
 
 enum LanceWriteMode : int32_t {
@@ -88,6 +86,9 @@ struct LanceWriteMetrics {
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Returns the storage defaults defined in Rust.
+struct LanceOpendalConfig lance_opendal_default_config(void);
 
 // NULL means success. Free each owned error with lance_conversion_error_free.
 void lance_conversion_error_free(char *error);

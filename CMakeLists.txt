@@ -39,7 +39,6 @@ file(
   CONFIGURE_DEPENDS
   rust/src/*.rs
   rust/include/*.h
-  rust/build.rs
   rust/Cargo.toml
   rust/Cargo.lock)
 add_custom_command(

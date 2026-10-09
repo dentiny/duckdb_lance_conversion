@@ -68,7 +68,7 @@ Value GetOpendalSetting(ClientContext &context, const char *name) {
 
 void RegisterOpendalSettings(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
-	LanceOpendalConfig defaults;
+	const auto defaults = lance_opendal_default_config();
 	for (const auto &setting : OPENDAL_INTEGER_SETTINGS) {
 		config.AddExtensionOption(setting.name, setting.description, LogicalType::BIGINT,
 		                          Value::BIGINT(defaults.*setting.member),
@@ -81,7 +81,7 @@ void RegisterOpendalSettings(ExtensionLoader &loader) {
 
 // Source readers and Lance COPY writers share the current connection's policy.
 LanceOpendalConfig ReadOpendalConfig(ClientContext &context) {
-	LanceOpendalConfig result;
+	auto result = lance_opendal_default_config();
 	for (const auto &setting : OPENDAL_INTEGER_SETTINGS) {
 		result.*setting.member = GetOpendalSetting(context, setting.name).GetValue<uint64_t>();
 	}

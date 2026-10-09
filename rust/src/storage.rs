@@ -17,9 +17,12 @@ use url::Url;
 use crate::error::ResultExt;
 use crate::{Error, Result};
 
-mod defaults {
-    include!(concat!(env!("OUT_DIR"), "/storage_defaults.rs"));
-}
+const DEFAULT_STORAGE_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_STORAGE_IO_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_STORAGE_RETRY_MAX_TIMES: u64 = 3;
+const DEFAULT_STORAGE_RETRY_MIN_DELAY_MS: u64 = 1_000;
+const DEFAULT_STORAGE_RETRY_MAX_DELAY_MS: u64 = 60_000;
+const DEFAULT_STORAGE_RETRY_FACTOR: f64 = 2.0;
 
 /// Per-query OpenDAL policy, copied across the C ABI and into each remote operator.
 #[repr(C)]
@@ -36,12 +39,12 @@ pub struct OpendalConfig {
 impl Default for OpendalConfig {
     fn default() -> Self {
         Self {
-            timeout_ms: defaults::LANCE_DEFAULT_STORAGE_TIMEOUT_MS,
-            io_timeout_ms: defaults::LANCE_DEFAULT_STORAGE_IO_TIMEOUT_MS,
-            retry_max_times: defaults::LANCE_DEFAULT_STORAGE_RETRY_MAX_TIMES,
-            retry_min_delay_ms: defaults::LANCE_DEFAULT_STORAGE_RETRY_MIN_DELAY_MS,
-            retry_max_delay_ms: defaults::LANCE_DEFAULT_STORAGE_RETRY_MAX_DELAY_MS,
-            retry_factor: defaults::LANCE_DEFAULT_STORAGE_RETRY_FACTOR,
+            timeout_ms: DEFAULT_STORAGE_TIMEOUT_MS,
+            io_timeout_ms: DEFAULT_STORAGE_IO_TIMEOUT_MS,
+            retry_max_times: DEFAULT_STORAGE_RETRY_MAX_TIMES,
+            retry_min_delay_ms: DEFAULT_STORAGE_RETRY_MIN_DELAY_MS,
+            retry_max_delay_ms: DEFAULT_STORAGE_RETRY_MAX_DELAY_MS,
+            retry_factor: DEFAULT_STORAGE_RETRY_FACTOR,
         }
     }
 }
