@@ -478,30 +478,36 @@ mod tests {
             assert_eq!(rows, [(10, 1), (20, 2), (30, 3), (40, 4)]);
         }
 
-        // Unselected column chunks are never fetched.
-        let mut bytes_read = Vec::new();
-        for projection in [None, Some(vec![0])] {
-            let metrics = Arc::new(ReadMetrics::default());
-            let (_, stream) = open_operator(
-                fs_operator(&root),
-                "default/train/",
-                1024,
-                true,
-                8,
-                projection,
-                metrics.clone(),
-            )
-            .await
-            .unwrap();
-            stream.try_collect::<Vec<_>>().await.unwrap();
-            bytes_read.push(metrics.snapshot().bytes_read);
+        // Unselected column chunks are never fetched, and progress expects
+        // fewer bytes.
+        for preserve_insertion_order in [true, false] {
+            let mut snapshots = Vec::new();
+            for projection in [None, Some(vec![0])] {
+                let metrics = Arc::new(ReadMetrics::default());
+                let (_, stream) = open_operator(
+                    fs_operator(&root),
+                    "default/train/",
+                    1024,
+                    preserve_insertion_order,
+                    8,
+                    projection,
+                    metrics.clone(),
+                )
+                .await
+                .unwrap();
+                stream.try_collect::<Vec<_>>().await.unwrap();
+                snapshots.push(metrics.snapshot());
+            }
+            let (full, projected) = (snapshots[0], snapshots[1]);
+            assert!(
+                projected.bytes_read < full.bytes_read,
+                "projected read {projected:?}, full read {full:?}"
+            );
+            assert!(
+                0 < projected.total_bytes && projected.total_bytes < full.total_bytes,
+                "projected read {projected:?}, full read {full:?}"
+            );
         }
-        assert!(
-            bytes_read[1] < bytes_read[0],
-            "projected read {} bytes, full read {} bytes",
-            bytes_read[1],
-            bytes_read[0]
-        );
     }
 
     #[tokio::test]

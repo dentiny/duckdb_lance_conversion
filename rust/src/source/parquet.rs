@@ -4,6 +4,7 @@ use arrow_schema::SchemaRef;
 use futures::{stream, StreamExt, TryStreamExt};
 use parquet::arrow::async_reader::{ParquetRecordBatchStream, ParquetRecordBatchStreamBuilder};
 use parquet::arrow::ProjectionMask;
+use parquet::file::metadata::ParquetMetaData;
 use parquet::schema::types::SchemaDescriptor;
 
 use super::parquet_metadata::{load_parquet_metadata, OpendalParquetReader};
@@ -63,21 +64,48 @@ impl ColumnProjection {
     }
 }
 
+/// Returns the column chunk bytes that `mask` selects and the column chunk
+/// bytes of the whole file.
+fn column_chunk_bytes(metadata: &ParquetMetaData, mask: &ProjectionMask) -> (u64, u64) {
+    let mut selected = 0_u64;
+    let mut all = 0_u64;
+    for row_group in metadata.row_groups() {
+        for (leaf, column) in row_group.columns().iter().enumerate() {
+            let (_, length) = column.byte_range();
+            all = all.saturating_add(length);
+            if mask.leaf_included(leaf) {
+                selected = selected.saturating_add(length);
+            }
+        }
+    }
+    (selected, all)
+}
+
+/// When `estimate_total_bytes` is set, the projected share of this file's
+/// column chunk bytes scales the expected total for progress reporting.
 async fn open_parquet(
     operator: opendal::Operator,
     path: String,
     batch_size: usize,
     projection: Option<&ColumnProjection>,
+    estimate_total_bytes: bool,
     metrics: Arc<ReadMetrics>,
 ) -> Result<ParquetRecordBatchStream<OpendalParquetReader>> {
-    let builder =
-        ParquetRecordBatchStreamBuilder::new(OpendalParquetReader::new(operator, path, metrics))
-            .await?
-            .with_batch_size(batch_size);
+    let builder = ParquetRecordBatchStreamBuilder::new(OpendalParquetReader::new(
+        operator,
+        path,
+        metrics.clone(),
+    ))
+    .await?
+    .with_batch_size(batch_size);
     let builder = match projection {
         Some(projection) => {
             let mask =
                 projection.mask(builder.parquet_schema(), builder.schema().fields().len())?;
+            if estimate_total_bytes {
+                let (selected, all) = column_chunk_bytes(builder.metadata(), &mask);
+                metrics.scale_total_bytes(selected, all);
+            }
             builder.with_projection(mask)
         }
         None => builder,
@@ -96,11 +124,14 @@ async fn open_parquet_in_order(
     let first_path = paths
         .next()
         .ok_or_else(|| Error::message("Parquet source contains no .parquet files"))?;
+    // Later footers are not loaded yet, so the first file's projected share
+    // estimates every file's.
     let reader = open_parquet(
         operator.clone(),
         first_path,
         batch_size,
         projection.as_ref(),
+        /*estimate_total_bytes=*/ true,
         metrics.clone(),
     )
     .await?;
@@ -117,6 +148,7 @@ async fn open_parquet_in_order(
                 path.clone(),
                 batch_size,
                 projection.as_ref(),
+                /*estimate_total_bytes=*/ false,
                 metrics,
             )
             .await?;
@@ -157,6 +189,8 @@ async fn open_parquet_row_groups(
     )
     .await?;
     let mut row_groups = Vec::new();
+    let mut selected_bytes = 0_u64;
+    let mut all_bytes = 0_u64;
     for file in files {
         let mask = projection
             .as_ref()
@@ -164,6 +198,11 @@ async fn open_parquet_row_groups(
                 projection.mask(file.metadata.parquet_schema(), schema.fields().len())
             })
             .transpose()?;
+        if let Some(mask) = &mask {
+            let (selected, all) = column_chunk_bytes(file.metadata.metadata(), mask);
+            selected_bytes = selected_bytes.saturating_add(selected);
+            all_bytes = all_bytes.saturating_add(all);
+        }
         for index in 0..file.metadata.metadata().num_row_groups() {
             row_groups.push((
                 file.path.clone(),
@@ -173,6 +212,7 @@ async fn open_parquet_row_groups(
             ));
         }
     }
+    metrics.scale_total_bytes(selected_bytes, all_bytes);
     let schema = match &projection {
         Some(projection) => Arc::new(schema.project(&projection.roots)?),
         None => schema,
