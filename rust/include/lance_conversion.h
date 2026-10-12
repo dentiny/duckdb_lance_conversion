@@ -9,8 +9,7 @@ struct ArrowArrayStream;
 struct LanceConversionDataset;
 struct LanceConversionWriter;
 struct HuggingFaceStreamFactory;
-struct WarcStreamFactory;
-struct AtifStreamFactory;
+struct SourceStreamFactory;
 
 struct LanceS3Config {
 	const char *endpoint = NULL;
@@ -129,25 +128,19 @@ char *lance_huggingface_get_stream(struct HuggingFaceStreamFactory *factory, con
 void lance_huggingface_get_metrics(const struct HuggingFaceStreamFactory *factory, struct LanceReadMetrics *output);
 void lance_huggingface_destroy(struct HuggingFaceStreamFactory *factory);
 
-// Warc related functions.
+// Fixed-schema file sources (WARC, ATIF), reopened for each scan.
 char *lance_warc_open(const char *path, const char *index_path, const struct LanceS3Config *s3,
                       const struct LanceOpendalConfig *opendal_config, uint64_t max_read_parallelism,
-                      struct WarcStreamFactory **output);
-char *lance_warc_get_schema(const struct WarcStreamFactory *factory, struct ArrowSchema *output);
-char *lance_warc_get_stream(const struct WarcStreamFactory *factory, const char *const *columns, size_t column_count,
-                            struct ArrowArrayStream *output);
-void lance_warc_get_metrics(const struct WarcStreamFactory *factory, struct LanceReadMetrics *output);
-void lance_warc_destroy(struct WarcStreamFactory *factory);
-
-// ATIF related functions.
+                      struct SourceStreamFactory **output);
 // format is "json" or "jsonl"; NULL or empty infers it from the path extension.
 char *lance_atif_open(const char *path, const char *format, const struct LanceS3Config *s3,
-                      const struct LanceOpendalConfig *opendal_config, struct AtifStreamFactory **output);
-char *lance_atif_get_schema(const struct AtifStreamFactory *factory, struct ArrowSchema *output);
-char *lance_atif_get_stream(const struct AtifStreamFactory *factory, const char *const *columns, size_t column_count,
-                            struct ArrowArrayStream *output);
-void lance_atif_get_metrics(const struct AtifStreamFactory *factory, struct LanceReadMetrics *output);
-void lance_atif_destroy(struct AtifStreamFactory *factory);
+                      const struct LanceOpendalConfig *opendal_config, struct SourceStreamFactory **output);
+char *lance_source_get_schema(const struct SourceStreamFactory *factory, struct ArrowSchema *output);
+// columns lists the projected column names in output order; column_count 0 reads every column.
+char *lance_source_get_stream(const struct SourceStreamFactory *factory, const char *const *columns,
+                              size_t column_count, struct ArrowArrayStream *output);
+void lance_source_get_metrics(const struct SourceStreamFactory *factory, struct LanceReadMetrics *output);
+void lance_source_destroy(struct SourceStreamFactory *factory);
 
 #ifdef __cplusplus
 }

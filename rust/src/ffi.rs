@@ -149,53 +149,29 @@ impl HuggingFaceStreamFactory {
     }
 }
 
-pub struct WarcStreamFactory {
-    path: String,
-    index_path: Option<String>,
-    s3_config: Option<S3StorageConfig>,
-    max_read_parallelism: usize,
-    opendal_config: OpendalConfig,
+type OpenSource =
+    Box<dyn Fn(Vec<usize>, Arc<ReadMetrics>) -> Result<ArrowBatchReader> + Send + Sync>;
+
+/// A fixed-schema source that each DuckDB scan reopens with its own
+/// projection. Metrics accumulate across scans.
+pub struct SourceStreamFactory {
+    schema: SchemaRef,
     metrics: Arc<ReadMetrics>,
+    open: OpenSource,
 }
 
-impl WarcStreamFactory {
-    fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
-        let mut source = WarcSource::new(&self.path)
-            .with_projection(projection)
-            .with_max_read_parallelism(self.max_read_parallelism)
-            .with_opendal_config(self.opendal_config)
-            .with_metrics(self.metrics.clone());
-        if let Some(index_path) = &self.index_path {
-            source = source.with_index_path(index_path);
+impl SourceStreamFactory {
+    fn new<S: BatchSource + 'static>(
+        schema: SchemaRef,
+        source: impl Fn(Vec<usize>, Arc<ReadMetrics>) -> S + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            schema,
+            metrics: Arc::new(ReadMetrics::default()),
+            open: Box::new(move |projection, metrics| {
+                open_batch_reader(source(projection, metrics))
+            }),
         }
-        if let Some(config) = &self.s3_config {
-            source = source.with_s3_config(config.clone());
-        }
-        open_batch_reader(source)
-    }
-}
-
-pub struct AtifStreamFactory {
-    path: String,
-    format: Option<String>,
-    s3_config: Option<S3StorageConfig>,
-    opendal_config: OpendalConfig,
-    metrics: Arc<ReadMetrics>,
-}
-
-impl AtifStreamFactory {
-    fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
-        let mut source = AtifSource::new(&self.path)
-            .with_projection(projection)
-            .with_opendal_config(self.opendal_config)
-            .with_metrics(self.metrics.clone());
-        if let Some(format) = &self.format {
-            source = source.with_format(format);
-        }
-        if let Some(config) = &self.s3_config {
-            source = source.with_s3_config(config.clone());
-        }
-        open_batch_reader(source)
     }
 }
 
@@ -661,7 +637,7 @@ pub unsafe extern "C" fn lance_warc_open(
     s3: *const LanceS3Config,
     opendal_config: *const OpendalConfig,
     max_read_parallelism: u64,
-    output: *mut *mut WarcStreamFactory,
+    output: *mut *mut SourceStreamFactory,
 ) -> *mut c_char {
     call(|| {
         if path.is_null() || output.is_null() {
@@ -675,76 +651,25 @@ pub unsafe extern "C" fn lance_warc_open(
         if max_read_parallelism == 0 {
             return Err(Error::message("max_read_parallelism must be positive"));
         }
-        let metrics = Arc::new(ReadMetrics::default());
-        *output = Box::into_raw(Box::new(WarcStreamFactory {
-            path,
-            index_path,
-            s3_config: s3_config(s3)?,
-            opendal_config: parse_opendal_config(opendal_config)?,
-            max_read_parallelism,
-            metrics,
-        }));
+        let s3_config = s3_config(s3)?;
+        let opendal_config = parse_opendal_config(opendal_config)?;
+        let factory = SourceStreamFactory::new(warc_schema(), move |projection, metrics| {
+            let mut source = WarcSource::new(&path)
+                .with_projection(projection)
+                .with_max_read_parallelism(max_read_parallelism)
+                .with_opendal_config(opendal_config)
+                .with_metrics(metrics);
+            if let Some(index_path) = &index_path {
+                source = source.with_index_path(index_path);
+            }
+            if let Some(config) = &s3_config {
+                source = source.with_s3_config(config.clone());
+            }
+            source
+        });
+        *output = Box::into_raw(Box::new(factory));
         Ok(())
     })
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lance_warc_get_metrics(
-    factory: *const WarcStreamFactory,
-    output: *mut LanceReadMetrics,
-) {
-    if factory.is_null() || output.is_null() {
-        return;
-    }
-    let snapshot = (*factory).metrics.snapshot();
-    ptr::write(
-        output,
-        LanceReadMetrics {
-            bytes_read: snapshot.bytes_read,
-            total_bytes: snapshot.total_bytes,
-        },
-    );
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lance_warc_get_schema(
-    factory: *const WarcStreamFactory,
-    output: *mut FFI_ArrowSchema,
-) -> *mut c_char {
-    call(|| {
-        if factory.is_null() || output.is_null() {
-            return Err(Error::message("null WARC schema argument"));
-        }
-        ptr::write(output, FFI_ArrowSchema::try_from(warc_schema().as_ref())?);
-        Ok(())
-    })
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lance_warc_get_stream(
-    factory: *const WarcStreamFactory,
-    columns: *const *const c_char,
-    column_count: usize,
-    output: *mut FFI_ArrowArrayStream,
-) -> *mut c_char {
-    call(|| {
-        if factory.is_null() || output.is_null() {
-            return Err(Error::message("null WARC stream argument"));
-        }
-        let projection = projected_columns(&warc_schema(), columns, column_count, "WARC")?;
-        let reader = (&*factory).open_reader(projection)?;
-        ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
-        Ok(())
-    })
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lance_warc_destroy(factory: *mut WarcStreamFactory) {
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        if !factory.is_null() {
-            drop(Box::from_raw(factory));
-        }
-    }));
 }
 
 #[no_mangle]
@@ -753,7 +678,7 @@ pub unsafe extern "C" fn lance_atif_open(
     format: *const c_char,
     s3: *const LanceS3Config,
     opendal_config: *const OpendalConfig,
-    output: *mut *mut AtifStreamFactory,
+    output: *mut *mut SourceStreamFactory,
 ) -> *mut c_char {
     call(|| {
         if path.is_null() || output.is_null() {
@@ -762,20 +687,29 @@ pub unsafe extern "C" fn lance_atif_open(
         *output = ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?.to_owned();
         let format = optional_string(format)?;
-        *output = Box::into_raw(Box::new(AtifStreamFactory {
-            path,
-            format,
-            s3_config: s3_config(s3)?,
-            opendal_config: parse_opendal_config(opendal_config)?,
-            metrics: Arc::new(ReadMetrics::default()),
-        }));
+        let s3_config = s3_config(s3)?;
+        let opendal_config = parse_opendal_config(opendal_config)?;
+        let factory = SourceStreamFactory::new(atif_schema(), move |projection, metrics| {
+            let mut source = AtifSource::new(&path)
+                .with_projection(projection)
+                .with_opendal_config(opendal_config)
+                .with_metrics(metrics);
+            if let Some(format) = &format {
+                source = source.with_format(format);
+            }
+            if let Some(config) = &s3_config {
+                source = source.with_s3_config(config.clone());
+            }
+            source
+        });
+        *output = Box::into_raw(Box::new(factory));
         Ok(())
     })
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lance_atif_get_metrics(
-    factory: *const AtifStreamFactory,
+pub unsafe extern "C" fn lance_source_get_metrics(
+    factory: *const SourceStreamFactory,
     output: *mut LanceReadMetrics,
 ) {
     if factory.is_null() || output.is_null() {
@@ -792,39 +726,43 @@ pub unsafe extern "C" fn lance_atif_get_metrics(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lance_atif_get_schema(
-    factory: *const AtifStreamFactory,
+pub unsafe extern "C" fn lance_source_get_schema(
+    factory: *const SourceStreamFactory,
     output: *mut FFI_ArrowSchema,
 ) -> *mut c_char {
     call(|| {
         if factory.is_null() || output.is_null() {
-            return Err(Error::message("null ATIF schema argument"));
+            return Err(Error::message("null source schema argument"));
         }
-        ptr::write(output, FFI_ArrowSchema::try_from(atif_schema().as_ref())?);
+        ptr::write(
+            output,
+            FFI_ArrowSchema::try_from((*factory).schema.as_ref())?,
+        );
         Ok(())
     })
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lance_atif_get_stream(
-    factory: *const AtifStreamFactory,
+pub unsafe extern "C" fn lance_source_get_stream(
+    factory: *const SourceStreamFactory,
     columns: *const *const c_char,
     column_count: usize,
     output: *mut FFI_ArrowArrayStream,
 ) -> *mut c_char {
     call(|| {
         if factory.is_null() || output.is_null() {
-            return Err(Error::message("null ATIF stream argument"));
+            return Err(Error::message("null source stream argument"));
         }
-        let projection = projected_columns(&atif_schema(), columns, column_count, "ATIF")?;
-        let reader = (&*factory).open_reader(projection)?;
+        let factory = &*factory;
+        let projection = projected_columns(&factory.schema, columns, column_count, "source")?;
+        let reader = (factory.open)(projection, factory.metrics.clone())?;
         ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
         Ok(())
     })
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lance_atif_destroy(factory: *mut AtifStreamFactory) {
+pub unsafe extern "C" fn lance_source_destroy(factory: *mut SourceStreamFactory) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if !factory.is_null() {
             drop(Box::from_raw(factory));

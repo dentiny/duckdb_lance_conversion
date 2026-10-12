@@ -41,7 +41,7 @@ COPY (
 statement error
 SELECT * FROM read_atif('test/data/records.warc');
 ----
-cannot infer ATIF format
+unsupported ATIF format 'warc'
 
 statement error
 SELECT * FROM read_atif('test/data/trajectory.json', format = 'csv');

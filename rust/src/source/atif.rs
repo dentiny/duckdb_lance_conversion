@@ -11,36 +11,25 @@ use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 // Each row holds a whole trajectory, including its raw JSON, so batches are
 // bounded by row count much more tightly than for flat sources.
-const DEFAULT_BATCH_SIZE: usize = 256;
+const BATCH_SIZE: usize = 256;
 const READ_BUFFER_SIZE: usize = 1024 * 1024;
 
 pub fn atif_schema() -> SchemaRef {
     atif_arrow::trajectory_schema()
 }
 
-/// Infers the document layout from the file extension: `.json` holds one
-/// trajectory, and `.jsonl` or `.ndjson` holds one per line.
+/// `json` holds one trajectory and `jsonl` or `ndjson` one per line. Without
+/// an explicit format, the file extension decides.
 fn input_format(path: &str, format: Option<&str>) -> Result<InputFormat> {
-    let format = match format {
-        Some(format) => format.to_ascii_lowercase(),
-        None => {
-            let path = path.to_ascii_lowercase();
-            if path.ends_with(".jsonl") || path.ends_with(".ndjson") {
-                "jsonl".to_owned()
-            } else if path.ends_with(".json") {
-                "json".to_owned()
-            } else {
-                return Err(Error::message(format!(
-                    "cannot infer ATIF format from '{path}'; set format to 'json' or 'jsonl'"
-                )));
-            }
-        }
-    };
+    let format = format
+        .or_else(|| std::path::Path::new(path).extension()?.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     match format.as_str() {
         "json" => Ok(InputFormat::Json),
         "jsonl" | "ndjson" => Ok(InputFormat::JsonLines),
         _ => Err(Error::message(format!(
-            "unsupported ATIF format '{format}'; expected 'json' or 'jsonl'"
+            "unsupported ATIF format '{format}' for '{path}'; set format to 'json' or 'jsonl'"
         ))),
     }
 }
@@ -48,7 +37,6 @@ fn input_format(path: &str, format: Option<&str>) -> Result<InputFormat> {
 pub struct AtifSource {
     path: String,
     format: Option<String>,
-    batch_size: usize,
     s3_config: Option<S3StorageConfig>,
     opendal_config: OpendalConfig,
     projection: Option<Vec<usize>>,
@@ -60,7 +48,6 @@ impl AtifSource {
         Self {
             path: path.into(),
             format: None,
-            batch_size: DEFAULT_BATCH_SIZE,
             s3_config: None,
             opendal_config: OpendalConfig::default(),
             projection: None,
@@ -71,11 +58,6 @@ impl AtifSource {
     /// `json` or `jsonl`; inferred from the file extension when unset.
     pub fn with_format(mut self, format: impl Into<String>) -> Self {
         self.format = Some(format.into());
-        self
-    }
-
-    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
-        self.batch_size = batch_size;
         self
     }
 
@@ -130,7 +112,7 @@ impl BatchSource for AtifSource {
             .await?;
         let reader =
             BufReader::with_capacity(READ_BUFFER_SIZE, MetricsReader::new(reader, self.metrics));
-        let reader = TrajectoryReader::new(reader, format, self.batch_size, Some(source_uri))
+        let reader = TrajectoryReader::new(reader, format, BATCH_SIZE, Some(source_uri))
             .map_err(|error| Error::message(format!("ATIF reader: {error}")))?;
         // The ATIF converter always produces every column; projection only
         // trims the batches DuckDB receives.
@@ -176,14 +158,15 @@ mod tests {
             input_format("a/trajectories.txt", Some("ndjson")).unwrap(),
             InputFormat::JsonLines
         ));
-        assert!(input_format("a/trajectories.txt", None)
-            .unwrap_err()
-            .to_string()
-            .contains("cannot infer ATIF format"));
-        assert!(input_format("a/trajectory.json", Some("csv"))
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported ATIF format"));
+        for (path, format) in [
+            ("a/trajectories.txt", None),
+            ("a/trajectory.json", Some("csv")),
+        ] {
+            assert!(input_format(path, format)
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported ATIF format"));
+        }
     }
 
     #[tokio::test]
@@ -201,7 +184,6 @@ mod tests {
         let metrics = Arc::new(ReadMetrics::default());
         let (schema, stream) = AtifSource::new(path.to_string_lossy())
             .with_projection(projection)
-            .with_batch_size(1)
             .with_metrics(metrics.clone())
             .open()
             .await
@@ -209,13 +191,10 @@ mod tests {
         assert_eq!(schema.field(0).name(), "source_record_index");
         assert_eq!(schema.field(1).name(), "source_uri");
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
-        assert_eq!(batches.len(), 2);
+        assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].schema(), schema);
-        let indices = batches
-            .iter()
-            .map(|batch| column::<UInt64Array>(batch, "source_record_index").value(0))
-            .collect::<Vec<_>>();
-        assert_eq!(indices, [1, 2]);
+        let indices = column::<UInt64Array>(&batches[0], "source_record_index");
+        assert_eq!(indices.values(), &[1, 2]);
         let source_uri = column::<StringArray>(&batches[0], "source_uri").value(0);
         assert!(std::path::Path::new(source_uri).is_absolute());
         assert!(source_uri.ends_with("trajectories.jsonl"));
