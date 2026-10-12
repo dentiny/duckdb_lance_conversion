@@ -1,15 +1,13 @@
 use std::io::{BufRead, BufReader, Cursor};
 use std::ops::Range;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use flate2::read::MultiGzDecoder;
 use futures::{stream, StreamExt, TryStreamExt};
 use serde_json::Value;
 
-use super::warc::stream_records;
+use super::warc::{spawn_records, warc_input};
 use super::{BatchStream, ReadMetrics};
 use crate::storage::OpendalStorage;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
@@ -135,39 +133,6 @@ fn build_index_work_units(
     Ok(units)
 }
 
-fn parse_indexed_warc_bytes(
-    bytes: bytes::Bytes,
-    gzipped: bool,
-    batch_size: usize,
-    projection: Vec<usize>,
-    schema: SchemaRef,
-) -> Result<Vec<RecordBatch>> {
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let reader: Box<dyn BufRead> = if gzipped {
-            Box::new(BufReader::new(MultiGzDecoder::new(Cursor::new(bytes))))
-        } else {
-            Box::new(BufReader::new(Cursor::new(bytes)))
-        };
-        let mut batches = Vec::new();
-        stream_records(reader, batch_size, projection, schema, |batch| {
-            batches.push(batch.finish()?);
-            Ok(true)
-        })?;
-        Ok(batches)
-    }));
-    match result {
-        Ok(result) => result,
-        Err(payload) => {
-            let message = payload
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("unknown panic");
-            Err(Error::message(format!("panic in WARC parser: {message}")))
-        }
-    }
-}
-
 /// Opens a WARC file through an external JSON or CDXJ index.
 ///
 /// The index is loaded from `index_path`, optionally decompressed when its
@@ -229,17 +194,11 @@ pub(super) async fn open_indexed_warc(
             async move {
                 let bytes = operator.read_with(&path).range(range).await?.to_bytes();
                 metrics.add_bytes_read(bytes.len());
-                tokio::task::spawn_blocking(move || {
-                    parse_indexed_warc_bytes(bytes, gzipped, batch_size, projection, schema)
-                })
-                .await
-                .map_err(|error| {
-                    Error::message(format!("indexed WARC parser task failed: {error}"))
-                })?
+                let input = warc_input(futures::io::Cursor::new(bytes), gzipped);
+                Ok::<_, Error>(spawn_records(input, batch_size, projection, schema))
             }
         })
         .buffered(parallelism)
-        .map_ok(|batches| stream::iter(batches.into_iter().map(Ok::<_, Error>)))
         .try_flatten();
     Ok((schema, Box::pin(batches)))
 }
