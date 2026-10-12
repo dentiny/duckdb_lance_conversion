@@ -277,7 +277,7 @@ mod tests {
             "a second batch must wait while the first fills the budget"
         );
         drop(first);
-        second.await;
+        let _second = second.await;
     }
 
     #[tokio::test]

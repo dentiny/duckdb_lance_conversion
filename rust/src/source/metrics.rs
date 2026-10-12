@@ -5,7 +5,7 @@ use std::sync::{
 };
 use std::task::{Context, Poll};
 
-use tokio::io::{AsyncRead, ReadBuf};
+use futures::io::AsyncRead;
 
 #[derive(Debug, Default)]
 pub(crate) struct ReadMetrics {
@@ -52,13 +52,11 @@ impl<R: AsyncRead + Unpin> AsyncRead for MetricsReader<R> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let filled = buffer.filled().len();
+        buffer: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         let result = Pin::new(&mut self.inner).poll_read(context, buffer);
-        if let Poll::Ready(Ok(())) = &result {
-            self.metrics
-                .add_bytes_read(buffer.filled().len().saturating_sub(filled));
+        if let Poll::Ready(Ok(bytes)) = &result {
+            self.metrics.add_bytes_read(*bytes);
         }
         result
     }

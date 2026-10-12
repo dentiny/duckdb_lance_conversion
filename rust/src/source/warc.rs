@@ -1,5 +1,3 @@
-use std::io::{BufRead, BufReader, Read};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, LazyLock};
 
 use arrow_array::{
@@ -7,12 +5,11 @@ use arrow_array::{
     ArrayRef, RecordBatch,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use flate2::read::MultiGzDecoder;
-use futures::stream;
+use futures::io::{AsyncBufRead, BufReader};
+use futures::{future, stream, StreamExt};
 use tokio::sync::mpsc;
-use tokio_util::compat::FuturesAsyncReadCompatExt;
-use tokio_util::io::SyncIoBridge;
-use warc::{Record, StreamingBody, WarcHeader, WarcReader};
+use tokio_util::task::AbortOnDropHandle;
+use warc_rs::{GzipReader, Record, StreamingBody, WarcHeader, WarcReader};
 
 use super::warc_index::open_indexed_warc;
 use super::{BatchSource, BatchStream, MetricsReader, ReadMetrics, SourceReadOptions};
@@ -26,6 +23,10 @@ const MAX_BATCH_BODY_BYTES: usize = 16 * 1024 * 1024;
 const CHANNEL_CAPACITY: usize = 1;
 const READ_BUFFER_SIZE: usize = 1024 * 1024;
 const BODY_COLUMN_INDEX: usize = 19;
+
+/// Decompressed WARC bytes ready for record parsing.
+pub(super) type WarcInput = Box<dyn AsyncBufRead + Unpin + Send>;
+type WarcRecord<'r> = Record<StreamingBody<'r, WarcInput>>;
 
 static WARC_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     Arc::new(Schema::new(vec![
@@ -70,10 +71,7 @@ fn optional_u64(value: Option<String>, name: &str) -> Result<Option<u64>> {
         .transpose()
 }
 
-fn optional_header<R: Read>(
-    record: &Record<StreamingBody<'_, R>>,
-    header: WarcHeader,
-) -> Option<String> {
+fn optional_header(record: &WarcRecord<'_>, header: WarcHeader) -> Option<String> {
     record.header(header).map(|value| value.into_owned())
 }
 
@@ -219,68 +217,70 @@ impl BatchSource for WarcSource {
             .reader(&path)
             .await?
             .into_futures_async_read(..)
-            .await?
-            .compat();
-        let reader = MetricsReader::new(reader, self.metrics);
-        let runtime = tokio::runtime::Handle::current();
-        let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
-        let batch_size = self.batch_size;
-        let stream_projection = projection;
-        let stream_schema = schema.clone();
-        tokio::task::spawn_blocking(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                // `warc` parses `BufRead`; OpenDAL I/O remains async through this bridge.
-                let reader = SyncIoBridge::new_with_handle(reader, runtime);
-                let reader: Box<dyn BufRead> = if gzipped {
-                    let reader = BufReader::with_capacity(READ_BUFFER_SIZE, reader);
-                    Box::new(BufReader::new(MultiGzDecoder::new(reader)))
-                } else {
-                    Box::new(BufReader::with_capacity(READ_BUFFER_SIZE, reader))
-                };
-                stream_records(
-                    reader,
-                    batch_size,
-                    stream_projection,
-                    stream_schema,
-                    |batch| send_batch(batch, &sender),
-                )
-            }));
-            let error = match result {
-                Ok(Ok(())) => return,
-                Ok(Err(error)) => error,
-                Err(payload) => {
-                    let message = payload
-                        .downcast_ref::<&str>()
-                        .copied()
-                        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                        .unwrap_or("unknown panic");
-                    Error::message(format!("panic in WARC parser: {message}"))
-                }
-            };
-            if !sender.is_closed() {
-                let _ = sender.blocking_send(Err(error));
-            }
-        });
-
-        let batches = stream::unfold(receiver, |mut receiver| async {
-            receiver.recv().await.map(|batch| (batch, receiver))
-        });
-        Ok((schema, Box::pin(batches)))
+            .await?;
+        let reader = BufReader::with_capacity(
+            READ_BUFFER_SIZE,
+            MetricsReader::new(reader, self.metrics),
+        );
+        let batches = spawn_records(
+            warc_input(reader, gzipped),
+            self.batch_size,
+            projection,
+            schema.clone(),
+        );
+        Ok((schema, batches))
     }
 }
 
-pub(super) fn stream_records(
-    reader: Box<dyn BufRead>,
+pub(super) fn warc_input(
+    reader: impl AsyncBufRead + Unpin + Send + 'static,
+    gzipped: bool,
+) -> WarcInput {
+    if gzipped {
+        Box::new(GzipReader::new(reader))
+    } else {
+        Box::new(reader)
+    }
+}
+
+/// Parses `input` in its own runtime task, so parsing and decompression
+/// continue while the consumer is busy. Dropping the returned stream aborts
+/// the task, and a panic surfaces as an error rather than truncated output.
+pub(super) fn spawn_records(
+    input: WarcInput,
     batch_size: usize,
     projection: Vec<usize>,
     schema: SchemaRef,
-    mut emit: impl FnMut(WarcBatchBuilder) -> Result<bool>,
+) -> BatchStream {
+    let (sender, mut receiver) = mpsc::channel(CHANNEL_CAPACITY);
+    let task = AbortOnDropHandle::new(tokio::spawn(async move {
+        if let Err(error) = stream_records(input, batch_size, projection, schema, &sender).await {
+            let _ = sender.send(Err(error)).await;
+        }
+    }));
+    let batches = stream::poll_fn(move |cx| receiver.poll_recv(cx));
+    let completion = stream::once(task).filter_map(|result| {
+        future::ready(
+            result
+                .err()
+                .map(|error| Err(Error::message(format!("panic in WARC parser: {error}")))),
+        )
+    });
+    Box::pin(batches.chain(completion))
+}
+
+async fn stream_records(
+    input: WarcInput,
+    batch_size: usize,
+    projection: Vec<usize>,
+    schema: SchemaRef,
+    sender: &mpsc::Sender<Result<RecordBatch>>,
 ) -> Result<()> {
     let include_body = projection.contains(&BODY_COLUMN_INDEX);
-    let mut reader = WarcReader::new(reader);
+    let mut reader = WarcReader::new(input);
     let mut batch = WarcBatchBuilder::new(batch_size, projection, schema)?;
-    let mut stream = reader.stream_records();
-    while let Some(record) = stream.next_item() {
+    let mut records = reader.stream_records();
+    while let Some(record) = records.next_item().await {
         let record =
             record.map_err(|error| Error::message(format!("WARC parse error: {error}")))?;
         let body_len = if include_body {
@@ -293,7 +293,7 @@ pub(super) fn stream_records(
         };
         if !batch.is_empty()
             && batch.would_exceed_body_limit(body_len)
-            && !emit(batch.take_empty(batch_size)?)?
+            && !send_batch(batch.take_empty(batch_size)?, sender).await?
         {
             return Ok(());
         }
@@ -301,6 +301,7 @@ pub(super) fn stream_records(
         if include_body {
             let body = record
                 .into_buffered()
+                .await
                 .map_err(|error| Error::message(format!("WARC body error: {error}")))?
                 .into_raw_parts()
                 .1;
@@ -308,19 +309,23 @@ pub(super) fn stream_records(
         }
         batch.finish_row();
         if (batch.len() == batch_size || batch.body_bytes() >= MAX_BATCH_BODY_BYTES)
-            && !emit(batch.take_empty(batch_size)?)?
+            && !send_batch(batch.take_empty(batch_size)?, sender).await?
         {
             return Ok(());
         }
     }
     if !batch.is_empty() {
-        emit(batch)?;
+        send_batch(batch, sender).await?;
     }
     Ok(())
 }
 
-fn send_batch(batch: WarcBatchBuilder, sender: &mpsc::Sender<Result<RecordBatch>>) -> Result<bool> {
-    Ok(sender.blocking_send(Ok(batch.finish()?)).is_ok())
+/// Returns `false` once the consumer has dropped the stream.
+async fn send_batch(
+    batch: WarcBatchBuilder,
+    sender: &mpsc::Sender<Result<RecordBatch>>,
+) -> Result<bool> {
+    Ok(sender.send(Ok(batch.finish()?)).await.is_ok())
 }
 
 enum ProjectedColumnBuilder {
@@ -410,7 +415,7 @@ impl WarcBatchBuilder {
         Ok(std::mem::replace(self, replacement))
     }
 
-    fn append_metadata<R: Read>(&mut self, record: &Record<StreamingBody<'_, R>>) -> Result<()> {
+    fn append_metadata(&mut self, record: &WarcRecord<'_>) -> Result<()> {
         for (&index, builder) in self.projection.iter().zip(self.columns.iter_mut()) {
             match (index, builder) {
                 (0, ProjectedColumnBuilder::Utf8(builder)) => {
@@ -667,7 +672,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reports_parser_panics_as_stream_errors() {
+    async fn reads_invalid_utf8_headers_lossily() {
         let temp = test_directory().await;
         let path = temp.join("invalid-header.warc");
         let mut input = b"WARC/1.0\r\n\
@@ -686,31 +691,19 @@ mod tests {
         tokio::fs::write(&path, input).await.unwrap();
 
         let (_, stream) = WarcSource::new(path.to_string_lossy())
-            .with_projection(vec![0])
             .open()
             .await
             .unwrap();
-        assert_eq!(
-            stream
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap()
-                .iter()
-                .map(RecordBatch::num_rows)
-                .sum::<usize>(),
-            1
-        );
-
-        let (_, mut stream) = WarcSource::new(path.to_string_lossy())
-            .open()
-            .await
-            .unwrap();
-        assert!(stream
-            .try_next()
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("panic in WARC parser"));
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(batches.len(), 1);
+        let content_type = batches[0]
+            .column_by_name("content_type")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(content_type, "\u{FFFD}");
         tokio::fs::remove_dir_all(temp).await.unwrap();
     }
 }
