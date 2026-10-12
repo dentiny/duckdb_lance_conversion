@@ -2,18 +2,15 @@ use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
 use atif_io::{InputFormat, TrajectoryReader};
-use futures::io::BufReader;
 use futures::{StreamExt, TryStreamExt};
 
-use super::{BatchSource, BatchStream, MetricsReader, ReadMetrics};
+use super::{read_object, BatchSource, BatchStream, ReadMetrics};
 use crate::storage::OpendalStorage;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 // Each row holds a whole trajectory, including its raw JSON, so batches are
 // bounded by row count much more tightly than for flat sources.
 const BATCH_SIZE: usize = 256;
-const READ_BUFFER_SIZE: usize = 1024 * 1024;
-
 pub fn atif_schema() -> SchemaRef {
     atif_arrow::trajectory_schema()
 }
@@ -102,16 +99,7 @@ impl BatchSource for AtifSource {
             Ok(local_path) => local_path.display().to_string(),
             Err(()) => storage.location.to_string(),
         };
-        let metadata = storage.operator.stat(&path).await?;
-        self.metrics.set_total_bytes(metadata.content_length());
-        let reader = storage
-            .operator
-            .reader(&path)
-            .await?
-            .into_futures_async_read(..)
-            .await?;
-        let reader =
-            BufReader::with_capacity(READ_BUFFER_SIZE, MetricsReader::new(reader, self.metrics));
+        let reader = read_object(&storage.operator, &path, self.metrics).await?;
         let reader = TrajectoryReader::new(reader, format, BATCH_SIZE, Some(source_uri))
             .map_err(|error| Error::message(format!("ATIF reader: {error}")))?;
         // The ATIF converter always produces every column; projection only

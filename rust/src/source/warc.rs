@@ -5,14 +5,14 @@ use arrow_array::{
     ArrayRef, RecordBatch,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use futures::io::{AsyncBufRead, BufReader};
+use futures::io::AsyncBufRead;
 use futures::{future, stream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 use warc_rs::{GzipReader, Record, StreamingBody, WarcHeader, WarcReader};
 
 use super::warc_index::open_indexed_warc;
-use super::{BatchSource, BatchStream, MetricsReader, ReadMetrics, SourceReadOptions};
+use super::{read_object, BatchSource, BatchStream, ReadMetrics, SourceReadOptions};
 use crate::storage::OpendalStorage;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
@@ -21,7 +21,6 @@ const DEFAULT_BATCH_SIZE: usize = 8192;
 // encodes it, so body bytes dominate peak memory much more than row count.
 const MAX_BATCH_BODY_BYTES: usize = 16 * 1024 * 1024;
 const CHANNEL_CAPACITY: usize = 1;
-const READ_BUFFER_SIZE: usize = 1024 * 1024;
 const BODY_COLUMN_INDEX: usize = 19;
 
 /// Decompressed WARC bytes ready for record parsing.
@@ -210,16 +209,7 @@ impl BatchSource for WarcSource {
             )
             .await;
         }
-        let metadata = storage.operator.stat(&path).await?;
-        self.metrics.set_total_bytes(metadata.content_length());
-        let reader = storage
-            .operator
-            .reader(&path)
-            .await?
-            .into_futures_async_read(..)
-            .await?;
-        let reader =
-            BufReader::with_capacity(READ_BUFFER_SIZE, MetricsReader::new(reader, self.metrics));
+        let reader = read_object(&storage.operator, &path, self.metrics).await?;
         let batches = spawn_records(
             warc_input(reader, gzipped),
             self.batch_size,
