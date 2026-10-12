@@ -22,6 +22,7 @@ format or data source that DuckDB can query, including:
 - S3-compatible object storage through DuckDB filesystem extensions
 - Hugging Face Parquet datasets through `read_huggingface`
 - Local and S3 WARC/WARC.GZ files through `read_warc`
+- Local and S3 ATIF agent trajectory JSON/JSONL files through `read_atif`
 
 The Lance sink supports local and S3-compatible destinations, Create/Append/
 Overwrite modes, Blob v2 storage policies, target file sizing, and scalar,
@@ -202,6 +203,26 @@ COPY (
 )
 TO 's3://bucket/datasets/archive.lance' (FORMAT LANCE);
 ```
+
+`read_atif` reads [ATIF](https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md)
+v1.0–v1.8 agent trajectories through
+[atif-arrow](https://github.com/dentiny/atif-arrow). Each trajectory becomes
+one row with a fixed schema: `agent` is a struct, `steps` is a list of structs,
+dynamic JSON values are JSON text, and `raw_json` keeps the original document.
+`source_uri` and `source_record_index` record where each row came from.
+`format` is `json` for one document per file or `jsonl` for one per line; when
+omitted, it is inferred from a `.json`, `.jsonl`, or `.ndjson` extension.
+Local and `s3://` paths are supported:
+
+```sql
+COPY (
+    SELECT trajectory_id, agent, steps, final_metrics
+    FROM read_atif('s3://bucket/runs/trajectories.jsonl')
+)
+TO 'trajectories.lance' (FORMAT LANCE);
+```
+
+Invalid trajectories fail the scan with the source and one-based record index.
 
 ### Profiling
 

@@ -10,6 +10,7 @@ struct LanceConversionDataset;
 struct LanceConversionWriter;
 struct HuggingFaceStreamFactory;
 struct WarcStreamFactory;
+struct AtifStreamFactory;
 
 struct LanceS3Config {
 	const char *endpoint = NULL;
@@ -137,6 +138,16 @@ char *lance_warc_get_stream(const struct WarcStreamFactory *factory, const char 
                             struct ArrowArrayStream *output);
 void lance_warc_get_metrics(const struct WarcStreamFactory *factory, struct LanceReadMetrics *output);
 void lance_warc_destroy(struct WarcStreamFactory *factory);
+
+// ATIF related functions.
+// format is "json" or "jsonl"; NULL or empty infers it from the path extension.
+char *lance_atif_open(const char *path, const char *format, const struct LanceS3Config *s3,
+                      const struct LanceOpendalConfig *opendal_config, struct AtifStreamFactory **output);
+char *lance_atif_get_schema(const struct AtifStreamFactory *factory, struct ArrowSchema *output);
+char *lance_atif_get_stream(const struct AtifStreamFactory *factory, const char *const *columns, size_t column_count,
+                            struct ArrowArrayStream *output);
+void lance_atif_get_metrics(const struct AtifStreamFactory *factory, struct LanceReadMetrics *output);
+void lance_atif_destroy(struct AtifStreamFactory *factory);
 
 #ifdef __cplusplus
 }

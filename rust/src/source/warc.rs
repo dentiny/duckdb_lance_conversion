@@ -218,10 +218,8 @@ impl BatchSource for WarcSource {
             .await?
             .into_futures_async_read(..)
             .await?;
-        let reader = BufReader::with_capacity(
-            READ_BUFFER_SIZE,
-            MetricsReader::new(reader, self.metrics),
-        );
+        let reader =
+            BufReader::with_capacity(READ_BUFFER_SIZE, MetricsReader::new(reader, self.metrics));
         let batches = spawn_records(
             warc_input(reader, gzipped),
             self.batch_size,

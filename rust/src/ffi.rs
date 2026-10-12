@@ -13,9 +13,9 @@ use futures::TryStreamExt;
 
 use crate::source::ReadMetrics;
 use crate::{
-    warc_schema, BatchSource, BatchStream, Error, HuggingFaceSource, LanceDatasetWriter,
-    LanceFragmentWriter, OpendalConfig, Result, S3StorageConfig, WarcSource, WriteMode,
-    WriteOptions, WriteSummary,
+    atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, Error, HuggingFaceSource,
+    LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result, S3StorageConfig, WarcSource,
+    WriteMode, WriteOptions, WriteSummary,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -167,6 +167,30 @@ impl WarcStreamFactory {
             .with_metrics(self.metrics.clone());
         if let Some(index_path) = &self.index_path {
             source = source.with_index_path(index_path);
+        }
+        if let Some(config) = &self.s3_config {
+            source = source.with_s3_config(config.clone());
+        }
+        open_batch_reader(source)
+    }
+}
+
+pub struct AtifStreamFactory {
+    path: String,
+    format: Option<String>,
+    s3_config: Option<S3StorageConfig>,
+    opendal_config: OpendalConfig,
+    metrics: Arc<ReadMetrics>,
+}
+
+impl AtifStreamFactory {
+    fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
+        let mut source = AtifSource::new(&self.path)
+            .with_projection(projection)
+            .with_opendal_config(self.opendal_config)
+            .with_metrics(self.metrics.clone());
+        if let Some(format) = &self.format {
+            source = source.with_format(format);
         }
         if let Some(config) = &self.s3_config {
             source = source.with_s3_config(config.clone());
@@ -716,6 +740,91 @@ pub unsafe extern "C" fn lance_warc_get_stream(
 
 #[no_mangle]
 pub unsafe extern "C" fn lance_warc_destroy(factory: *mut WarcStreamFactory) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !factory.is_null() {
+            drop(Box::from_raw(factory));
+        }
+    }));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_atif_open(
+    path: *const c_char,
+    format: *const c_char,
+    s3: *const LanceS3Config,
+    opendal_config: *const OpendalConfig,
+    output: *mut *mut AtifStreamFactory,
+) -> *mut c_char {
+    call(|| {
+        if path.is_null() || output.is_null() {
+            return Err(Error::message("null ATIF reader argument"));
+        }
+        *output = ptr::null_mut();
+        let path = CStr::from_ptr(path).to_str()?.to_owned();
+        let format = optional_string(format)?;
+        *output = Box::into_raw(Box::new(AtifStreamFactory {
+            path,
+            format,
+            s3_config: s3_config(s3)?,
+            opendal_config: parse_opendal_config(opendal_config)?,
+            metrics: Arc::new(ReadMetrics::default()),
+        }));
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_atif_get_metrics(
+    factory: *const AtifStreamFactory,
+    output: *mut LanceReadMetrics,
+) {
+    if factory.is_null() || output.is_null() {
+        return;
+    }
+    let snapshot = (*factory).metrics.snapshot();
+    ptr::write(
+        output,
+        LanceReadMetrics {
+            bytes_read: snapshot.bytes_read,
+            total_bytes: snapshot.total_bytes,
+        },
+    );
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_atif_get_schema(
+    factory: *const AtifStreamFactory,
+    output: *mut FFI_ArrowSchema,
+) -> *mut c_char {
+    call(|| {
+        if factory.is_null() || output.is_null() {
+            return Err(Error::message("null ATIF schema argument"));
+        }
+        ptr::write(output, FFI_ArrowSchema::try_from(atif_schema().as_ref())?);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_atif_get_stream(
+    factory: *const AtifStreamFactory,
+    columns: *const *const c_char,
+    column_count: usize,
+    output: *mut FFI_ArrowArrayStream,
+) -> *mut c_char {
+    call(|| {
+        if factory.is_null() || output.is_null() {
+            return Err(Error::message("null ATIF stream argument"));
+        }
+        let projection = projected_columns(&atif_schema(), columns, column_count, "ATIF")?;
+        let reader = (&*factory).open_reader(projection)?;
+        ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_atif_destroy(factory: *mut AtifStreamFactory) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if !factory.is_null() {
             drop(Box::from_raw(factory));

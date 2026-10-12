@@ -1,0 +1,6 @@
+{
+  "schema_version": "ATIF-v1.8",
+  "trajectory_id": "single",
+  "agent": {"name": "example", "version": "1"},
+  "steps": [{"step_id": 1, "source": "user", "message": "hello"}]
+}

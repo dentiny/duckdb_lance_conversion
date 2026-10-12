@@ -18,7 +18,7 @@ pub use sink::{
     WriteOptions, WriteSummary,
 };
 pub use source::{
-    warc_schema, BatchSource, BatchStream, HuggingFaceSource, SourceReadOptions, WarcSource,
-    DEFAULT_MAX_READ_PARALLELISM,
+    atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, HuggingFaceSource,
+    SourceReadOptions, WarcSource, DEFAULT_MAX_READ_PARALLELISM,
 };
 pub use storage::{OpendalConfig, S3StorageConfig};
