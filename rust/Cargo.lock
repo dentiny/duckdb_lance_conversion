@@ -405,7 +405,7 @@ checksum = "f2d85fd3d291fabcc40c7232c92c280ec1754fd7b5d7ea769f143222143e179a"
 [[package]]
 name = "atif-arrow"
 version = "0.1.0"
-source = "git+https://github.com/dentiny/atif-arrow#89e5277065c06e2482a2842942d54ada1df8d236"
+source = "git+https://github.com/dentiny/atif-arrow?rev=89e5277065c06e2482a2842942d54ada1df8d236#89e5277065c06e2482a2842942d54ada1df8d236"
 dependencies = [
  "arrow-array",
  "arrow-json",
@@ -419,7 +419,7 @@ dependencies = [
 [[package]]
 name = "atif-io"
 version = "0.1.0"
-source = "git+https://github.com/dentiny/atif-arrow#89e5277065c06e2482a2842942d54ada1df8d236"
+source = "git+https://github.com/dentiny/atif-arrow?rev=89e5277065c06e2482a2842942d54ada1df8d236#89e5277065c06e2482a2842942d54ada1df8d236"
 dependencies = [
  "arrow-array",
  "atif-arrow",
@@ -5735,10 +5735,11 @@ dependencies = [
 [[package]]
 name = "warc-rs"
 version = "0.1.0"
-source = "git+https://github.com/dentiny/warc-rs#a93ffa687dbc4add7d14034bba7936e83201d478"
+source = "git+https://github.com/dentiny/warc-rs?rev=47bd10df94785d6615aa962074850637d043833b#47bd10df94785d6615aa962074850637d043833b"
 dependencies = [
  "async-compression",
  "chrono",
+ "flate2",
  "futures-util",
  "libflate",
  "nom",
