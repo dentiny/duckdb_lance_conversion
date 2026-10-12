@@ -9,6 +9,7 @@ use crate::Result;
 
 pub const DEFAULT_MAX_READ_PARALLELISM: usize = 8;
 
+mod atif;
 mod huggingface;
 mod metrics;
 mod parquet;
@@ -17,8 +18,9 @@ mod parquet_metadata;
 mod test_util;
 mod warc;
 mod warc_index;
+pub use atif::{atif_schema, AtifSource};
 pub use huggingface::HuggingFaceSource;
-pub(crate) use metrics::{MetricsReader, ReadMetrics};
+pub(crate) use metrics::{read_object, ReadMetrics};
 pub use warc::{warc_schema, WarcSource};
 
 pub type BatchStream = Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send + 'static>>;

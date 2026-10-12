@@ -4,46 +4,15 @@
 #include "function_metadata.hpp"
 #include "lance_conversion.h"
 #include "lance_ffi.hpp"
-#include "source_metrics.hpp"
 #include "source_options.hpp"
 #include "storage_options.hpp"
-#include "duckdb/common/arrow/arrow_wrapper.hpp"
+
 #include "duckdb/common/file_system.hpp"
-#include "duckdb/function/table/arrow.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/main/external_dependencies.hpp"
 
 namespace duckdb {
 namespace {
-
-class WarcMetricsDependency final : public SourceMetricsDependency {
-public:
-	explicit WarcMetricsDependency(WarcStreamFactory *factory_p) : factory(factory_p, lance_warc_destroy) {
-	}
-
-	LanceReadMetrics Snapshot() const override {
-		LanceReadMetrics metrics;
-		lance_warc_get_metrics(factory.get(), &metrics);
-		return metrics;
-	}
-
-private:
-	std::unique_ptr<WarcStreamFactory, decltype(&lance_warc_destroy)> factory;
-};
-
-unique_ptr<ArrowArrayStreamWrapper> ProduceWarcStream(uintptr_t factory_ptr, ArrowStreamParameters &parameters) {
-	auto result = make_uniq<ArrowArrayStreamWrapper>();
-	vector<const char *> columns;
-	columns.reserve(parameters.projected_columns.columns.size());
-	for (const auto &column : parameters.projected_columns.columns) {
-		columns.push_back(column.c_str());
-	}
-	ThrowIfLanceError(lance_warc_get_stream(reinterpret_cast<WarcStreamFactory *>(factory_ptr), columns.data(),
-	                                        columns.size(), &result->arrow_array_stream),
-	                  "WARC reader");
-	return result;
-}
 
 unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput &input,
                                   vector<LogicalType> &return_types, vector<string> &names) {
@@ -71,30 +40,17 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 	}
 
 	auto opendal_config = ReadOpendalConfig(context);
-	WarcStreamFactory *factory = nullptr;
+	SourceStreamFactory *factory = nullptr;
 	ThrowIfLanceError(lance_warc_open(path.c_str(), index_path.empty() ? nullptr : index_path.c_str(), s3_ptr,
 	                                  &opendal_config, read_options.max_read_parallelism, &factory),
 	                  "WARC reader");
-	auto dependency = make_shared_ptr<WarcMetricsDependency>(factory);
-	auto result = make_uniq<ArrowScanFunctionData>(ProduceWarcStream, reinterpret_cast<uintptr_t>(factory),
-	                                               std::move(dependency));
-	ThrowIfLanceError(lance_warc_get_schema(factory, &result->schema_root.arrow_schema), "WARC reader");
-	ArrowTableFunction::PopulateArrowTableSchema(context, result->arrow_table, result->schema_root.arrow_schema);
-	names = result->arrow_table.GetNames();
-	return_types = result->arrow_table.GetTypes();
-	result->all_types = return_types;
-	return std::move(result);
+	return BindSourceStream(context, factory, return_types, names);
 }
 
 } // namespace
 
 void RegisterWarcScanFunction(ExtensionLoader &loader) {
-	TableFunction function("read_warc", {LogicalType::VARCHAR}, SourceMetricsArrowScan, BindWarc,
-	                       ArrowTableFunction::ArrowScanInitGlobal, ArrowTableFunction::ArrowScanInitLocal);
-	function.get_partition_data = ArrowSourceGetPartitionData;
-	function.get_metrics = SourceMetricsGetMetrics;
-	function.table_scan_progress = SourceMetricsProgress;
-	function.projection_pushdown = true;
+	auto function = SourceStreamTableFunction("read_warc", BindWarc);
 	function.named_parameters["index_path"] = LogicalType::VARCHAR;
 	SourceReadOptions::Register(function);
 	RegisterTableFunctionWithMetadata(loader, std::move(function),

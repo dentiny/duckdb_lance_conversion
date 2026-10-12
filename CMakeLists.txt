@@ -79,6 +79,7 @@ elseif(WIN32)
 endif()
 set(EXTENSION_SOURCES
     src/arrow_source_scan.cpp
+    src/atif_scan.cpp
     src/lance_conversion_extension.cpp
     src/lance_copy.cpp
     src/function_metadata.cpp

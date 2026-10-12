@@ -1,0 +1,2 @@
+{"schema_version":"ATIF-v1.8","trajectory_id":"t1","agent":{"name":"example","version":"1"},"steps":[{"step_id":1,"source":"user","message":"hello"},{"step_id":2,"source":"agent","model_name":"m1","message":"hi","metrics":{"prompt_tokens":10,"completion_tokens":2}}]}
+{"schema_version":"ATIF-v1.8","trajectory_id":"t2","agent":{"name":"example","version":"1"},"steps":[{"step_id":1,"source":"user","message":"bye"}]}

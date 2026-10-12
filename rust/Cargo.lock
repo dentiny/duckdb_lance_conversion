@@ -403,6 +403,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2d85fd3d291fabcc40c7232c92c280ec1754fd7b5d7ea769f143222143e179a"
 
 [[package]]
+name = "atif-arrow"
+version = "0.1.0"
+source = "git+https://github.com/dentiny/atif-arrow?rev=89e5277065c06e2482a2842942d54ada1df8d236#89e5277065c06e2482a2842942d54ada1df8d236"
+dependencies = [
+ "arrow-array",
+ "arrow-json",
+ "arrow-schema",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "time",
+]
+
+[[package]]
+name = "atif-io"
+version = "0.1.0"
+source = "git+https://github.com/dentiny/atif-arrow?rev=89e5277065c06e2482a2842942d54ada1df8d236#89e5277065c06e2482a2842942d54ada1df8d236"
+dependencies = [
+ "arrow-array",
+ "atif-arrow",
+ "futures",
+ "opendal 0.59.3",
+]
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1735,7 +1760,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2803,6 +2828,8 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "async-trait",
+ "atif-arrow",
+ "atif-io",
  "bytes",
  "datafusion-physical-plan",
  "flate2",
@@ -4346,7 +4373,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4762,7 +4789,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4820,7 +4847,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4983,6 +5010,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -5282,10 +5320,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5579,7 +5617,7 @@ version = "2.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.9.5",
 ]
 
 [[package]]
@@ -5697,10 +5735,11 @@ dependencies = [
 [[package]]
 name = "warc-rs"
 version = "0.1.0"
-source = "git+https://github.com/dentiny/warc-rs#a93ffa687dbc4add7d14034bba7936e83201d478"
+source = "git+https://github.com/dentiny/warc-rs?rev=47bd10df94785d6615aa962074850637d043833b#47bd10df94785d6615aa962074850637d043833b"
 dependencies = [
  "async-compression",
  "chrono",
+ "flate2",
  "futures-util",
  "libflate",
  "nom",
@@ -5839,7 +5878,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

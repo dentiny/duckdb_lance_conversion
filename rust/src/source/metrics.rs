@@ -1,11 +1,13 @@
-use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
-use std::task::{Context, Poll};
 
-use futures::io::AsyncRead;
+use futures::io::AsyncBufRead;
+use futures::TryStreamExt;
+use opendal::Operator;
+
+use crate::Result;
 
 #[derive(Debug, Default)]
 pub(crate) struct ReadMetrics {
@@ -37,27 +39,19 @@ pub(crate) struct ReadMetricsSnapshot {
     pub total_bytes: u64,
 }
 
-pub(crate) struct MetricsReader<R> {
-    inner: R,
+/// Streams a whole object sequentially, recording its size and the bytes
+/// received so far.
+pub(crate) async fn read_object(
+    operator: &Operator,
+    path: &str,
     metrics: Arc<ReadMetrics>,
-}
-
-impl<R> MetricsReader<R> {
-    pub(crate) fn new(inner: R, metrics: Arc<ReadMetrics>) -> Self {
-        Self { inner, metrics }
-    }
-}
-
-impl<R: AsyncRead + Unpin> AsyncRead for MetricsReader<R> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &mut [u8],
-    ) -> Poll<std::io::Result<usize>> {
-        let result = Pin::new(&mut self.inner).poll_read(context, buffer);
-        if let Poll::Ready(Ok(bytes)) = &result {
-            self.metrics.add_bytes_read(*bytes);
-        }
-        result
-    }
+) -> Result<impl AsyncBufRead + Unpin + Send + 'static> {
+    metrics.set_total_bytes(operator.stat(path).await?.content_length());
+    Ok(operator
+        .reader(path)
+        .await?
+        .into_bytes_stream(..)
+        .await?
+        .inspect_ok(move |bytes| metrics.add_bytes_read(bytes.len()))
+        .into_async_read())
 }
