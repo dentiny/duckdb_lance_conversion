@@ -149,7 +149,7 @@ impl HuggingFaceStreamFactory {
     }
 }
 
-type OpenSource =
+type MakeReader =
     Box<dyn Fn(Vec<usize>, Arc<ReadMetrics>) -> Result<ArrowBatchReader> + Send + Sync>;
 
 /// A fixed-schema source that each DuckDB scan reopens with its own
@@ -157,21 +157,25 @@ type OpenSource =
 pub struct SourceStreamFactory {
     schema: SchemaRef,
     metrics: Arc<ReadMetrics>,
-    open: OpenSource,
+    make_reader: MakeReader,
 }
 
 impl SourceStreamFactory {
     fn new<S: BatchSource + 'static>(
         schema: SchemaRef,
-        source: impl Fn(Vec<usize>, Arc<ReadMetrics>) -> S + Send + Sync + 'static,
+        make_source: impl Fn(Vec<usize>, Arc<ReadMetrics>) -> S + Send + Sync + 'static,
     ) -> Self {
         Self {
             schema,
             metrics: Arc::new(ReadMetrics::default()),
-            open: Box::new(move |projection, metrics| {
-                open_batch_reader(source(projection, metrics))
+            make_reader: Box::new(move |projection, metrics| {
+                open_batch_reader(make_source(projection, metrics))
             }),
         }
+    }
+
+    fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
+        (self.make_reader)(projection, self.metrics.clone())
     }
 }
 
@@ -755,7 +759,7 @@ pub unsafe extern "C" fn lance_source_get_stream(
         }
         let factory = &*factory;
         let projection = projected_columns(&factory.schema, columns, column_count, "source")?;
-        let reader = (factory.open)(projection, factory.metrics.clone())?;
+        let reader = factory.open_reader(projection)?;
         ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
         Ok(())
     })
