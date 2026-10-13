@@ -21,7 +21,7 @@ format or data source that DuckDB can query, including:
 - Results of joins, filters, aggregations, and expressions
 - S3-compatible object storage through DuckDB filesystem extensions
 - Hugging Face Parquet datasets through `read_huggingface`
-- Local and S3 WARC/WARC.GZ files through `read_warc`
+- Local, S3, and HTTP(S) WARC/WARC.GZ files and Common Crawl segments through `read_warc`
 - Local and S3 ATIF agent trajectory JSON/JSONL files through `read_atif`
 
 The Lance sink supports local and S3-compatible destinations, Create/Append/
@@ -186,8 +186,28 @@ COPY (
 TO 'archive.lance' (FORMAT LANCE);
 ```
 
-Local and `s3://` paths are supported. Projection pushdown avoids constructing
-and copying WARC bodies when the query does not select `body`.
+Local, `s3://`, and `http(s)://` paths are supported. Projection pushdown avoids
+constructing and copying WARC bodies when the query does not select `body`.
+
+`read_warc` also accepts a Common Crawl segment directory, or its `warc/`
+subdirectory. It reads the crawl's `warc.paths.gz`, keeps only that segment's
+entries, and streams up to `max_read_parallelism` of those files at once.
+Records keep their order within a file, but rows from different files
+interleave. Entries resolve relative to the directory containing `crawl-data/`,
+so the same layout works over HTTP(S), S3, and local mirrors. Before streaming,
+every file in the segment is stat'ed (also up to `max_read_parallelism` at a
+time) so progress covers the whole segment. An empty segment is an error, and
+`index_path` is not supported for segments.
+
+```sql
+COPY (
+    SELECT * FROM read_warc(
+        'https://data.commoncrawl.org/crawl-data/CC-MAIN-2024-10/segments/1707947473347.0/'
+    )
+)
+TO 'segment.lance' (FORMAT LANCE);
+```
+
 For WARC files with a JSON or CDXJ index containing `offset` and `length`,
 `index_path` enables parallel range reads. `max_read_parallelism` defaults to
 `8`; results remain in WARC offset order.

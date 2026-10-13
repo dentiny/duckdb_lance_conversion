@@ -18,9 +18,10 @@ mod parquet_metadata;
 mod test_util;
 mod warc;
 mod warc_index;
+mod warc_segment;
 pub use atif::{atif_schema, AtifSource};
 pub use huggingface::HuggingFaceSource;
-pub(crate) use metrics::{read_object, ReadMetrics};
+pub(crate) use metrics::{read_object, stream_object, ReadMetrics};
 pub use warc::{warc_schema, WarcSource};
 
 pub type BatchStream = Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send + 'static>>;

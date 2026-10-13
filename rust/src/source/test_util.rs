@@ -37,6 +37,12 @@ pub(super) fn write_parquet_shard(
     writer.close().unwrap();
 }
 
+pub(super) fn gzip(data: &[u8]) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data).unwrap();
+    encoder.finish().unwrap()
+}
+
 pub(super) fn warc_record(id: usize, body: &str) -> String {
     format!(
         "WARC/1.0\r\n\
@@ -76,9 +82,7 @@ pub(super) async fn write_indexed_warc_fixture(
             archive.extend_from_slice(member_gap);
         }
         let offset = archive.len();
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(warc_record(id, body).as_bytes()).unwrap();
-        let member = encoder.finish().unwrap();
+        let member = gzip(warc_record(id, body).as_bytes());
         let length = member.len();
         archive.extend_from_slice(&member);
         locations.push((id, offset, length));

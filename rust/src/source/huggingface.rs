@@ -3,7 +3,8 @@ use std::sync::Arc;
 use arrow_schema::SchemaRef;
 #[cfg(test)]
 use futures::TryStreamExt;
-use opendal::{services::Http, Operator};
+#[cfg(test)]
+use opendal::Operator;
 use percent_encoding::percent_decode_str;
 use serde::Deserialize;
 use url::Url;
@@ -11,6 +12,7 @@ use url::Url;
 use super::parquet::open_parquet_paths;
 use super::{BatchSource, BatchStream, ReadMetrics, SourceReadOptions};
 use crate::error::ResultExt;
+use crate::storage::http_operator;
 use crate::{Error, OpendalConfig, Result};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
@@ -101,15 +103,6 @@ impl HuggingFaceSource {
     pub(crate) fn with_metrics(mut self, metrics: Arc<ReadMetrics>) -> Self {
         self.metrics = metrics;
         self
-    }
-
-    fn operator(&self, endpoint: &str) -> Result<Operator> {
-        opendal_http_transport_reqwest::install_default();
-        let mut builder = Http::default().endpoint(endpoint);
-        if let Some(token) = &self.token {
-            builder = builder.token(token);
-        }
-        self.opendal_config.apply(Operator::new(builder)?)
     }
 
     fn validate(&self) -> Result<()> {
@@ -216,7 +209,7 @@ impl BatchSource for HuggingFaceSource {
         self.opendal_config.validate()?;
         let read_options = self.read_options.validate()?;
         let (endpoint, paths) = self.parquet_files().await?;
-        let operator = self.operator(&endpoint)?;
+        let operator = http_operator(&endpoint, self.token.as_deref(), &self.opendal_config)?;
         open_parquet_paths(
             operator,
             paths,

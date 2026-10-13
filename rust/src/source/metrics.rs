@@ -46,9 +46,23 @@ pub(crate) async fn read_object(
     path: &str,
     metrics: Arc<ReadMetrics>,
 ) -> Result<impl AsyncBufRead + Unpin + Send + 'static> {
-    metrics.set_total_bytes(operator.stat(path).await?.content_length());
+    let size = operator.stat(path).await?.content_length();
+    metrics.set_total_bytes(size);
+    stream_object(operator, path, size, metrics).await
+}
+
+/// Streams a whole object of known `size` sequentially, recording the bytes
+/// received but leaving the expected total to the caller.
+pub(crate) async fn stream_object(
+    operator: &Operator,
+    path: &str,
+    size: u64,
+    metrics: Arc<ReadMetrics>,
+) -> Result<impl AsyncBufRead + Unpin + Send + 'static> {
+    // Without the hint, an open-ended range stats the object again.
     Ok(operator
-        .reader(path)
+        .reader_with(path)
+        .content_length_hint(size)
         .await?
         .into_bytes_stream(..)
         .await?
