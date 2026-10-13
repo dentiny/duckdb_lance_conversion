@@ -1,3 +1,24 @@
+# 0.1.5
+
+## Added
+
+- Add `read_atif` for ATIF v1.0–v1.8 agent trajectories in local and S3 JSON/JSONL files. Each trajectory becomes one row with nested `agent` and `steps` fields, the original document in `raw_json`, and provenance in `source_uri` and `source_record_index`; the input format is inferred from the file extension or set through `format` ([#44]).
+
+## Changed
+
+- Switch `read_warc` to the `warc-rs` fork, with asynchronous WARC parsing and gzip decompression for sequential and indexed reads. Indexed reads now stream batches instead of collecting all decoded batches for each range before returning them ([#43]).
+- Update the pinned `warc-rs` revision to use OpenDAL `0.59` and reduce transitive dependencies ([41abbf2]).
+- Add jitter to storage retries so concurrent operations do not retry in lockstep, while retaining the existing `lance_conversion_storage_*` timeout and backoff settings ([#45]).
+
+## Fixed
+
+- Read invalid UTF-8 WARC header values with replacement characters instead of failing the scan with a parser panic ([#43]).
+
+[#43]: https://github.com/dentiny/duckdb_lance_conversion/pull/43
+[#44]: https://github.com/dentiny/duckdb_lance_conversion/pull/44
+[#45]: https://github.com/dentiny/duckdb_lance_conversion/pull/45
+[41abbf2]: https://github.com/dentiny/duckdb_lance_conversion/commit/41abbf237da537951f00439053954f6b7ac95d22
+
 # 0.1.4
 
 ## Added
