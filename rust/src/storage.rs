@@ -298,15 +298,7 @@ pub(crate) fn http_operator(
     opendal_config.apply(Operator::new(builder)?)
 }
 
-fn has_scheme(path: &str, scheme: &str) -> bool {
-    path.get(..scheme.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
-}
-
 pub(crate) fn is_s3_uri(path: &str) -> bool {
-    has_scheme(path, "s3://")
-}
-
-pub(crate) fn is_http_uri(path: &str) -> bool {
-    has_scheme(path, "http://") || has_scheme(path, "https://")
+    path.get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("s3://"))
 }

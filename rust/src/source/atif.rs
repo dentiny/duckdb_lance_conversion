@@ -99,7 +99,9 @@ impl BatchSource for AtifSource {
             Ok(local_path) => local_path.display().to_string(),
             Err(()) => storage.location.to_string(),
         };
-        let reader = read_object(&storage.operator, &path, self.metrics).await?;
+        let size = storage.operator.stat(&path).await?.content_length();
+        self.metrics.set_total_bytes(size);
+        let reader = read_object(&storage.operator, &path, size, self.metrics).await?;
         let reader = TrajectoryReader::new(reader, format, BATCH_SIZE, Some(source_uri))
             .map_err(|error| Error::message(format!("ATIF reader: {error}")))?;
         // The ATIF converter always produces every column; projection only

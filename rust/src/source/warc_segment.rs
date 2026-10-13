@@ -28,11 +28,16 @@ impl WarcSegment {
             .collect::<Vec<_>>();
         let parts = parts.strip_suffix(&["warc"]).unwrap_or(&parts);
         match parts {
-            [root @ .., "crawl-data", crawl, "segments", segment] => Some(Self {
-                root: root.iter().map(|part| format!("{part}/")).collect(),
-                crawl: (*crawl).to_owned(),
-                segment: (*segment).to_owned(),
-            }),
+            // A WARC file stored directly under `segments/` is not a segment.
+            [root @ .., "crawl-data", crawl, "segments", segment]
+                if !segment.ends_with(".warc") && !segment.ends_with(".warc.gz") =>
+            {
+                Some(Self {
+                    root: root.iter().map(|part| format!("{part}/")).collect(),
+                    crawl: (*crawl).to_owned(),
+                    segment: (*segment).to_owned(),
+                })
+            }
             _ => None,
         }
     }
@@ -47,12 +52,8 @@ impl WarcSegment {
             .await
             .context(format!("reading WARC manifest {manifest_path}"))?
             .to_bytes();
-        self.files_in_manifest(&manifest)
-    }
-
-    fn files_in_manifest(&self, manifest: &[u8]) -> Result<Vec<String>> {
         let mut text = String::new();
-        MultiGzDecoder::new(manifest)
+        MultiGzDecoder::new(&manifest[..])
             .read_to_string(&mut text)
             .map_err(|error| Error::message(format!("decoding WARC manifest: {error}")))?;
         let prefix = format!("crawl-data/{}/segments/{}/warc/", self.crawl, self.segment);
@@ -73,32 +74,37 @@ impl WarcSegment {
 
 #[cfg(test)]
 mod tests {
+    use opendal::services::Fs;
+    use tempfile::TempDir;
+
     use super::super::test_util::gzip;
     use super::*;
-
-    fn segment(root: &str, crawl: &str, segment: &str) -> Option<WarcSegment> {
-        Some(WarcSegment {
-            root: root.to_owned(),
-            crawl: crawl.to_owned(),
-            segment: segment.to_owned(),
-        })
-    }
 
     #[test]
     fn parses_segment_and_warc_directories() {
         for suffix in ["", "/", "/warc", "/warc/"] {
             assert_eq!(
                 WarcSegment::parse(&format!("crawl-data/CC-MAIN-2026-30/segments/1.52{suffix}")),
-                segment("", "CC-MAIN-2026-30", "1.52")
+                Some(WarcSegment {
+                    root: String::new(),
+                    crawl: "CC-MAIN-2026-30".to_owned(),
+                    segment: "1.52".to_owned(),
+                })
             );
         }
         assert_eq!(
             WarcSegment::parse("data/cc/crawl-data/c/segments/1/warc/"),
-            segment("data/cc/", "c", "1")
+            Some(WarcSegment {
+                root: "data/cc/".to_owned(),
+                crawl: "c".to_owned(),
+                segment: "1".to_owned(),
+            })
         );
         for path in [
             "crawl-data/c/segments/1/wet/",
             "crawl-data/c/segments/1/warc/a.warc.gz",
+            "crawl-data/c/segments/a.warc",
+            "crawl-data/c/segments/a.warc.gz",
             "crawl-data/c/segments/",
             "crawl-data/c/warc.paths.gz",
             "archive.warc.gz",
@@ -107,18 +113,27 @@ mod tests {
         }
     }
 
-    #[test]
-    fn keeps_only_manifest_entries_in_the_segment() {
-        let manifest = gzip(
-            b"crawl-data/c/segments/1/warc/a.warc.gz\n\n\
-              crawl-data/c/segments/10/warc/b.warc.gz\n\
-              crawl-data/c/segments/1/wet/a.warc.wet.gz\n\
-              crawl-data/c/segments/1/warc/c.warc.gz  \n",
-        );
+    #[tokio::test]
+    async fn keeps_only_manifest_entries_in_the_segment() {
+        let root = TempDir::new().unwrap();
+        let crawl = root.path().join("root/crawl-data/c");
+        std::fs::create_dir_all(&crawl).unwrap();
+        std::fs::write(
+            crawl.join("warc.paths.gz"),
+            gzip(
+                b"crawl-data/c/segments/1/warc/a.warc.gz\n\n\
+                  crawl-data/c/segments/10/warc/b.warc.gz\n\
+                  crawl-data/c/segments/1/wet/a.warc.wet.gz\n\
+                  crawl-data/c/segments/1/warc/c.warc.gz  \n",
+            ),
+        )
+        .unwrap();
+        let operator = Operator::new(Fs::default().root(root.path().to_str().unwrap())).unwrap();
 
-        let files = segment("root/", "c", "1")
+        let files = WarcSegment::parse("root/crawl-data/c/segments/1")
             .unwrap()
-            .files_in_manifest(&manifest)
+            .files(&operator)
+            .await
             .unwrap();
         assert_eq!(
             files,
@@ -127,9 +142,10 @@ mod tests {
                 "root/crawl-data/c/segments/1/warc/c.warc.gz",
             ]
         );
-        let error = segment("", "c", "2")
+        let error = WarcSegment::parse("root/crawl-data/c/segments/2")
             .unwrap()
-            .files_in_manifest(&manifest)
+            .files(&operator)
+            .await
             .unwrap_err();
         assert!(error
             .to_string()

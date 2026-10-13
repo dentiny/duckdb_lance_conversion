@@ -39,21 +39,9 @@ pub(crate) struct ReadMetricsSnapshot {
     pub total_bytes: u64,
 }
 
-/// Streams a whole object sequentially, recording its size and the bytes
-/// received so far.
-pub(crate) async fn read_object(
-    operator: &Operator,
-    path: &str,
-    metrics: Arc<ReadMetrics>,
-) -> Result<impl AsyncBufRead + Unpin + Send + 'static> {
-    let size = operator.stat(path).await?.content_length();
-    metrics.set_total_bytes(size);
-    stream_object(operator, path, size, metrics).await
-}
-
 /// Streams a whole object of known `size` sequentially, recording the bytes
-/// received but leaving the expected total to the caller.
-pub(crate) async fn stream_object(
+/// received so far. Callers set the expected total.
+pub(crate) async fn read_object(
     operator: &Operator,
     path: &str,
     size: u64,
