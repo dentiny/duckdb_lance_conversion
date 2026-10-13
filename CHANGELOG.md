@@ -7,7 +7,7 @@
 ## Changed
 
 - Switch `read_warc` to the `warc-rs` fork, with asynchronous WARC parsing and gzip decompression for sequential and indexed reads. Indexed reads now stream batches instead of collecting all decoded batches for each range before returning them ([#43]).
-- Update the pinned `warc-rs` revision to use OpenDAL `0.59` and reduce transitive dependencies ([41abbf2]).
+- Update the pinned `warc-rs` revision to use OpenDAL `0.59` and reduce transitive dependencies.
 - Add jitter to storage retries so concurrent operations do not retry in lockstep, while retaining the existing `lance_conversion_storage_*` timeout and backoff settings ([#45]).
 
 ## Fixed
@@ -17,7 +17,6 @@
 [#43]: https://github.com/dentiny/duckdb_lance_conversion/pull/43
 [#44]: https://github.com/dentiny/duckdb_lance_conversion/pull/44
 [#45]: https://github.com/dentiny/duckdb_lance_conversion/pull/45
-[41abbf2]: https://github.com/dentiny/duckdb_lance_conversion/commit/41abbf237da537951f00439053954f6b7ac95d22
 
 # 0.1.4
 
