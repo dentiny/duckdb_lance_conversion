@@ -10,9 +10,13 @@ use crate::{Error, Result};
 /// `crawl-data/<crawl>/segments/<segment>` or its `warc` subdirectory.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct WarcSegment {
-    /// Object path prefix containing `crawl-data/`, empty or ending in `/`.
+    /// Object path prefix before `crawl-data/`, empty or ending in `/`; for
+    /// example `""` for `crawl-data/...` or `"mirror/cc/"` for
+    /// `mirror/cc/crawl-data/...`.
     root: String,
+    /// Crawl name, for example `CC-MAIN-2024-10`.
     crawl: String,
+    /// Segment name within the crawl, for example `1707947473347.0`.
     segment: String,
 }
 
