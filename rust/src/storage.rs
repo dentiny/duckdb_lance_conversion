@@ -99,7 +99,8 @@ impl OpendalConfig {
             .with_max_times(config.retry_max_times as usize)
             .with_min_delay(Duration::from_millis(config.retry_min_delay_ms))
             .with_max_delay(Duration::from_millis(config.retry_max_delay_ms))
-            .with_factor(config.retry_factor as f32);
+            .with_factor(config.retry_factor as f32)
+            .with_jitter();
         // Timeout must be inside retry: each attempt has its own deadline, and
         // cancellation never drops RetryLayer while it holds IO body state.
         Ok(operator.layer(timeout).layer(retry))
