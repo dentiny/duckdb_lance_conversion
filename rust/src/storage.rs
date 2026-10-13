@@ -9,7 +9,7 @@ use object_store::ObjectStore as ArrowObjectStore;
 use object_store_opendal::OpendalStore;
 use opendal::{
     layers::{RetryLayer, TimeoutLayer},
-    services::{Fs, S3},
+    services::{Fs, Http, S3},
     Operator,
 };
 use url::Url;
@@ -282,6 +282,20 @@ impl OpendalStorage {
             location,
         })
     }
+}
+
+/// Builds a read operator for files under the HTTP(S) `endpoint`.
+pub(crate) fn http_operator(
+    endpoint: &str,
+    token: Option<&str>,
+    opendal_config: &OpendalConfig,
+) -> Result<Operator> {
+    opendal_http_transport_reqwest::install_default();
+    let mut builder = Http::default().endpoint(endpoint);
+    if let Some(token) = token {
+        builder = builder.token(token);
+    }
+    opendal_config.apply(Operator::new(builder)?)
 }
 
 pub(crate) fn is_s3_uri(path: &str) -> bool {

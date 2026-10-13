@@ -7,7 +7,7 @@ use flate2::read::MultiGzDecoder;
 use futures::{stream, StreamExt, TryStreamExt};
 use serde_json::Value;
 
-use super::warc::{spawn_records, warc_input};
+use super::warc::{is_gzipped, spawn_records, warc_input};
 use super::{BatchStream, ReadMetrics};
 use crate::storage::OpendalStorage;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
@@ -170,7 +170,7 @@ pub(super) async fn open_indexed_warc(
         .to_bytes();
     metrics.add_bytes_read(index_bytes.len());
     let index_length = u64::try_from(index_bytes.len()).unwrap_or(u64::MAX);
-    let index_gzipped = index_object_path.to_ascii_lowercase().ends_with(".gz");
+    let index_gzipped = is_gzipped(&index_object_path);
     let source_path = path.clone();
     let entries = tokio::task::spawn_blocking(move || {
         parse_warc_index(index_bytes, index_gzipped, &source_path)
@@ -205,11 +205,9 @@ pub(super) async fn open_indexed_warc(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-
     use bytes::Bytes;
-    use flate2::{write::GzEncoder, Compression};
 
+    use super::super::test_util::gzip;
     use super::*;
 
     #[test]
@@ -291,13 +289,8 @@ mod tests {
 
     #[test]
     fn parses_gzipped_index() {
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(b"{\"offset\":\"7\",\"length\":\"11\"}\n")
-            .unwrap();
-
         let entries = parse_warc_index(
-            Bytes::from(encoder.finish().unwrap()),
+            Bytes::from(gzip(b"{\"offset\":\"7\",\"length\":\"11\"}\n")),
             true,
             "archive.warc.gz",
         )

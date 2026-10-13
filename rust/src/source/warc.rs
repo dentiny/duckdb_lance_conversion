@@ -6,14 +6,19 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use futures::io::AsyncBufRead;
-use futures::{future, stream, StreamExt};
+use futures::{future, stream, StreamExt, TryStreamExt};
+use opendal::Operator;
+use percent_encoding::percent_decode_str;
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
+use url::Url;
 use warc_rs::{GzipReader, Record, StreamingBody, WarcHeader, WarcReader};
 
 use super::warc_index::open_indexed_warc;
+use super::warc_segment::WarcSegment;
 use super::{read_object, BatchSource, BatchStream, ReadMetrics, SourceReadOptions};
-use crate::storage::OpendalStorage;
+use crate::error::ResultExt;
+use crate::storage::{http_operator, OpendalStorage};
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
@@ -154,48 +159,141 @@ impl WarcSource {
     }
 }
 
+impl WarcSource {
+    /// Returns the operator holding the input and the input's path within it.
+    fn location(&self) -> Result<(Operator, String)> {
+        let (operator, path) = match Url::parse(&self.path) {
+            Ok(url) if matches!(url.scheme(), "http" | "https") => {
+                if url.query().is_some() || url.fragment().is_some() {
+                    return Err(Error::message(
+                        "WARC HTTP(S) URLs must not include a query or fragment",
+                    ));
+                }
+                // OpenDAL percent-encodes the path again.
+                let path = percent_decode_str(url.path()).decode_utf8()?;
+                (
+                    http_operator(
+                        &url[..url::Position::BeforePath],
+                        None,
+                        &self.opendal_config,
+                    )?,
+                    path.trim_start_matches('/').to_owned(),
+                )
+            }
+            _ => {
+                let storage = OpendalStorage::from_path(
+                    &self.path,
+                    self.s3_config.as_ref(),
+                    &self.opendal_config,
+                )?;
+                (storage.operator, storage.object_path.to_string())
+            }
+        };
+        if path.is_empty() {
+            return Err(Error::message("WARC input must not be a storage root"));
+        }
+        Ok((operator, path))
+    }
+
+    /// Streams up to `max_read_parallelism` of the segment's files at once.
+    /// Records keep their order within a file, but files interleave.
+    async fn open_segment(
+        self,
+        segment: WarcSegment,
+        operator: Operator,
+        projection: Vec<usize>,
+        schema: SchemaRef,
+    ) -> Result<BatchStream> {
+        if self.index_path.is_some() {
+            return Err(Error::message(
+                "index_path is not supported for WARC segments",
+            ));
+        }
+        let parallelism = self.read_options.max_read_parallelism;
+        let files = stream::iter(segment.files(&operator).await?)
+            .map(|file| {
+                let operator = operator.clone();
+                async move {
+                    let size = operator.stat(&file).await.context(&file)?.content_length();
+                    Ok::<_, Error>((file, size))
+                }
+            })
+            .buffer_unordered(parallelism)
+            .try_collect::<Vec<_>>()
+            .await?;
+        self.metrics
+            .set_total_bytes(files.iter().map(|(_, size)| size).sum());
+        let (batch_size, metrics) = (self.batch_size, self.metrics);
+        let batches = stream::iter(files)
+            .map(move |(file, size)| {
+                let operator = operator.clone();
+                let projection = projection.clone();
+                let schema = schema.clone();
+                let metrics = metrics.clone();
+                stream::once(async move {
+                    let reader = read_object(&operator, &file, size, metrics)
+                        .await
+                        .context(&file)?;
+                    let records = spawn_records(
+                        warc_input(reader, is_gzipped(&file)),
+                        batch_size,
+                        projection,
+                        schema,
+                    );
+                    Ok::<_, Error>(records.map(move |batch| batch.context(&file)))
+                })
+                .try_flatten()
+                .boxed()
+            })
+            .flatten_unordered(parallelism);
+        Ok(Box::pin(batches))
+    }
+}
+
+/// Validates `projection` against the WARC schema and returns the column
+/// indexes to read with their schema. An empty projection reads every column.
+fn projected_schema(projection: Option<Vec<usize>>) -> Result<(Vec<usize>, SchemaRef)> {
+    let full_schema = warc_schema();
+    let projection = match projection {
+        Some(projection) if !projection.is_empty() => projection,
+        _ => (0..full_schema.fields().len()).collect(),
+    };
+    let mut seen = vec![false; full_schema.fields().len()];
+    for &index in &projection {
+        let projected = seen
+            .get_mut(index)
+            .ok_or_else(|| Error::message(format!("invalid WARC column index: {index}")))?;
+        if std::mem::replace(projected, true) {
+            return Err(Error::message(format!(
+                "duplicate WARC column index: {index}"
+            )));
+        }
+    }
+    let fields = projection
+        .iter()
+        .map(|&index| full_schema.field(index).clone())
+        .collect::<Vec<_>>();
+    Ok((projection, Arc::new(Schema::new(fields))))
+}
+
 impl BatchSource for WarcSource {
-    async fn open(self) -> Result<(SchemaRef, BatchStream)> {
+    async fn open(mut self) -> Result<(SchemaRef, BatchStream)> {
         if self.batch_size == 0 {
             return Err(Error::message("batch_size must be positive"));
         }
         let read_options = self.read_options.validate()?;
-        let full_schema = warc_schema();
-        let projection = match self.projection {
-            Some(projection) if !projection.is_empty() => projection,
-            _ => (0..full_schema.fields().len()).collect(),
-        };
-        let mut seen = vec![false; full_schema.fields().len()];
-        for &index in &projection {
-            let projected = seen
-                .get_mut(index)
-                .ok_or_else(|| Error::message(format!("invalid WARC column index: {index}")))?;
-            if std::mem::replace(projected, true) {
-                return Err(Error::message(format!(
-                    "duplicate WARC column index: {index}"
-                )));
-            }
+        let (projection, schema) = projected_schema(self.projection.take())?;
+        let (operator, path) = self.location()?;
+        if let Some(segment) = WarcSegment::parse(&path) {
+            let batches = self
+                .open_segment(segment, operator, projection, schema.clone())
+                .await?;
+            return Ok((schema, batches));
         }
-        let fields =
-            projection
-                .iter()
-                .map(|&index| {
-                    full_schema.fields().get(index).cloned().ok_or_else(|| {
-                        Error::message(format!("invalid WARC column index: {index}"))
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
-        let schema = Arc::new(Schema::new(fields));
-        let storage =
-            OpendalStorage::from_path(&self.path, self.s3_config.as_ref(), &self.opendal_config)?;
-        let path = storage.object_path.to_string();
-        if path.is_empty() {
-            return Err(Error::message("WARC input must not be a storage root"));
-        }
-        let gzipped = path.to_ascii_lowercase().ends_with(".gz");
+        let gzipped = is_gzipped(&path);
         if let Some(index_path) = self.index_path {
             return open_indexed_warc(
-                storage.operator,
+                operator,
                 path,
                 gzipped,
                 &index_path,
@@ -209,7 +307,9 @@ impl BatchSource for WarcSource {
             )
             .await;
         }
-        let reader = read_object(&storage.operator, &path, self.metrics).await?;
+        let size = operator.stat(&path).await?.content_length();
+        self.metrics.set_total_bytes(size);
+        let reader = read_object(&operator, &path, size, self.metrics).await?;
         let batches = spawn_records(
             warc_input(reader, gzipped),
             self.batch_size,
@@ -218,6 +318,10 @@ impl BatchSource for WarcSource {
         );
         Ok((schema, batches))
     }
+}
+
+pub(super) fn is_gzipped(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".gz")
 }
 
 pub(super) fn warc_input(
@@ -479,14 +583,12 @@ impl WarcBatchBuilder {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use arrow_array::{BinaryViewArray, StringArray};
-    use flate2::{write::GzEncoder, Compression};
     use futures::TryStreamExt;
 
-    use super::super::test_util::{warc_record as record, write_indexed_warc_fixture};
+    use super::super::test_util::{gzip, warc_record as record, write_indexed_warc_fixture};
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -545,10 +647,7 @@ mod tests {
             b"first"
         );
 
-        let gzip_path = temp.join("records.warc.gz");
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(input.as_bytes()).unwrap();
-        tokio::fs::write(gzip_path, encoder.finish().unwrap())
+        tokio::fs::write(temp.join("records.warc.gz"), gzip(input.as_bytes()))
             .await
             .unwrap();
         let (_, stream) = WarcSource::new(temp.join("records.warc.gz").to_string_lossy())
@@ -618,7 +717,13 @@ mod tests {
             .await
             .unwrap();
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
-        let ids = batches
+        assert_eq!(ids(&batches), ["<urn:uuid:1>", "<urn:uuid:2>"]);
+
+        tokio::fs::remove_dir_all(temp).await.unwrap();
+    }
+
+    fn ids(batches: &[RecordBatch]) -> Vec<String> {
+        batches
             .iter()
             .flat_map(|batch| {
                 batch
@@ -628,10 +733,74 @@ mod tests {
                     .downcast_ref::<StringArray>()
                     .unwrap()
                     .iter()
-                    .map(Option::unwrap)
+                    .map(|id| id.unwrap().to_owned())
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
-        assert_eq!(ids, ["<urn:uuid:1>", "<urn:uuid:2>"]);
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn streams_common_crawl_segment_files() {
+        let temp = test_directory().await;
+        let crawl = temp.join("crawl-data/c");
+        let warc_dir = crawl.join("segments/1/warc");
+        tokio::fs::create_dir_all(&warc_dir).await.unwrap();
+        let manifest = gzip(
+            b"crawl-data/c/segments/1/warc/b.warc.gz\n\
+              crawl-data/c/segments/1/warc/a.warc\n\
+              crawl-data/c/segments/3/warc/missing.warc\n",
+        );
+        tokio::fs::write(crawl.join("warc.paths.gz"), manifest)
+            .await
+            .unwrap();
+        let records = format!("{}{}", record(1, "first"), record(2, "second"));
+        tokio::fs::write(warc_dir.join("b.warc.gz"), gzip(records.as_bytes()))
+            .await
+            .unwrap();
+        tokio::fs::write(warc_dir.join("a.warc"), record(3, "third"))
+            .await
+            .unwrap();
+
+        let metrics = Arc::new(ReadMetrics::default());
+        let (_, stream) = WarcSource::new(crawl.join("segments/1/").to_string_lossy())
+            .with_batch_size(1)
+            .with_metrics(metrics.clone())
+            .open()
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let mut segment_ids = ids(&batches);
+        // Files interleave, but each keeps its record order.
+        let first = segment_ids.iter().position(|id| id == "<urn:uuid:1>");
+        let second = segment_ids.iter().position(|id| id == "<urn:uuid:2>");
+        assert!(first < second, "{segment_ids:?}");
+        segment_ids.sort_unstable();
+        assert_eq!(
+            segment_ids,
+            ["<urn:uuid:1>", "<urn:uuid:2>", "<urn:uuid:3>"]
+        );
+        let snapshot = metrics.snapshot();
+        assert!(snapshot.total_bytes > 0);
+        assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
+
+        let error = WarcSource::new(crawl.join("segments/3").to_string_lossy())
+            .open()
+            .await
+            .err()
+            .unwrap();
+        assert!(error
+            .to_string()
+            .contains("crawl-data/c/segments/3/warc/missing.warc"));
+
+        let error = WarcSource::new(crawl.join("segments/1").to_string_lossy())
+            .with_index_path(temp.join("index.cdxj").to_string_lossy())
+            .open()
+            .await
+            .err()
+            .unwrap();
+        assert!(error
+            .to_string()
+            .contains("not supported for WARC segments"));
 
         tokio::fs::remove_dir_all(temp).await.unwrap();
     }

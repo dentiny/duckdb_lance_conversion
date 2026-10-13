@@ -26,14 +26,21 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 	if (index_path_entry != input.named_parameters.end()) {
 		index_path = index_path_entry->second.GetValue<string>();
 	}
+	auto is_s3 = [](const string &value) {
+		return StringUtil::CIStartsWith(value, "s3://");
+	};
+	auto is_http = StringUtil::CIStartsWith(path, "http://") || StringUtil::CIStartsWith(path, "https://");
+	if (FileSystem::IsRemoteFile(path) && !is_s3(path) && !is_http) {
+		throw BinderException("read_warc path supports only local, s3://, and http(s):// paths");
+	}
+	if (FileSystem::IsRemoteFile(index_path) && !is_s3(index_path)) {
+		throw BinderException("read_warc index_path supports only local and s3:// paths");
+	}
 	LanceS3Config s3;
 	const LanceS3Config *s3_ptr = nullptr;
 	LanceS3Options options;
-	auto credential_path = FileSystem::IsRemoteFile(path) ? path : index_path;
-	if (FileSystem::IsRemoteFile(credential_path)) {
-		if (!StringUtil::CIStartsWith(credential_path, "s3://")) {
-			throw BinderException("read_warc supports only local and s3:// paths");
-		}
+	auto credential_path = is_s3(path) ? path : index_path;
+	if (is_s3(credential_path)) {
 		options = ReadS3Options(context, credential_path);
 		s3 = options.ToConfig();
 		s3_ptr = &s3;
@@ -55,7 +62,7 @@ void RegisterWarcScanFunction(ExtensionLoader &loader) {
 	SourceReadOptions::Register(function);
 	RegisterTableFunctionWithMetadata(loader, std::move(function),
 	                                  /*parameter_names=*/ {"path", "index_path", "max_read_parallelism"},
-	                                  /*description=*/"Reads records from a local or S3 WARC file.",
+	                                  /*description=*/"Reads records from a local, S3, or HTTP(S) WARC file or Common Crawl segment.",
 	                                  /*examples=*/ {"SELECT * FROM read_warc('archive.warc.gz');"},
 	                                  /*categories=*/ {"lance_conversion", "reader"});
 }

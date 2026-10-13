@@ -77,6 +77,20 @@ FROM read_warc('test/data/records.warc', max_read_parallelism = 0);
 ----
 max_read_parallelism must be positive
 
+# A Common Crawl segment reads its files from the crawl's warc.paths.gz; the
+# segment 10 entry does not exist and must be skipped.
+query I
+COPY (
+    SELECT * FROM read_warc('test/data/crawl-data/CC-TEST/segments/1/')
+) TO '__TEST_DIR__/warc_segment.lance' (FORMAT LANCE);
+----
+4
+
+statement error
+SELECT * FROM read_warc('gs://bucket/archive.warc');
+----
+read_warc path supports only local, s3://, and http(s):// paths
+
 restart no_extension_load
 
 statement ok
@@ -103,3 +117,8 @@ query I
 SELECT count(*) FROM '__TEST_DIR__/warc_sample_percent.lance';
 ----
 2
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/warc_segment.lance';
+----
+4

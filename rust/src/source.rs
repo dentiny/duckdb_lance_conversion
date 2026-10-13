@@ -18,6 +18,7 @@ mod parquet_metadata;
 mod test_util;
 mod warc;
 mod warc_index;
+mod warc_segment;
 pub use atif::{atif_schema, AtifSource};
 pub use huggingface::HuggingFaceSource;
 pub(crate) use metrics::{read_object, ReadMetrics};
