@@ -12,8 +12,8 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-atif-arrow = { git = "https://github.com/dentiny/atif-arrow", rev = "89e5277065c06e2482a2842942d54ada1df8d236" }
-atif-io = { git = "https://github.com/dentiny/atif-arrow", rev = "89e5277065c06e2482a2842942d54ada1df8d236" }
+atif-arrow = { git = "https://github.com/dentiny/atif-arrow", rev = "34e08364ba01214ced1af9796a39ae4639bc1ca1" }
+atif-io = { git = "https://github.com/dentiny/atif-arrow", rev = "34e08364ba01214ced1af9796a39ae4639bc1ca1" }
 arrow-array = { version = "58", features = ["ffi"] }
 arrow-cast = "58"
 arrow-schema = { version = "58", features = ["ffi"] }

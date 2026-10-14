@@ -395,7 +395,7 @@ checksum = "f2d85fd3d291fabcc40c7232c92c280ec1754fd7b5d7ea769f143222143e179a"
 [[package]]
 name = "atif-arrow"
 version = "0.1.0"
-source = "git+https://github.com/dentiny/atif-arrow?rev=89e5277065c06e2482a2842942d54ada1df8d236#89e5277065c06e2482a2842942d54ada1df8d236"
+source = "git+https://github.com/dentiny/atif-arrow?rev=34e08364ba01214ced1af9796a39ae4639bc1ca1#34e08364ba01214ced1af9796a39ae4639bc1ca1"
 dependencies = [
  "arrow-array",
  "arrow-json",
@@ -409,12 +409,13 @@ dependencies = [
 [[package]]
 name = "atif-io"
 version = "0.1.0"
-source = "git+https://github.com/dentiny/atif-arrow?rev=89e5277065c06e2482a2842942d54ada1df8d236#89e5277065c06e2482a2842942d54ada1df8d236"
+source = "git+https://github.com/dentiny/atif-arrow?rev=34e08364ba01214ced1af9796a39ae4639bc1ca1#34e08364ba01214ced1af9796a39ae4639bc1ca1"
 dependencies = [
  "arrow-array",
  "atif-arrow",
  "futures",
  "opendal",
+ "tokio",
 ]
 
 [[package]]

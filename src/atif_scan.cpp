@@ -9,6 +9,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 namespace {
@@ -17,6 +18,10 @@ unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput
                                   vector<LogicalType> &return_types, vector<string> &names) {
 	if (input.inputs[0].IsNull()) {
 		throw BinderException("read_atif path must not be NULL");
+	}
+	// Trajectories must keep their file order, which DuckDB may otherwise reorder across threads.
+	if (!Settings::Get<PreserveInsertionOrderSetting>(context)) {
+		throw BinderException("read_atif requires preserve_insertion_order = true");
 	}
 	auto path = input.inputs[0].GetValue<string>();
 	string format;
