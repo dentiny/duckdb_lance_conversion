@@ -1,21 +1,15 @@
-//! Async Arrow conversion with pluggable sources and sinks.
-//!
-//! DuckDB feeds `LanceDatasetWriter` through FFI. Native callers use `convert`.
-pub mod converter;
+//! Async Arrow sources and Lance writers for the DuckDB extension, which
+//! drives them through FFI.
 mod error;
-mod error_struct;
 mod ffi;
 mod schema;
 pub mod sink;
 pub mod source;
 mod storage;
 
-pub use converter::convert;
-pub use error::{Error, Result};
-pub use error_struct::{ErrorStatus, ErrorStruct};
+pub use error::{Error, ErrorStatus, Result};
 pub use sink::{
-    BatchSink, LanceDatasetWriter, LanceFragmentWriter, LanceSink, LanceWriter, WriteMode,
-    WriteOptions, WriteSummary,
+    LanceDatasetWriter, LanceFragmentWriter, LanceWriter, WriteMode, WriteOptions, WriteSummary,
 };
 pub use source::{
     atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, HuggingFaceSource,

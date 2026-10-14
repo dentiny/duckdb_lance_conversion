@@ -1,12 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use arrow_array::RecordBatch;
-use arrow_schema::{ArrowError, SchemaRef};
-use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-use futures::{Stream, TryStreamExt};
+use arrow_schema::SchemaRef;
 pub use lance::dataset::write::WriteMode;
 
-use super::{BatchSink, WriteSummary};
+use super::WriteSummary;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 mod column_storage;
@@ -57,46 +55,6 @@ impl Default for WriteOptions {
             text_index_columns: Vec::new(),
             bloom_filter_index_columns: Vec::new(),
         }
-    }
-}
-
-pub struct LanceSink {
-    destination: PathBuf,
-    options: WriteOptions,
-}
-
-impl LanceSink {
-    pub fn new(destination: impl Into<PathBuf>, options: WriteOptions) -> Self {
-        Self {
-            destination: destination.into(),
-            options,
-        }
-    }
-}
-
-impl BatchSink for LanceSink {
-    async fn write<S>(self, schema: SchemaRef, batches: S) -> Result<WriteSummary>
-    where
-        S: Stream<Item = Result<RecordBatch>> + Send + 'static,
-    {
-        let writer =
-            LanceDatasetWriter::create(&self.destination, schema.clone(), self.options).await?;
-        let expected_schema = schema.clone();
-        let batches = batches.and_then(move |batch| {
-            let result = if batch.schema().as_ref() == expected_schema.as_ref() {
-                Ok(batch)
-            } else {
-                Err(Error::message(
-                    "batch schema does not match the conversion schema",
-                ))
-            };
-            futures::future::ready(result)
-        });
-        let batches = batches.map_err(|error| ArrowError::ExternalError(error.into()).into());
-        writer
-            .write_stream(Box::pin(RecordBatchStreamAdapter::new(schema, batches)))
-            .await?;
-        writer.commit().await
     }
 }
 

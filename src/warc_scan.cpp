@@ -36,20 +36,17 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 	if (FileSystem::IsRemoteFile(index_path) && !is_s3(index_path)) {
 		throw BinderException("read_warc index_path supports only local and s3:// paths");
 	}
-	LanceS3Config s3;
-	const LanceS3Config *s3_ptr = nullptr;
-	LanceS3Options options;
+	unique_ptr<LanceS3Options> s3;
 	auto credential_path = is_s3(path) ? path : index_path;
 	if (is_s3(credential_path)) {
-		options = ReadS3Options(context, credential_path);
-		s3 = options.ToConfig();
-		s3_ptr = &s3;
+		s3 = ReadS3Options(context, credential_path);
 	}
 
 	auto opendal_config = ReadOpendalConfig(context);
 	SourceStreamFactory *factory = nullptr;
-	ThrowIfLanceError(lance_warc_open(path.c_str(), index_path.empty() ? nullptr : index_path.c_str(), s3_ptr,
-	                                  &opendal_config, read_options.max_read_parallelism, &factory),
+	ThrowIfLanceError(lance_warc_open(path.c_str(), index_path.empty() ? nullptr : index_path.c_str(),
+	                                  s3 ? &s3->config : nullptr, &opendal_config, read_options.max_read_parallelism,
+	                                  &factory),
 	                  "WARC reader");
 	return BindSourceStream(context, factory, return_types, names);
 }

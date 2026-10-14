@@ -8,7 +8,6 @@ struct ArrowArray;
 struct ArrowArrayStream;
 struct LanceConversionDataset;
 struct LanceConversionWriter;
-struct HuggingFaceStreamFactory;
 struct SourceStreamFactory;
 
 struct LanceS3Config {
@@ -116,19 +115,11 @@ char *lance_conversion_writer_finish(struct LanceConversionWriter *writer);
 // Aborts an unfinished writer; its fragments are not committed. Never throws across the ABI.
 void lance_conversion_writer_destroy(struct LanceConversionWriter *writer);
 
-// Huggingface related functions.
+// Sources reopened for each scan. Hugging Face opens the dataset here to learn its schema.
 char *lance_huggingface_open(const char *dataset, const char *config, const char *split, const char *token,
                              const struct LanceOpendalConfig *opendal_config, int32_t preserve_insertion_order,
                              uint64_t max_read_parallelism, uint64_t read_ahead_bytes,
-                             struct HuggingFaceStreamFactory **output);
-char *lance_huggingface_get_schema(const struct HuggingFaceStreamFactory *factory, struct ArrowSchema *output);
-// columns lists the projected column names in output order; column_count 0 reads every column.
-char *lance_huggingface_get_stream(struct HuggingFaceStreamFactory *factory, const char *const *columns,
-                                   size_t column_count, struct ArrowArrayStream *output);
-void lance_huggingface_get_metrics(const struct HuggingFaceStreamFactory *factory, struct LanceReadMetrics *output);
-void lance_huggingface_destroy(struct HuggingFaceStreamFactory *factory);
-
-// Fixed-schema file sources (WARC, ATIF), reopened for each scan.
+                             struct SourceStreamFactory **output);
 char *lance_warc_open(const char *path, const char *index_path, const struct LanceS3Config *s3,
                       const struct LanceOpendalConfig *opendal_config, uint64_t max_read_parallelism,
                       struct SourceStreamFactory **output);

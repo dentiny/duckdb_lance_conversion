@@ -60,7 +60,7 @@ impl OpendalConfig {
             ("retry_max_delay_ms", self.retry_max_delay_ms),
         ] {
             if value == 0 {
-                return Err(Error::invalid_argument(format!(
+                return Err(Error::message(format!(
                     "lance_conversion_storage_{name} must be positive"
                 )));
             }
@@ -68,13 +68,13 @@ impl OpendalConfig {
                 .checked_add(Duration::from_millis(value))
                 .is_none()
             {
-                return Err(Error::invalid_argument(format!(
+                return Err(Error::message(format!(
                     "lance_conversion_storage_{name} is too large"
                 )));
             }
         }
         if self.retry_max_delay_ms < self.retry_min_delay_ms {
-            return Err(Error::invalid_argument(
+            return Err(Error::message(
                 "lance_conversion_storage_retry_max_delay_ms must be at least retry_min_delay_ms",
             ));
         }
@@ -82,13 +82,12 @@ impl OpendalConfig {
             || self.retry_factor < 1.0
             || self.retry_factor > f32::MAX as f64
         {
-            return Err(Error::invalid_argument(
+            return Err(Error::message(
                 "lance_conversion_storage_retry_factor must be finite and between 1 and f32::MAX",
             ));
         }
-        usize::try_from(self.retry_max_times).map_err(|_| {
-            Error::invalid_argument("lance_conversion_storage_retry_max_times is too large")
-        })?;
+        usize::try_from(self.retry_max_times)
+            .map_err(|_| Error::message("lance_conversion_storage_retry_max_times is too large"))?;
         Ok(self)
     }
 
@@ -192,7 +191,7 @@ impl OpendalStoreProvider {
                 &self.opendal_config,
             )?)),
             scheme => {
-                return Err(Error::invalid_argument(format!(
+                return Err(Error::message(format!(
                     "unsupported storage scheme: {scheme}"
                 )))
             }

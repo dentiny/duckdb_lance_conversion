@@ -1,10 +1,6 @@
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
-#[cfg(test)]
-use futures::TryStreamExt;
-#[cfg(test)]
-use opendal::Operator;
 use percent_encoding::percent_decode_str;
 use serde::Deserialize;
 use url::Url;
@@ -25,7 +21,6 @@ pub struct HuggingFaceSource {
     config: String,
     split: String,
     token: Option<String>,
-    batch_size: usize,
     preserve_insertion_order: bool,
     projection: Option<Vec<usize>>,
     read_options: SourceReadOptions,
@@ -41,7 +36,6 @@ impl HuggingFaceSource {
             config: "default".into(),
             split: "train".into(),
             token: None,
-            batch_size: DEFAULT_BATCH_SIZE,
             preserve_insertion_order: true,
             projection: None,
             read_options: SourceReadOptions::default(),
@@ -63,11 +57,6 @@ impl HuggingFaceSource {
 
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
-        self
-    }
-
-    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
-        self.batch_size = batch_size;
         self
     }
 
@@ -184,27 +173,8 @@ fn hugging_face_location(uri: &str) -> Result<(String, String)> {
     Ok((endpoint.to_owned(), path))
 }
 
-#[cfg(test)]
-fn parquet_paths(entries: impl IntoIterator<Item = (String, bool)>) -> Vec<String> {
-    let mut paths: Vec<_> = entries
-        .into_iter()
-        .filter_map(|(path, is_file)| {
-            let is_parquet = is_file
-                && path
-                    .rsplit_once('.')
-                    .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("parquet"));
-            is_parquet.then_some(path)
-        })
-        .collect();
-    paths.sort_unstable();
-    paths
-}
-
 impl BatchSource for HuggingFaceSource {
     async fn open(self) -> Result<(SchemaRef, BatchStream)> {
-        if self.batch_size == 0 {
-            return Err(Error::message("batch_size must be positive"));
-        }
         self.validate()?;
         self.opendal_config.validate()?;
         let read_options = self.read_options.validate()?;
@@ -213,7 +183,7 @@ impl BatchSource for HuggingFaceSource {
         open_parquet_paths(
             operator,
             paths,
-            self.batch_size,
+            DEFAULT_BATCH_SIZE,
             self.preserve_insertion_order,
             read_options.max_read_parallelism,
             self.read_ahead_bytes,
@@ -229,44 +199,12 @@ impl BatchSource for HuggingFaceSource {
 }
 
 #[cfg(test)]
-async fn open_operator(
-    operator: Operator,
-    prefix: &str,
-    batch_size: usize,
-    preserve_insertion_order: bool,
-    max_read_parallelism: usize,
-    projection: Option<Vec<usize>>,
-    metrics: Arc<ReadMetrics>,
-) -> Result<(SchemaRef, BatchStream)> {
-    let mut lister = operator.lister_with(prefix).recursive(true).await?;
-    let mut entries = Vec::new();
-    while let Some(entry) = lister.try_next().await? {
-        entries.push((entry.path().to_owned(), entry.metadata().is_file()));
-    }
-    let paths = parquet_paths(entries);
-    if paths.is_empty() {
-        return Err(Error::message("source contains no Parquet shards"));
-    }
-    open_parquet_paths(
-        operator,
-        paths,
-        batch_size,
-        preserve_insertion_order,
-        max_read_parallelism,
-        DEFAULT_READ_AHEAD_BYTES,
-        projection,
-        metrics,
-    )
-    .await
-}
-
-#[cfg(test)]
 mod tests {
     use arrow_array::{FixedSizeBinaryArray, Int32Array, RecordBatch, StringArray};
     use arrow_schema::extension::{ExtensionType, Json, Uuid};
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
-    use opendal::services::Fs;
+    use opendal::{services::Fs, Operator};
     use parquet::arrow::{arrow_writer::ArrowWriterOptions, AsyncArrowWriter};
     use tempfile::TempDir;
     use tokio::fs::{self, File};
@@ -276,6 +214,34 @@ mod tests {
 
     fn fs_operator(root: &TempDir) -> Operator {
         Operator::new(Fs::default().root(root.path().to_str().unwrap())).unwrap()
+    }
+
+    /// Opens every shard under `default/train/`, in name order.
+    async fn open_shards(
+        root: &TempDir,
+        preserve_insertion_order: bool,
+        projection: Option<Vec<usize>>,
+        metrics: Arc<ReadMetrics>,
+    ) -> Result<(SchemaRef, BatchStream)> {
+        let mut paths = std::fs::read_dir(root.path().join("default/train"))
+            .into_iter()
+            .flatten()
+            .map(|entry| format!("default/train/{}", entry.unwrap().file_name().display()))
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        let operator = fs_operator(root);
+        let read_ahead = DEFAULT_READ_AHEAD_BYTES;
+        open_parquet_paths(
+            operator,
+            paths,
+            1024,
+            preserve_insertion_order,
+            8,
+            read_ahead,
+            projection,
+            metrics,
+        )
+        .await
     }
 
     #[test]
@@ -290,32 +256,6 @@ mod tests {
             super::super::DEFAULT_MAX_READ_PARALLELISM
         );
         assert_eq!(source.read_ahead_bytes, DEFAULT_READ_AHEAD_BYTES);
-    }
-
-    #[test]
-    fn filters_and_sorts_parquet_shards() {
-        let paths = parquet_paths([
-            (
-                /*path=*/ "default/train/2.parquet".into(),
-                /*is_file=*/ true,
-            ),
-            (
-                /*path=*/ "default/train/_metadata".into(),
-                /*is_file=*/ true,
-            ),
-            (
-                /*path=*/ "default/train/1.PARQUET".into(),
-                /*is_file=*/ true,
-            ),
-            (
-                /*path=*/ "default/train/directory.parquet".into(),
-                /*is_file=*/ false,
-            ),
-        ]);
-        assert_eq!(
-            paths,
-            vec!["default/train/1.PARQUET", "default/train/2.parquet"]
-        );
     }
 
     #[tokio::test]
@@ -334,17 +274,9 @@ mod tests {
             1,
         );
         let metrics = Arc::new(ReadMetrics::default());
-        let (_, stream) = open_operator(
-            fs_operator(&root),
-            "default/train/",
-            1024,
-            true,
-            8,
-            None,
-            metrics.clone(),
-        )
-        .await
-        .unwrap();
+        let (_, stream) = open_shards(&root, true, None, metrics.clone())
+            .await
+            .unwrap();
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
         assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
         let snapshot = metrics.snapshot();
@@ -360,17 +292,9 @@ mod tests {
             1
         );
 
-        let (_, stream) = open_operator(
-            fs_operator(&root),
-            "default/train/",
-            1024,
-            false,
-            8,
-            None,
-            Arc::new(ReadMetrics::default()),
-        )
-        .await
-        .unwrap();
+        let (_, stream) = open_shards(&root, false, None, Arc::new(ReadMetrics::default()))
+            .await
+            .unwrap();
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
         let mut values = batches
             .iter()
@@ -420,12 +344,9 @@ mod tests {
         write_wide_shard(&root.path().join("default/train/2.parquet"), vec![3, 4]).await;
 
         for preserve_insertion_order in [true, false] {
-            let (schema, stream) = open_operator(
-                fs_operator(&root),
-                "default/train/",
-                1024,
+            let (schema, stream) = open_shards(
+                &root,
                 preserve_insertion_order,
-                8,
                 Some(vec![2, 0]),
                 Arc::new(ReadMetrics::default()),
             )
@@ -471,17 +392,9 @@ mod tests {
         let mut snapshots = Vec::new();
         for projection in [None, Some(vec![0])] {
             let metrics = Arc::new(ReadMetrics::default());
-            let (_, stream) = open_operator(
-                fs_operator(&root),
-                "default/train/",
-                1024,
-                true,
-                8,
-                projection,
-                metrics.clone(),
-            )
-            .await
-            .unwrap();
+            let (_, stream) = open_shards(&root, true, projection, metrics.clone())
+                .await
+                .unwrap();
             stream.try_collect::<Vec<_>>().await.unwrap();
             let snapshot = metrics.snapshot();
             assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
@@ -569,17 +482,9 @@ mod tests {
         writer.write(&batch).await.unwrap();
         writer.close().await.unwrap();
 
-        let (schema, _) = open_operator(
-            fs_operator(&root),
-            "default/train/",
-            1024,
-            true,
-            8,
-            None,
-            Arc::new(ReadMetrics::default()),
-        )
-        .await
-        .unwrap();
+        let (schema, _) = open_shards(&root, true, None, Arc::new(ReadMetrics::default()))
+            .await
+            .unwrap();
         assert_eq!(schema.field(0).extension_type_name(), Some(Uuid::NAME));
         assert_eq!(schema.field(1).extension_type_name(), Some(Json::NAME));
     }
@@ -587,21 +492,11 @@ mod tests {
     #[tokio::test]
     async fn rejects_empty_and_mismatched_shards() {
         let root = TempDir::new().unwrap();
-        let error = match open_operator(
-            fs_operator(&root),
-            "default/train/",
-            1024,
-            true,
-            8,
-            None,
-            Arc::new(ReadMetrics::default()),
-        )
-        .await
-        {
+        let error = match open_shards(&root, true, None, Arc::new(ReadMetrics::default())).await {
             Ok(_) => panic!("empty source should fail"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("no Parquet shards"));
+        assert!(error.to_string().contains("no .parquet files"));
 
         write_parquet_shard(
             &root.path().join("default/train/1.parquet"),
@@ -615,17 +510,7 @@ mod tests {
             vec![2],
             1,
         );
-        let error = match open_operator(
-            fs_operator(&root),
-            "default/train/",
-            1024,
-            false,
-            8,
-            None,
-            Arc::new(ReadMetrics::default()),
-        )
-        .await
-        {
+        let error = match open_shards(&root, false, None, Arc::new(ReadMetrics::default())).await {
             Ok(_) => panic!("mismatched schemas should fail"),
             Err(error) => error,
         };

@@ -5,7 +5,7 @@ use lance::{
 };
 use lance_index::{
     scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams},
-    IndexType,
+    IndexParams, IndexType,
 };
 use lance_linalg::distance::MetricType;
 
@@ -30,36 +30,26 @@ pub(super) struct LanceIndexPlan {
 impl LanceIndexPlan {
     pub(super) fn new(schema: &SchemaRef, options: &WriteOptions) -> Result<Self> {
         let mut indexes = Vec::new();
-        append_indexes(
-            schema,
-            &options.scalar_index_columns,
-            IndexKind::BTree,
-            &mut indexes,
-        )?;
-        append_indexes(
-            schema,
-            &options.vector_index_columns,
-            IndexKind::Vector,
-            &mut indexes,
-        )?;
-        append_indexes(
-            schema,
-            &options.text_index_columns,
-            IndexKind::Text,
-            &mut indexes,
-        )?;
-        append_indexes(
-            schema,
-            &options.bloom_filter_index_columns,
-            IndexKind::BloomFilter,
-            &mut indexes,
-        )?;
+        for (columns, kind) in [
+            (&options.scalar_index_columns, IndexKind::BTree),
+            (&options.vector_index_columns, IndexKind::Vector),
+            (&options.text_index_columns, IndexKind::Text),
+            (&options.bloom_filter_index_columns, IndexKind::BloomFilter),
+        ] {
+            for column in columns {
+                let field = schema
+                    .field_with_name(column)
+                    .map_err(|_| Error::message(format!("index column not found: {column}")))?;
+                validate_index_type(field.data_type(), column, kind)?;
+                indexes.push((column.clone(), kind));
+            }
+        }
         indexes.sort_by(|left, right| left.0.cmp(&right.0));
         if indexes
             .windows(2)
             .any(|indexes| indexes[0].0 == indexes[1].0)
         {
-            return Err(Error::invalid_argument(
+            return Err(Error::message(
                 "a column cannot have multiple indexes in one write",
             ));
         }
@@ -72,175 +62,116 @@ impl LanceIndexPlan {
             .iter()
             .any(|(_, kind)| *kind == IndexKind::Vector)
         {
-            Some(
-                dataset
-                    .count_rows(None)
-                    .await?
-                    .div_ceil(TARGET_VECTOR_PARTITION_ROWS)
-                    .clamp(1, 4096),
-            )
+            dataset
+                .count_rows(None)
+                .await?
+                .div_ceil(TARGET_VECTOR_PARTITION_ROWS)
+                .clamp(1, 4096)
         } else {
-            None
+            0
         };
 
         for (column, kind) in &self.indexes {
-            match kind {
-                IndexKind::BTree => {
-                    let params = ScalarIndexParams::for_builtin(BuiltinIndexType::BTree);
-                    dataset
-                        .create_index(
-                            &[column.as_str()],
-                            IndexType::BTree,
-                            /*name=*/ None,
-                            &params,
-                            /*replace=*/ true,
-                        )
-                        .await
-                        .context(format!("creating BTree index on '{column}'"))?;
-                }
-                IndexKind::Vector => {
-                    let params = VectorIndexParams::ivf_flat(
-                        vector_partitions.expect("vector partition count must exist"),
+            let (index_type, params, label): (_, Box<dyn IndexParams>, _) = match kind {
+                IndexKind::BTree => (
+                    IndexType::BTree,
+                    Box::new(ScalarIndexParams::for_builtin(BuiltinIndexType::BTree)),
+                    "BTree",
+                ),
+                IndexKind::Vector => (
+                    IndexType::IvfFlat,
+                    Box::new(VectorIndexParams::ivf_flat(
+                        vector_partitions,
                         MetricType::L2,
-                    );
-                    dataset
-                        .create_index(
-                            &[column.as_str()],
-                            IndexType::IvfFlat,
-                            /*name=*/ None,
-                            &params,
-                            /*replace=*/ true,
-                        )
-                        .await
-                        .context(format!("creating vector index on '{column}'"))?;
-                }
-                IndexKind::Text => {
-                    dataset
-                        .create_index(
-                            &[column.as_str()],
-                            IndexType::Inverted,
-                            /*name=*/ None,
-                            &InvertedIndexParams::default(),
-                            /*replace=*/ true,
-                        )
-                        .await
-                        .context(format!("creating text index on '{column}'"))?;
-                }
-                IndexKind::BloomFilter => {
-                    let params = ScalarIndexParams::for_builtin(BuiltinIndexType::BloomFilter);
-                    dataset
-                        .create_index(
-                            &[column.as_str()],
-                            IndexType::BloomFilter,
-                            /*name=*/ None,
-                            &params,
-                            /*replace=*/ true,
-                        )
-                        .await
-                        .context(format!("creating Bloom filter index on '{column}'"))?;
-                }
-            }
+                    )),
+                    "vector",
+                ),
+                IndexKind::Text => (
+                    IndexType::Inverted,
+                    Box::new(InvertedIndexParams::default()),
+                    "text",
+                ),
+                IndexKind::BloomFilter => (
+                    IndexType::BloomFilter,
+                    Box::new(ScalarIndexParams::for_builtin(
+                        BuiltinIndexType::BloomFilter,
+                    )),
+                    "Bloom filter",
+                ),
+            };
+            dataset
+                .create_index(
+                    &[column.as_str()],
+                    index_type,
+                    /*name=*/ None,
+                    params.as_ref(),
+                    /*replace=*/ true,
+                )
+                .await
+                .context(format!("creating {label} index on '{column}'"))?;
         }
         Ok(())
     }
 }
 
-fn append_indexes(
-    schema: &SchemaRef,
-    columns: &[String],
-    kind: IndexKind,
-    indexes: &mut Vec<(String, IndexKind)>,
-) -> Result<()> {
-    for column in columns {
-        let field = schema
-            .field_with_name(column)
-            .map_err(|_| Error::invalid_argument(format!("index column not found: {column}")))?;
-        validate_index_type(field.data_type(), column, kind)?;
-        indexes.push((column.clone(), kind));
-    }
-    Ok(())
-}
-
 fn validate_index_type(data_type: &DataType, column: &str, kind: IndexKind) -> Result<()> {
+    use DataType::*;
     let supported = match kind {
-        IndexKind::BTree => supports_scalar_index(data_type),
-        IndexKind::Vector => supports_vector_index(data_type),
-        IndexKind::Text => matches!(
+        IndexKind::BTree => matches!(
             data_type,
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+            Boolean
+                | Int8
+                | Int16
+                | Int32
+                | Int64
+                | UInt8
+                | UInt16
+                | UInt32
+                | UInt64
+                | Float16
+                | Float32
+                | Float64
+                | Decimal128(_, _)
+                | Utf8
+                | LargeUtf8
+                | Utf8View
+                | Date32
+                | Date64
+                | Time32(_)
+                | Time64(_)
+                | Timestamp(_, _)
         ),
-        IndexKind::BloomFilter => supports_bloom_filter_index(data_type),
+        IndexKind::Vector => matches!(
+            data_type,
+            FixedSizeList(field, _)
+                if matches!(field.data_type(), Int8 | UInt8 | Float16 | Float32 | Float64)
+        ),
+        IndexKind::Text => matches!(data_type, Utf8 | LargeUtf8 | Utf8View),
+        IndexKind::BloomFilter => matches!(
+            data_type,
+            Int8 | Int16
+                | Int32
+                | Int64
+                | UInt8
+                | UInt16
+                | UInt32
+                | UInt64
+                | Float32
+                | Float64
+                | Utf8
+                | LargeUtf8
+                | Date32
+                | Date64
+                | Time32(_)
+                | Time64(_)
+                | Timestamp(_, _)
+        ),
     };
     if supported {
         Ok(())
     } else {
-        Err(Error::invalid_argument(format!(
+        Err(Error::message(format!(
             "cannot create the requested index on column '{column}' with type {data_type}"
         )))
     }
-}
-
-fn supports_scalar_index(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Boolean
-            | DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float16
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Decimal128(_, _)
-            | DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Utf8View
-            | DataType::Date32
-            | DataType::Date64
-            | DataType::Time32(_)
-            | DataType::Time64(_)
-            | DataType::Timestamp(_, _)
-    )
-}
-
-fn supports_vector_index(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::FixedSizeList(field, _)
-            if matches!(
-                field.data_type(),
-                DataType::Int8
-                    | DataType::UInt8
-                    | DataType::Float16
-                    | DataType::Float32
-                    | DataType::Float64
-            )
-    )
-}
-
-fn supports_bloom_filter_index(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Date32
-            | DataType::Date64
-            | DataType::Time32(_)
-            | DataType::Time64(_)
-            | DataType::Timestamp(_, _)
-    )
 }

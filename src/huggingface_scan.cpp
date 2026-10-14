@@ -4,15 +4,11 @@
 #include "function_metadata.hpp"
 #include "lance_ffi.hpp"
 #include "lance_conversion.h"
-#include "source_metrics.hpp"
 #include "source_options.hpp"
 #include "storage_options.hpp"
-#include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/function/table/arrow.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/main/external_dependencies.hpp"
 #include "duckdb/main/secret/secret.hpp"
 
 namespace duckdb {
@@ -20,35 +16,6 @@ namespace {
 
 // Matches DEFAULT_READ_AHEAD_BYTES in rust/src/source/huggingface.rs.
 constexpr uint64_t DEFAULT_READ_AHEAD_BYTES = 32 * 1024 * 1024;
-
-class HuggingFaceMetricsDependency final : public SourceMetricsDependency {
-public:
-	explicit HuggingFaceMetricsDependency(HuggingFaceStreamFactory *factory_p)
-	    : factory(factory_p, lance_huggingface_destroy) {
-	}
-
-	LanceReadMetrics Snapshot() const override {
-		LanceReadMetrics metrics;
-		lance_huggingface_get_metrics(factory.get(), &metrics);
-		return metrics;
-	}
-
-private:
-	std::unique_ptr<HuggingFaceStreamFactory, decltype(&lance_huggingface_destroy)> factory;
-};
-
-unique_ptr<ArrowArrayStreamWrapper> ProduceHuggingFaceStream(uintptr_t factory_ptr, ArrowStreamParameters &parameters) {
-	auto result = make_uniq<ArrowArrayStreamWrapper>();
-	vector<const char *> columns;
-	columns.reserve(parameters.projected_columns.columns.size());
-	for (const auto &column : parameters.projected_columns.columns) {
-		columns.push_back(column.c_str());
-	}
-	ThrowIfLanceError(lance_huggingface_get_stream(reinterpret_cast<HuggingFaceStreamFactory *>(factory_ptr),
-	                                               columns.data(), columns.size(), &result->arrow_array_stream),
-	                  "Hugging Face reader");
-	return result;
-}
 
 unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBindInput &input,
                                          vector<LogicalType> &return_types, vector<string> &names) {
@@ -80,35 +47,23 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 	secret_reader.TryGetSecretKey("token", token);
 
 	auto opendal_config = ReadOpendalConfig(context);
-	HuggingFaceStreamFactory *factory = nullptr;
+	SourceStreamFactory *factory = nullptr;
 	ThrowIfLanceError(lance_huggingface_open(dataset.c_str(), config.c_str(), split.c_str(),
 	                                         token.empty() ? nullptr : token.c_str(), &opendal_config,
 	                                         preserve_insertion_order, read_options.max_read_parallelism,
 	                                         read_ahead_bytes, &factory),
 	                  "Hugging Face reader");
-	auto dependency = make_shared_ptr<HuggingFaceMetricsDependency>(factory);
-	auto result = make_uniq<ArrowScanFunctionData>(ProduceHuggingFaceStream, reinterpret_cast<uintptr_t>(factory),
-	                                               std::move(dependency));
-	ThrowIfLanceError(lance_huggingface_get_schema(factory, &result->schema_root.arrow_schema), "Hugging Face reader");
-	ArrowTableFunction::PopulateArrowTableSchema(context, result->arrow_table, result->schema_root.arrow_schema);
-	names = result->arrow_table.GetNames();
-	return_types = result->arrow_table.GetTypes();
-	result->all_types = return_types;
+	auto result = BindSourceStream(context, factory, return_types, names);
 	if (return_types.empty()) {
 		throw InvalidInputException("Hugging Face dataset must have at least one column");
 	}
-	return std::move(result);
+	return result;
 }
 
 } // namespace
 
 void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
-	TableFunction function("read_huggingface", {LogicalType::VARCHAR}, SourceMetricsArrowScan, BindHuggingFace,
-	                       ArrowTableFunction::ArrowScanInitGlobal, ArrowTableFunction::ArrowScanInitLocal);
-	function.get_partition_data = ArrowSourceGetPartitionData;
-	function.get_metrics = SourceMetricsGetMetrics;
-	function.table_scan_progress = SourceMetricsProgress;
-	function.projection_pushdown = true;
+	auto function = SourceStreamTableFunction("read_huggingface", BindHuggingFace);
 	function.named_parameters["config"] = LogicalType::VARCHAR;
 	function.named_parameters["split"] = LogicalType::VARCHAR;
 	function.named_parameters["preserve_insertion_order"] = LogicalType::BOOLEAN;

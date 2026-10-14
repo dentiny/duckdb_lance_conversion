@@ -375,7 +375,7 @@ async fn stream_records(
         } else {
             0
         };
-        if !batch.is_empty()
+        if batch.len > 0
             && batch.would_exceed_body_limit(body_len)
             && !send_batch(batch.take_empty(batch_size)?, sender).await?
         {
@@ -391,14 +391,14 @@ async fn stream_records(
                 .1;
             batch.append_body(body)?;
         }
-        batch.finish_row();
-        if (batch.len() == batch_size || batch.body_bytes() >= MAX_BATCH_BODY_BYTES)
+        batch.len += 1;
+        if (batch.len == batch_size || batch.body_bytes >= MAX_BATCH_BODY_BYTES)
             && !send_batch(batch.take_empty(batch_size)?, sender).await?
         {
             return Ok(());
         }
     }
-    if !batch.is_empty() {
+    if batch.len > 0 {
         send_batch(batch, sender).await?;
     }
     Ok(())
@@ -476,18 +476,6 @@ impl WarcBatchBuilder {
         })
     }
 
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    fn body_bytes(&self) -> usize {
-        self.body_bytes
-    }
-
     fn would_exceed_body_limit(&self, body_len: usize) -> bool {
         self.body_position.is_some()
             && self.body_bytes.saturating_add(body_len) > MAX_BATCH_BODY_BYTES
@@ -559,10 +547,6 @@ impl WarcBatchBuilder {
         }
     }
 
-    fn finish_row(&mut self) {
-        self.len += 1;
-    }
-
     pub(super) fn finish(self) -> Result<RecordBatch> {
         let columns = self
             .columns
@@ -575,25 +559,12 @@ impl WarcBatchBuilder {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     use arrow_array::{BinaryViewArray, StringArray};
     use futures::TryStreamExt;
+    use tempfile::TempDir;
 
     use super::super::test_util::{gzip, warc_record as record, write_indexed_warc_fixture};
     use super::*;
-
-    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-    async fn test_directory() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "lance-warc-test-{}-{}",
-            std::process::id(),
-            NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed)
-        ));
-        tokio::fs::create_dir(&path).await.unwrap();
-        path
-    }
 
     #[test]
     fn exposes_standard_warc_schema() {
@@ -616,7 +587,8 @@ mod tests {
 
     #[tokio::test]
     async fn streams_plain_and_gzipped_warc() {
-        let temp = test_directory().await;
+        let temp = TempDir::new().unwrap();
+        let temp = temp.path();
         let input = format!("{}{}", record(1, "first"), record(2, "second"));
         let plain_path = temp.join("records.warc");
         tokio::fs::write(&plain_path, &input).await.unwrap();
@@ -685,15 +657,14 @@ mod tests {
                 .sum::<usize>(),
             2
         );
-
-        tokio::fs::remove_dir_all(temp).await.unwrap();
     }
 
     #[tokio::test]
     async fn streams_indexed_gzip_members_in_offset_order() {
-        let temp = test_directory().await;
+        let temp = TempDir::new().unwrap();
+        let temp = temp.path();
         let fixture = write_indexed_warc_fixture(
-            &temp,
+            temp,
             "indexed",
             &[(1, "first"), (2, "second")],
             &[1, 0],
@@ -710,8 +681,6 @@ mod tests {
             .unwrap();
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
         assert_eq!(ids(&batches), ["<urn:uuid:1>", "<urn:uuid:2>"]);
-
-        tokio::fs::remove_dir_all(temp).await.unwrap();
     }
 
     fn ids(batches: &[RecordBatch]) -> Vec<String> {
@@ -733,7 +702,8 @@ mod tests {
 
     #[tokio::test]
     async fn streams_common_crawl_segment_files() {
-        let temp = test_directory().await;
+        let temp = TempDir::new().unwrap();
+        let temp = temp.path();
         let crawl = temp.join("crawl-data/c");
         let warc_dir = crawl.join("segments/1/warc");
         tokio::fs::create_dir_all(&warc_dir).await.unwrap();
@@ -794,13 +764,12 @@ mod tests {
         assert!(error
             .to_string()
             .contains("not supported for WARC segments"));
-
-        tokio::fs::remove_dir_all(temp).await.unwrap();
     }
 
     #[tokio::test]
     async fn reports_malformed_warc() {
-        let temp = test_directory().await;
+        let temp = TempDir::new().unwrap();
+        let temp = temp.path();
         let path = temp.join("invalid.warc");
         tokio::fs::write(
             &path,
@@ -818,12 +787,12 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("WARC parse error"));
-        tokio::fs::remove_dir_all(temp).await.unwrap();
     }
 
     #[tokio::test]
     async fn reads_invalid_utf8_headers_lossily() {
-        let temp = test_directory().await;
+        let temp = TempDir::new().unwrap();
+        let temp = temp.path();
         let path = temp.join("invalid-header.warc");
         let mut input = b"WARC/1.0\r\n\
             WARC-Type: response\r\n\
@@ -854,6 +823,5 @@ mod tests {
             .unwrap()
             .value(0);
         assert_eq!(content_type, "\u{FFFD}");
-        tokio::fs::remove_dir_all(temp).await.unwrap();
     }
 }

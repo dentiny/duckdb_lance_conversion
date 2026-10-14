@@ -24,23 +24,19 @@ unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput
 	if (format_entry != input.named_parameters.end()) {
 		format = format_entry->second.GetValue<string>();
 	}
-	LanceS3Config s3;
-	const LanceS3Config *s3_ptr = nullptr;
-	LanceS3Options options;
+	unique_ptr<LanceS3Options> s3;
 	if (FileSystem::IsRemoteFile(path)) {
 		if (!StringUtil::CIStartsWith(path, "s3://")) {
 			throw BinderException("read_atif supports only local and s3:// paths");
 		}
-		options = ReadS3Options(context, path);
-		s3 = options.ToConfig();
-		s3_ptr = &s3;
+		s3 = ReadS3Options(context, path);
 	}
 
 	auto opendal_config = ReadOpendalConfig(context);
 	SourceStreamFactory *factory = nullptr;
-	ThrowIfLanceError(
-	    lance_atif_open(path.c_str(), format.empty() ? nullptr : format.c_str(), s3_ptr, &opendal_config, &factory),
-	    "ATIF reader");
+	ThrowIfLanceError(lance_atif_open(path.c_str(), format.empty() ? nullptr : format.c_str(),
+	                                  s3 ? &s3->config : nullptr, &opendal_config, &factory),
+	                  "ATIF reader");
 	return BindSourceStream(context, factory, return_types, names);
 }
 

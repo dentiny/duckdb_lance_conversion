@@ -32,46 +32,32 @@ impl OpendalParquetReader {
             metrics,
         }
     }
-}
 
-fn opendal_error(error: opendal::Error) -> ParquetError {
-    ParquetError::External(Box::new(error))
+    async fn read(&self, range: impl Into<opendal::BytesRange>) -> parquet::errors::Result<Bytes> {
+        let bytes = self
+            .operator
+            .read_with(&self.path)
+            .range(range)
+            .await
+            .map_err(|error| ParquetError::External(Box::new(error)))?
+            .to_bytes();
+        self.metrics.add_bytes_read(bytes.len());
+        Ok(bytes)
+    }
 }
 
 impl AsyncFileReader for OpendalParquetReader {
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        async move {
-            let bytes = self
-                .operator
-                .read_with(&self.path)
-                .range(range)
-                .await
-                .map(|buffer| buffer.to_bytes())
-                .map_err(opendal_error)?;
-            self.metrics.add_bytes_read(bytes.len());
-            Ok(bytes)
-        }
-        .boxed()
+        self.read(range).boxed()
     }
 
     fn get_byte_ranges(
         &mut self,
         ranges: Vec<Range<u64>>,
     ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
-        let operator = &self.operator;
-        let path = &self.path;
-        let metrics = &self.metrics;
+        let reader = &*self;
         stream::iter(ranges)
-            .map(move |range| async move {
-                let bytes = operator
-                    .read_with(path)
-                    .range(range)
-                    .await
-                    .map(|buffer| buffer.to_bytes())
-                    .map_err(opendal_error)?;
-                metrics.add_bytes_read(bytes.len());
-                Ok(bytes)
-            })
+            .map(move |range| reader.read(range))
             .buffered(MAX_CONCURRENT_RANGE_READS)
             .try_collect()
             .boxed()
@@ -95,18 +81,8 @@ impl AsyncFileReader for OpendalParquetReader {
 
 impl MetadataSuffixFetch for &mut OpendalParquetReader {
     fn fetch_suffix(&mut self, suffix: usize) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        async move {
-            let bytes = self
-                .operator
-                .read_with(&self.path)
-                .range(opendal::BytesRange::suffix(suffix as u64))
-                .await
-                .map(|buffer| buffer.to_bytes())
-                .map_err(opendal_error)?;
-            self.metrics.add_bytes_read(bytes.len());
-            Ok(bytes)
-        }
-        .boxed()
+        self.read(opendal::BytesRange::suffix(suffix as u64))
+            .boxed()
     }
 }
 
