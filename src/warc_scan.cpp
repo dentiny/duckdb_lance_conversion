@@ -62,7 +62,7 @@ void RegisterWarcScanFunction(ExtensionLoader &loader) {
 	SourceReadOptions::Register(function);
 	RegisterTableFunctionWithMetadata(loader, std::move(function),
 	                                  /*parameter_names=*/ {"path", "index_path", "max_read_parallelism"},
-	                                  /*description=*/"Reads records from a local, S3, or HTTP(S) WARC file or Common Crawl segment.",
+	                                  /*description=*/"Reads records from a local, S3, or HTTP(S) WARC file or Common Crawl crawl or segment.",
 	                                  /*examples=*/ {"SELECT * FROM read_warc('archive.warc.gz');"},
 	                                  /*categories=*/ {"lance_conversion", "reader"});
 }
