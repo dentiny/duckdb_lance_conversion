@@ -53,6 +53,17 @@ SELECT * FROM read_atif('test/data/records.warc', format = 'json');
 ----
 ATIF read error
 
+statement ok
+SET preserve_insertion_order = false;
+
+statement error
+SELECT * FROM read_atif('test/data/trajectories.jsonl');
+----
+read_atif requires preserve_insertion_order = true
+
+statement ok
+RESET preserve_insertion_order;
+
 restart no_extension_load
 
 statement ok

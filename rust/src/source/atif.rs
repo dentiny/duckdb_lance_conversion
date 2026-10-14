@@ -107,7 +107,7 @@ impl BatchSource for AtifSource {
         // The ATIF converter always produces every column; projection only
         // trims the batches DuckDB receives.
         let batches = reader
-            .into_stream()
+            .into_parallel_stream(std::thread::available_parallelism().map_or(1, usize::from))
             .map_err(|error| Error::message(format!("ATIF read error: {error}")))
             .map(move |batch| match &projection {
                 Some(projection) => Ok(batch?.project(projection)?),
