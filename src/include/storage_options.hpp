@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/unique_ptr.hpp"
 #include "lance_conversion.h"
 
 namespace duckdb {
@@ -19,10 +20,10 @@ struct LanceS3Options {
 	string session_token;
 	bool use_ssl = true;
 	bool virtual_host_style = false;
-
-	LanceS3Config ToConfig() const;
+	// Points into the strings above.
+	LanceS3Config config;
 };
 
-LanceS3Options ReadS3Options(ClientContext &context, const string &path);
+unique_ptr<LanceS3Options> ReadS3Options(ClientContext &context, const string &path);
 
 } // namespace duckdb

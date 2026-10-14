@@ -80,7 +80,7 @@ fn configure_blob_storage(
     }
     if let Some(threshold) = options.blob_dedicated_size_threshold {
         let threshold = NonZeroUsize::new(threshold).ok_or_else(|| {
-            Error::invalid_argument("blob dedicated size threshold must be greater than zero")
+            Error::message("blob dedicated size threshold must be greater than zero")
         })?;
         blob_options = blob_options.with_dedicated_size_threshold(threshold);
     }
@@ -102,9 +102,9 @@ fn configure_blob_storage(
         .blob_columns
         .iter()
         .map(|name| {
-            let index = input_schema.index_of(name).map_err(|_| {
-                Error::invalid_argument(format!("BLOB_COLUMNS column not found: {name}"))
-            })?;
+            let index = input_schema
+                .index_of(name)
+                .map_err(|_| Error::message(format!("BLOB_COLUMNS column not found: {name}")))?;
             ensure_uri_column(input_schema.field(index).data_type(), name)?;
             Ok(index)
         })
@@ -114,7 +114,7 @@ fn configure_blob_storage(
         .windows(2)
         .any(|indices| indices[0] == indices[1])
     {
-        return Err(Error::invalid_argument(
+        return Err(Error::message(
             "BLOB_COLUMNS cannot contain duplicate columns",
         ));
     }
@@ -171,9 +171,9 @@ fn configure_column_compression(
     let input_schema = stream.schema();
     let mut fields = input_schema.fields().to_vec();
     for (name, algorithm) in &options.column_compression {
-        let index = input_schema.index_of(name).map_err(|_| {
-            Error::invalid_argument(format!("COLUMN_COMPRESSION column not found: {name}"))
-        })?;
+        let index = input_schema
+            .index_of(name)
+            .map_err(|_| Error::message(format!("COLUMN_COMPRESSION column not found: {name}")))?;
         let mut metadata = fields[index].metadata().clone();
         metadata.insert(COMPRESSION_META_KEY.into(), algorithm.clone());
         fields[index] = Arc::new(fields[index].as_ref().clone().with_metadata(metadata));
@@ -197,7 +197,7 @@ fn ensure_uri_column(data_type: &DataType, name: &str) -> Result<()> {
     ) {
         Ok(())
     } else {
-        Err(Error::invalid_argument(format!(
+        Err(Error::message(format!(
             "BLOB_COLUMNS column must be a string: {name}"
         )))
     }

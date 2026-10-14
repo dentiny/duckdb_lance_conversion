@@ -245,13 +245,6 @@ impl LanceDatasetWriter {
         LanceFragmentWriter::spawn(self.write.clone())
     }
 
-    /// Writes a whole stream as fragments of this write, without a channel.
-    pub(super) async fn write_stream(&self, stream: SendableRecordBatchStream) -> Result<()> {
-        let transaction = self.write.write_fragments(stream).await?;
-        self.write.add_transaction(transaction);
-        Ok(())
-    }
-
     /// Commits every finished fragment writer as one dataset version, then builds indexes.
     /// Fragments of fragment writers that were not finished are left uncommitted.
     pub async fn commit(self) -> Result<WriteSummary> {

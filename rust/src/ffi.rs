@@ -1,7 +1,7 @@
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use arrow_array::{
     ffi::{from_ffi_and_data_type, FFI_ArrowArray},
@@ -117,38 +117,6 @@ impl RecordBatchReader for ArrowBatchReader {
     }
 }
 
-pub struct HuggingFaceStreamFactory {
-    dataset: String,
-    config: String,
-    split: String,
-    token: Option<String>,
-    preserve_insertion_order: bool,
-    max_read_parallelism: usize,
-    read_ahead_bytes: usize,
-    opendal_config: OpendalConfig,
-    schema: SchemaRef,
-    reader: Option<ArrowBatchReader>,
-    metrics: Arc<ReadMetrics>,
-}
-
-impl HuggingFaceStreamFactory {
-    fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
-        let mut source = HuggingFaceSource::new(&self.dataset)
-            .with_config(&self.config)
-            .with_split(&self.split)
-            .with_preserve_insertion_order(self.preserve_insertion_order)
-            .with_projection(projection)
-            .with_max_read_parallelism(self.max_read_parallelism)
-            .with_read_ahead_bytes(self.read_ahead_bytes)
-            .with_opendal_config(self.opendal_config)
-            .with_metrics(self.metrics.clone());
-        if let Some(token) = &self.token {
-            source = source.with_token(token);
-        }
-        open_batch_reader(source)
-    }
-}
-
 type MakeReader =
     Box<dyn Fn(Vec<usize>, Arc<ReadMetrics>) -> Result<ArrowBatchReader> + Send + Sync>;
 
@@ -158,6 +126,9 @@ pub struct SourceStreamFactory {
     schema: SchemaRef,
     metrics: Arc<ReadMetrics>,
     make_reader: MakeReader,
+    /// Opened at bind time to learn the schema; reused by the first scan that
+    /// reads every column in schema order.
+    bound: Mutex<Option<ArrowBatchReader>>,
 }
 
 impl SourceStreamFactory {
@@ -171,10 +142,26 @@ impl SourceStreamFactory {
             make_reader: Box::new(move |projection, metrics| {
                 open_batch_reader(make_source(projection, metrics))
             }),
+            bound: Mutex::new(None),
         }
     }
 
+    /// Opens a reader now, for sources whose schema is only known once open.
+    fn bind(mut self) -> Result<Self> {
+        let reader = self.open_reader(Vec::new())?;
+        self.schema = reader.schema();
+        self.bound = Mutex::new(Some(reader));
+        Ok(self)
+    }
+
     fn open_reader(&self, projection: Vec<usize>) -> Result<ArrowBatchReader> {
+        let reads_every_column =
+            projection.is_empty() || projection.iter().copied().eq(0..self.schema.fields().len());
+        if reads_every_column {
+            if let Some(reader) = self.bound.lock().unwrap().take() {
+                return Ok(reader);
+            }
+        }
         (self.make_reader)(projection, self.metrics.clone())
     }
 }
@@ -214,35 +201,6 @@ unsafe fn string_list(values: *const *const c_char, count: usize) -> Result<Vec<
         })
         .collect()
 }
-
-/// Resolves DuckDB's projected column names to indexes into `schema`, in
-/// projection order. An empty projection reads every column.
-unsafe fn projected_columns(
-    schema: &Schema,
-    columns: *const *const c_char,
-    column_count: usize,
-    source: &str,
-) -> Result<Vec<usize>> {
-    if column_count == 0 {
-        return Ok(Vec::new());
-    }
-    if columns.is_null() {
-        return Err(Error::message(format!("null {source} projection")));
-    }
-    std::slice::from_raw_parts(columns, column_count)
-        .iter()
-        .map(|&column| {
-            if column.is_null() {
-                return Err(Error::message(format!("null {source} column name")));
-            }
-            let name = CStr::from_ptr(column).to_str()?;
-            schema
-                .index_of(name)
-                .map_err(|_| Error::message(format!("unknown {source} column: {name}")))
-        })
-        .collect()
-}
-
 unsafe fn parse_opendal_config(config: *const OpendalConfig) -> Result<OpendalConfig> {
     config.as_ref().copied().unwrap_or_default().validate()
 }
@@ -268,12 +226,10 @@ fn optional_threshold(value: i64, name: &str, allow_zero: bool) -> Result<Option
         return Ok(None);
     }
     if value == 0 && !allow_zero {
-        return Err(Error::invalid_argument(format!(
-            "{name} must be greater than zero"
-        )));
+        return Err(Error::message(format!("{name} must be greater than zero")));
     }
     Ok(Some(usize::try_from(value).map_err(|_| {
-        Error::invalid_argument(format!("{name} exceeds the platform size limit"))
+        Error::message(format!("{name} exceeds the platform size limit"))
     })?))
 }
 
@@ -282,9 +238,7 @@ fn write_mode(mode: i32) -> Result<WriteMode> {
         0 => Ok(WriteMode::Create),
         1 => Ok(WriteMode::Append),
         2 => Ok(WriteMode::Overwrite),
-        _ => Err(Error::invalid_argument(format!(
-            "invalid Lance write mode: {mode}"
-        ))),
+        _ => Err(Error::message(format!("invalid Lance write mode: {mode}"))),
     }
 }
 
@@ -515,7 +469,7 @@ pub unsafe extern "C" fn lance_huggingface_open(
     preserve_insertion_order: i32,
     max_read_parallelism: u64,
     read_ahead_bytes: u64,
-    output: *mut *mut HuggingFaceStreamFactory,
+    output: *mut *mut SourceStreamFactory,
 ) -> *mut c_char {
     call(|| {
         if dataset.is_null() || config.is_null() || split.is_null() || output.is_null() {
@@ -531,107 +485,25 @@ pub unsafe extern "C" fn lance_huggingface_open(
             .map_err(|_| Error::message("max_read_parallelism is too large"))?;
         // A budget beyond the address space cannot be reached anyway.
         let read_ahead_bytes = usize::try_from(read_ahead_bytes).unwrap_or(usize::MAX);
-        let metrics = Arc::new(ReadMetrics::default());
-        let mut source = HuggingFaceSource::new(&dataset)
-            .with_config(&config)
-            .with_split(&split)
-            .with_preserve_insertion_order(preserve_insertion_order != 0)
-            .with_max_read_parallelism(max_read_parallelism)
-            .with_read_ahead_bytes(read_ahead_bytes)
-            .with_opendal_config(opendal_config)
-            .with_metrics(metrics.clone());
-        if let Some(token) = &token {
-            source = source.with_token(token);
-        }
-        let reader = open_batch_reader(source)?;
-        let schema = reader.schema();
-        *output = Box::into_raw(Box::new(HuggingFaceStreamFactory {
-            dataset,
-            config,
-            split,
-            token,
-            preserve_insertion_order: preserve_insertion_order != 0,
-            max_read_parallelism,
-            read_ahead_bytes,
-            opendal_config,
-            schema,
-            reader: Some(reader),
-            metrics,
-        }));
+        let schema = Arc::new(Schema::empty());
+        let factory = SourceStreamFactory::new(schema, move |projection, metrics| {
+            let mut source = HuggingFaceSource::new(&dataset)
+                .with_config(&config)
+                .with_split(&split)
+                .with_preserve_insertion_order(preserve_insertion_order != 0)
+                .with_projection(projection)
+                .with_max_read_parallelism(max_read_parallelism)
+                .with_read_ahead_bytes(read_ahead_bytes)
+                .with_opendal_config(opendal_config)
+                .with_metrics(metrics);
+            if let Some(token) = &token {
+                source = source.with_token(token);
+            }
+            source
+        });
+        *output = Box::into_raw(Box::new(factory.bind()?));
         Ok(())
     })
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lance_huggingface_get_metrics(
-    factory: *const HuggingFaceStreamFactory,
-    output: *mut LanceReadMetrics,
-) {
-    if factory.is_null() || output.is_null() {
-        return;
-    }
-    let snapshot = (*factory).metrics.snapshot();
-    ptr::write(
-        output,
-        LanceReadMetrics {
-            bytes_read: snapshot.bytes_read,
-            total_bytes: snapshot.total_bytes,
-        },
-    );
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lance_huggingface_get_schema(
-    factory: *const HuggingFaceStreamFactory,
-    output: *mut FFI_ArrowSchema,
-) -> *mut c_char {
-    call(|| {
-        if factory.is_null() || output.is_null() {
-            return Err(Error::message("null Hugging Face schema argument"));
-        }
-        ptr::write(
-            output,
-            FFI_ArrowSchema::try_from((&*factory).schema.as_ref())?,
-        );
-        Ok(())
-    })
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lance_huggingface_get_stream(
-    factory: *mut HuggingFaceStreamFactory,
-    columns: *const *const c_char,
-    column_count: usize,
-    output: *mut FFI_ArrowArrayStream,
-) -> *mut c_char {
-    call(|| {
-        if factory.is_null() || output.is_null() {
-            return Err(Error::message("null Hugging Face stream argument"));
-        }
-        let factory = &mut *factory;
-        let projection = projected_columns(&factory.schema, columns, column_count, "Hugging Face")?;
-        // The reader opened at bind time reads every column in schema order.
-        let reads_every_column = projection.is_empty()
-            || projection
-                .iter()
-                .copied()
-                .eq(0..factory.schema.fields().len());
-        let reader = match factory.reader.take() {
-            Some(reader) if reads_every_column => reader,
-            _ => factory.open_reader(projection)?,
-        };
-        ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
-        Ok(())
-    })
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lance_huggingface_destroy(factory: *mut HuggingFaceStreamFactory) {
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        if !factory.is_null() {
-            drop(Box::from_raw(factory));
-        }
-    }));
 }
 
 #[no_mangle]
@@ -758,7 +630,15 @@ pub unsafe extern "C" fn lance_source_get_stream(
             return Err(Error::message("null source stream argument"));
         }
         let factory = &*factory;
-        let projection = projected_columns(&factory.schema, columns, column_count, "source")?;
+        let projection = string_list(columns, column_count)?
+            .iter()
+            .map(|name| {
+                factory
+                    .schema
+                    .index_of(name)
+                    .map_err(|_| Error::message(format!("unknown source column: {name}")))
+            })
+            .collect::<Result<_>>()?;
         let reader = factory.open_reader(projection)?;
         ptr::write(output, FFI_ArrowArrayStream::new(Box::new(reader)));
         Ok(())

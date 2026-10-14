@@ -1,98 +1,80 @@
-use std::fmt::Display;
+use std::fmt::{self, Display};
+use std::panic::Location;
+use std::sync::Arc;
 
-use thiserror::Error as ThisError;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorStatus {
+    Temporary,
+    Permanent,
+}
 
-use crate::error_struct::{ErrorStatus, ErrorStruct};
+impl Display for ErrorStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Temporary => write!(f, "temporary"),
+            Self::Permanent => write!(f, "permanent"),
+        }
+    }
+}
 
-#[derive(Clone, Debug, ThisError)]
-pub enum Error {
-    #[error("{0}")]
-    InvalidArgument(ErrorStruct),
-
-    #[error("{0}")]
-    Internal(ErrorStruct),
-
-    #[error("{0}")]
-    Arrow(ErrorStruct),
-
-    #[error("{0}")]
-    Io(ErrorStruct),
-
-    #[error("{0}")]
-    Lance(ErrorStruct),
-
-    #[error("{0}")]
-    OpenDal(ErrorStruct),
-
-    #[error("{0}")]
-    Parquet(ErrorStruct),
-
-    #[error("{0}")]
-    Http(ErrorStruct),
-
-    #[error("{0}")]
-    Task(ErrorStruct),
-
-    #[error("{0}")]
-    Url(ErrorStruct),
-
-    #[error("{0}")]
-    Utf8(ErrorStruct),
+#[derive(Clone, Debug)]
+pub struct Error {
+    message: String,
+    status: ErrorStatus,
+    source: Option<Arc<anyhow::Error>>,
+    location: &'static Location<'static>,
 }
 
 impl Error {
     #[track_caller]
-    pub fn message(message: impl Into<String>) -> Self {
-        Self::Internal(ErrorStruct::new(message, ErrorStatus::Permanent))
+    fn new(message: impl Into<String>, status: ErrorStatus) -> Self {
+        Self {
+            message: message.into(),
+            status,
+            source: None,
+            location: Location::caller(),
+        }
     }
 
     #[track_caller]
-    pub fn invalid_argument(message: impl Into<String>) -> Self {
-        Self::InvalidArgument(ErrorStruct::new(message, ErrorStatus::Permanent))
+    fn from_source(message: &str, temporary: bool, source: impl Into<anyhow::Error>) -> Self {
+        let status = if temporary {
+            ErrorStatus::Temporary
+        } else {
+            ErrorStatus::Permanent
+        };
+        Self {
+            source: Some(Arc::new(source.into())),
+            ..Self::new(message, status)
+        }
+    }
+
+    #[track_caller]
+    pub fn message(message: impl Into<String>) -> Self {
+        Self::new(message, ErrorStatus::Permanent)
     }
 
     pub fn status(&self) -> ErrorStatus {
-        self.inner().status
-    }
-
-    fn inner(&self) -> &ErrorStruct {
-        match self {
-            Self::InvalidArgument(inner)
-            | Self::Internal(inner)
-            | Self::Arrow(inner)
-            | Self::Io(inner)
-            | Self::Lance(inner)
-            | Self::OpenDal(inner)
-            | Self::Parquet(inner)
-            | Self::Http(inner)
-            | Self::Task(inner)
-            | Self::Url(inner)
-            | Self::Utf8(inner) => inner,
-        }
-    }
-
-    fn inner_mut(&mut self) -> &mut ErrorStruct {
-        match self {
-            Self::InvalidArgument(inner)
-            | Self::Internal(inner)
-            | Self::Arrow(inner)
-            | Self::Io(inner)
-            | Self::Lance(inner)
-            | Self::OpenDal(inner)
-            | Self::Parquet(inner)
-            | Self::Http(inner)
-            | Self::Task(inner)
-            | Self::Url(inner)
-            | Self::Utf8(inner) => inner,
-        }
+        self.status
     }
 
     fn with_context(mut self, context: impl Display) -> Self {
-        let inner = self.inner_mut();
-        inner.message = format!("{context}: {}", inner.message);
+        self.message = format!("{context}: {}", self.message);
         self
     }
 }
+
+impl Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({}) at {}", self.message, self.status, self.location)?;
+        if let Some(source) = &self.source {
+            write!(f, ", caused by: {source}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -110,24 +92,22 @@ where
 }
 
 macro_rules! permanent_error_from {
-    ($source:ty, $variant:ident, $message:literal) => {
+    ($source:ty, $message:literal) => {
         impl From<$source> for Error {
             #[track_caller]
             fn from(source: $source) -> Self {
-                Self::$variant(
-                    ErrorStruct::new($message, ErrorStatus::Permanent).with_source(source),
-                )
+                Self::from_source($message, false, source)
             }
         }
     };
 }
 
-permanent_error_from!(arrow_schema::ArrowError, Arrow, "Arrow error");
-permanent_error_from!(lance::Error, Lance, "Lance error");
-permanent_error_from!(parquet::errors::ParquetError, Parquet, "Parquet error");
-permanent_error_from!(tokio::task::JoinError, Task, "async task error");
-permanent_error_from!(url::ParseError, Url, "URL parse error");
-permanent_error_from!(std::str::Utf8Error, Utf8, "UTF-8 decode error");
+permanent_error_from!(arrow_schema::ArrowError, "Arrow error");
+permanent_error_from!(lance::Error, "Lance error");
+permanent_error_from!(parquet::errors::ParquetError, "Parquet error");
+permanent_error_from!(tokio::task::JoinError, "async task error");
+permanent_error_from!(url::ParseError, "URL parse error");
+permanent_error_from!(std::str::Utf8Error, "UTF-8 decode error");
 
 impl From<reqwest::Error> for Error {
     #[track_caller]
@@ -137,36 +117,26 @@ impl From<reqwest::Error> for Error {
             || source.status().is_some_and(|status| {
                 status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
             });
-        let status = if temporary {
-            ErrorStatus::Temporary
-        } else {
-            ErrorStatus::Permanent
-        };
-        Self::Http(ErrorStruct::new("HTTP error", status).with_source(source))
+        Self::from_source("HTTP error", temporary, source)
     }
 }
 
 impl From<std::io::Error> for Error {
     #[track_caller]
     fn from(source: std::io::Error) -> Self {
-        let status = match source.kind() {
+        let temporary = matches!(
+            source.kind(),
             std::io::ErrorKind::Interrupted
-            | std::io::ErrorKind::WouldBlock
-            | std::io::ErrorKind::TimedOut => ErrorStatus::Temporary,
-            _ => ErrorStatus::Permanent,
-        };
-        Self::Io(ErrorStruct::new("I/O error", status).with_source(source))
+                | std::io::ErrorKind::WouldBlock
+                | std::io::ErrorKind::TimedOut
+        );
+        Self::from_source("I/O error", temporary, source)
     }
 }
 
 impl From<opendal::Error> for Error {
     #[track_caller]
     fn from(source: opendal::Error) -> Self {
-        let status = if source.is_temporary() {
-            ErrorStatus::Temporary
-        } else {
-            ErrorStatus::Permanent
-        };
-        Self::OpenDal(ErrorStruct::new("OpenDAL error", status).with_source(source))
+        Self::from_source("OpenDAL error", source.is_temporary(), source)
     }
 }

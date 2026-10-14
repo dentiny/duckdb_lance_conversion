@@ -376,12 +376,6 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	write_config.blob_dedicated_size_threshold = bind.blob_dedicated_size_threshold;
 	write_config.target_file_size = bind.target_file_size;
 	write_config.storage_version = bind.storage_version.empty() ? nullptr : bind.storage_version.c_str();
-	vector<const char *> blob_columns;
-	for (const auto &column : bind.blob_columns) {
-		blob_columns.push_back(column.c_str());
-	}
-	write_config.blob_columns = blob_columns.data();
-	write_config.blob_column_count = blob_columns.size();
 	auto string_pointers = [](const vector<string> &columns) {
 		vector<const char *> result;
 		for (const auto &column : columns) {
@@ -389,6 +383,9 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 		}
 		return result;
 	};
+	auto blob_columns = string_pointers(bind.blob_columns);
+	write_config.blob_columns = blob_columns.data();
+	write_config.blob_column_count = blob_columns.size();
 	auto compression_columns = string_pointers(bind.compression_columns);
 	auto compression_algorithms = string_pointers(bind.compression_algorithms);
 	write_config.compression_columns = compression_columns.data();
@@ -406,18 +403,14 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	write_config.text_index_column_count = text_index_columns.size();
 	write_config.bloom_filter_index_columns = bloom_filter_index_columns.data();
 	write_config.bloom_filter_index_column_count = bloom_filter_index_columns.size();
-	LanceS3Config s3;
-	const LanceS3Config *s3_ptr = nullptr;
-	LanceS3Options options;
+	unique_ptr<LanceS3Options> s3;
 	// S3 blob URIs are read with the destination's S3 secret, or the unscoped one for a local destination.
 	if (bind.s3 || !bind.blob_columns.empty()) {
-		options = ReadS3Options(context, bind.s3 ? path : "s3://");
-		s3 = options.ToConfig();
-		s3_ptr = &s3;
+		s3 = ReadS3Options(context, bind.s3 ? path : "s3://");
 	}
 	auto opendal_config = ReadOpendalConfig(context);
-	ThrowIfLanceError(lance_conversion_open(path.c_str(), &schema.arrow_schema, &write_config, s3_ptr, &opendal_config,
-	                                        &state->dataset),
+	ThrowIfLanceError(lance_conversion_open(path.c_str(), &schema.arrow_schema, &write_config,
+	                                        s3 ? &s3->config : nullptr, &opendal_config, &state->dataset),
 	                  "Lance conversion");
 	return std::move(state);
 }

@@ -12,12 +12,6 @@ use super::{BatchStream, ReadMetrics};
 use crate::storage::OpendalStorage;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct WarcIndexEntry {
-    offset: u64,
-    length: u64,
-}
-
 fn json_u64(object: &Value, name: &str, line_number: usize) -> Result<u64> {
     let value = object
         .get(name)
@@ -38,7 +32,7 @@ fn parse_warc_index(
     bytes: bytes::Bytes,
     gzipped: bool,
     source_path: &str,
-) -> Result<Vec<WarcIndexEntry>> {
+) -> Result<Vec<Range<u64>>> {
     let reader: Box<dyn BufRead> = if gzipped {
         Box::new(BufReader::new(MultiGzDecoder::new(Cursor::new(bytes))))
     } else {
@@ -72,7 +66,10 @@ fn parse_warc_index(
                 "WARC index line {line_number} has zero length"
             )));
         }
-        entries.push(WarcIndexEntry { offset, length });
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| Error::message("WARC index offset plus length overflows u64"))?;
+        entries.push(offset..end);
     }
     if entries.is_empty() {
         return Err(Error::message(
@@ -93,42 +90,34 @@ fn parse_warc_index(
 /// same compressed bytes more than once. Returned ranges remain in physical
 /// archive order.
 ///
-/// For example, entries `(offset, length)` of `(20, 5)`, `(0, 8)`, `(8, 4)`
-/// with parallelism `2` have a target of 9 bytes and become `0..12` and
+/// For example, entries `20..25`, `0..8`, `8..12` with parallelism `2` have a target of 9 bytes and become `0..12` and
 /// `20..25`: the first two sorted entries are adjacent, while the gap from 12
 /// to 20 starts a new workload.
 fn build_index_work_units(
-    mut entries: Vec<WarcIndexEntry>,
+    mut entries: Vec<Range<u64>>,
     max_read_parallelism: usize,
 ) -> Result<Vec<Range<u64>>> {
-    if max_read_parallelism == 0 {
-        return Err(Error::message("max_read_parallelism must be positive"));
-    }
     let total_length = entries.iter().try_fold(0_u64, |total, entry| {
         total
-            .checked_add(entry.length)
+            .checked_add(entry.end - entry.start)
             .ok_or_else(|| Error::message("WARC index total length overflows u64"))
     })?;
     let parallelism = u64::try_from(max_read_parallelism).unwrap_or(u64::MAX);
     let target_length = total_length.div_ceil(parallelism);
 
-    entries.sort_unstable_by_key(|entry| entry.offset);
+    entries.sort_unstable_by_key(|entry| entry.start);
     let mut units: Vec<Range<u64>> = Vec::new();
     for entry in entries {
-        let end = entry
-            .offset
-            .checked_add(entry.length)
-            .ok_or_else(|| Error::message("WARC index offset plus length overflows u64"))?;
         if let Some(unit) = units.last_mut() {
-            if entry.offset < unit.end {
+            if entry.start < unit.end {
                 return Err(Error::message("WARC index entries overlap"));
             }
-            if entry.offset == unit.end && unit.end - unit.start < target_length {
-                unit.end = end;
+            if entry.start == unit.end && unit.end - unit.start < target_length {
+                unit.end = entry.end;
                 continue;
             }
         }
-        units.push(entry.offset..end);
+        units.push(entry);
     }
     Ok(units)
 }
@@ -212,45 +201,13 @@ mod tests {
 
     #[test]
     fn balances_contiguous_entries_across_parallelism() {
-        let entries = vec![
-            WarcIndexEntry {
-                offset: 30,
-                length: 10,
-            },
-            WarcIndexEntry {
-                offset: 0,
-                length: 10,
-            },
-            WarcIndexEntry {
-                offset: 20,
-                length: 10,
-            },
-            WarcIndexEntry {
-                offset: 10,
-                length: 10,
-            },
-        ];
-
+        let entries = vec![30..40, 0..10, 20..30, 10..20];
         assert_eq!(build_index_work_units(entries, 2).unwrap(), [0..20, 20..40]);
     }
 
     #[test]
     fn gaps_start_new_workloads() {
-        let entries = vec![
-            WarcIndexEntry {
-                offset: 20,
-                length: 5,
-            },
-            WarcIndexEntry {
-                offset: 0,
-                length: 8,
-            },
-            WarcIndexEntry {
-                offset: 8,
-                length: 4,
-            },
-        ];
-
+        let entries = vec![20..25, 0..8, 8..12];
         assert_eq!(build_index_work_units(entries, 2).unwrap(), [0..12, 20..25]);
     }
 
@@ -272,19 +229,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            entries,
-            [
-                WarcIndexEntry {
-                    offset: 10,
-                    length: 20
-                },
-                WarcIndexEntry {
-                    offset: 50,
-                    length: 60
-                }
-            ]
-        );
+        assert_eq!(entries, [10..30, 50..110]);
     }
 
     #[test]
@@ -296,12 +241,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            entries,
-            [WarcIndexEntry {
-                offset: 7,
-                length: 11
-            }]
-        );
+        assert_eq!(entries, vec![7..18]);
     }
 }
