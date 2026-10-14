@@ -409,8 +409,9 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	LanceS3Config s3;
 	const LanceS3Config *s3_ptr = nullptr;
 	LanceS3Options options;
-	if (bind.s3) {
-		options = ReadS3Options(context, path);
+	// S3 blob URIs are read with the destination's S3 secret, or the unscoped one for a local destination.
+	if (bind.s3 || !bind.blob_columns.empty()) {
+		options = ReadS3Options(context, bind.s3 ? path : "s3://");
 		s3 = options.ToConfig();
 		s3_ptr = &s3;
 	}

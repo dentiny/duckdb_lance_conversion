@@ -41,7 +41,7 @@ url = "2"
 warc-rs = { git = "https://github.com/dentiny/warc-rs", rev = "728fb6d8852c40febf490424528d9e937545e45d" }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros"] }
+tokio = { version = "1", features = ["io-util", "macros"] }
 arrow-select = "58"
 tempfile = "3"
 

@@ -1,11 +1,13 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use lance_io::object_store::{
-    ObjectStore as LanceObjectStore, ObjectStoreParams, ObjectStoreProvider,
+    ObjectStore as LanceObjectStore, ObjectStoreParams, ObjectStoreProvider, WrappingObjectStore,
     DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_DOWNLOAD_RETRY_COUNT, DEFAULT_LOCAL_IO_PARALLELISM,
 };
-use object_store::ObjectStore as ArrowObjectStore;
+use lance_io::utils::tracking_store::IOTracker;
+use object_store::{path::Path, ObjectStore as ArrowObjectStore};
 use object_store_opendal::OpendalStore;
 use opendal::{
     layers::{RetryLayer, TimeoutLayer},
@@ -140,14 +142,64 @@ pub(crate) struct OpendalStorage {
     pub location: Url,
 }
 
-#[derive(Debug)]
+/// Serves the Lance destination and Blob v2 source URIs through OpenDAL, with
+/// one store per bucket or host, shared for the whole write.
 pub(crate) struct OpendalStoreProvider {
-    object_store: Arc<dyn ArrowObjectStore>,
+    s3_config: S3StorageConfig,
+    opendal_config: OpendalConfig,
+    io_tracker: Arc<IOTracker>,
+    stores: Mutex<HashMap<String, Arc<dyn ArrowObjectStore>>>,
+}
+
+impl std::fmt::Debug for OpendalStoreProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpendalStoreProvider")
+            .finish_non_exhaustive()
+    }
 }
 
 impl OpendalStoreProvider {
-    pub fn new(object_store: Arc<dyn ArrowObjectStore>) -> Self {
-        Self { object_store }
+    pub const SCHEMES: [&str; 4] = ["file", "s3", "http", "https"];
+
+    pub fn new(
+        s3_config: Option<S3StorageConfig>,
+        opendal_config: OpendalConfig,
+        io_tracker: Arc<IOTracker>,
+    ) -> Self {
+        Self {
+            s3_config: s3_config.unwrap_or_default(),
+            opendal_config,
+            io_tracker,
+            stores: Mutex::default(),
+        }
+    }
+
+    fn object_store(&self, url: &Url) -> Result<Arc<dyn ArrowObjectStore>> {
+        let key = format!("{}${}", url.scheme(), url.authority());
+        let mut stores = self.stores.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(store) = stores.get(&key) {
+            return Ok(store.clone());
+        }
+        let store = match url.scheme() {
+            "file" => OpendalStorage::from_local_path("/")?.object_store,
+            "s3" => {
+                OpendalStorage::from_s3_uri(url.as_str(), &self.s3_config, &self.opendal_config)?
+                    .object_store
+            }
+            "http" | "https" => Arc::new(OpendalStore::new(http_operator(
+                &url[..url::Position::BeforePath],
+                None,
+                &self.opendal_config,
+            )?)),
+            scheme => {
+                return Err(Error::invalid_argument(format!(
+                    "unsupported storage scheme: {scheme}"
+                )))
+            }
+        };
+        let store = self.io_tracker.wrap(&key, store);
+        stores.insert(key, store.clone());
+        Ok(store)
     }
 }
 
@@ -163,8 +215,11 @@ impl ObjectStoreProvider for OpendalStoreProvider {
         } else {
             DEFAULT_CLOUD_IO_PARALLELISM
         };
+        let object_store = self
+            .object_store(&base_path)
+            .map_err(|error| lance::Error::invalid_input(error.to_string()))?;
         Ok(LanceObjectStore::new(
-            self.object_store.clone(),
+            object_store,
             base_path,
             params.resolved_block_size()?,
             params.object_store_wrapper.clone(),
@@ -174,6 +229,18 @@ impl ObjectStoreProvider for OpendalStoreProvider {
             DEFAULT_DOWNLOAD_RETRY_COUNT,
             params.storage_options(),
         ))
+    }
+
+    fn extract_path(&self, url: &Url) -> lance::Result<Path> {
+        // Object paths cannot carry a query, so it would be silently dropped.
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(lance::Error::invalid_input(format!(
+                "storage URI must not have a query or fragment: {url}"
+            )));
+        }
+        Path::from_url_path(url.path()).map_err(|error| {
+            lance::Error::invalid_input(format!("invalid path in URI {url}: {error}"))
+        })
     }
 }
 
