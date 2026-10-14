@@ -17,7 +17,7 @@ use lance::{
     session::Session,
     Dataset,
 };
-use lance_io::{object_store::WrappingObjectStore, utils::tracking_store::IOTracker};
+use lance_io::utils::tracking_store::IOTracker;
 
 use super::column_storage::configure_column_storage;
 use super::fragment::LanceFragmentWriter;
@@ -26,7 +26,7 @@ use super::{WriteMode, WriteOptions};
 use crate::error::ResultExt;
 use crate::schema::validate_schema;
 use crate::sink::WriteSummary;
-use crate::storage::{OpendalStorage, OpendalStoreProvider};
+use crate::storage::{is_s3_uri, OpendalStorage, OpendalStoreProvider};
 use crate::{Error, Result};
 
 fn empty_stream(schema: SchemaRef) -> SendableRecordBatchStream {
@@ -174,9 +174,13 @@ impl LanceDatasetWriter {
             .as_ref()
             .to_str()
             .ok_or_else(|| Error::message("destination must be valid UTF-8"))?;
+        // The S3 configuration also reads S3 blob URIs for a local destination.
         let destination = OpendalStorage::from_path(
             destination_path,
-            options.s3_config.as_ref(),
+            options
+                .s3_config
+                .as_ref()
+                .filter(|_| is_s3_uri(destination_path)),
             &options.opendal_config,
         )?;
         if destination.object_path.as_ref().is_empty() {
@@ -190,14 +194,14 @@ impl LanceDatasetWriter {
 
         let session = Session::default();
         let io_tracker = Arc::new(IOTracker::default());
-        let tracked_store = io_tracker.wrap(
-            destination.location.as_str(),
-            destination.object_store.clone(),
-        );
-        session.store_registry().insert(
-            destination.location.scheme(),
-            Arc::new(OpendalStoreProvider::new(tracked_store)),
-        );
+        let provider = Arc::new(OpendalStoreProvider::new(
+            options.s3_config.clone(),
+            options.opendal_config,
+            io_tracker.clone(),
+        ));
+        for scheme in OpendalStoreProvider::SCHEMES {
+            session.store_registry().insert(scheme, provider.clone());
+        }
         let session = Arc::new(session);
         let uri = destination.location.as_str().to_owned();
         let dataset = match DatasetBuilder::from_uri(&uri)

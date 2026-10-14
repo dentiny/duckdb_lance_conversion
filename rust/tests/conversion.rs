@@ -9,7 +9,12 @@ use arrow_schema::{DataType, Field, Schema};
 use lance::index::DatasetIndexExt;
 use lance_conversion::{LanceWriter, WriteMode, WriteOptions};
 use tempfile::tempdir;
-use tokio::{fs, task::spawn_blocking};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    task::spawn_blocking,
+};
 
 use common::{assert_values, fixture, read_lance};
 
@@ -188,25 +193,27 @@ async fn string_uri_column_is_ingested_as_a_blob() {
     let output = temp.path().join("uris.lance");
     fs::write(&first, b"first").await.unwrap();
     fs::write(&empty, b"").await.unwrap();
+    let server = serve_http(b"second").await;
 
-    let uris = [
+    let uri_batch = |uris: Vec<Option<String>>| {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("uri", DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..uris.len() as i64)) as ArrayRef,
+                Arc::new(StringArray::from(uris)) as ArrayRef,
+            ],
+        )
+        .unwrap()
+    };
+    let batch = uri_batch(vec![
         Some(url::Url::from_file_path(&first).unwrap().to_string()),
         Some(url::Url::from_file_path(&empty).unwrap().to_string()),
         None,
-    ];
-    let batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("uri", DataType::Utf8, true),
-        ])),
-        vec![
-            Arc::new(Int64Array::from(vec![0, 1, 2])) as ArrayRef,
-            Arc::new(StringArray::from_iter(
-                uris.iter().map(|value| value.as_deref()),
-            )) as ArrayRef,
-        ],
-    )
-    .unwrap();
+        Some(format!("{server}/media/second.bin")),
+    ]);
     let expected = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
@@ -218,24 +225,81 @@ async fn string_uri_column_is_ingested_as_a_blob() {
                 Some(b"first".as_slice()),
                 Some(b"".as_slice()),
                 None,
+                Some(b"second".as_slice()),
             ])),
         ],
     )
     .unwrap();
-    let mut writer = LanceWriter::create(
-        &output,
-        batch.schema(),
-        WriteOptions {
-            blob_columns: vec!["uri".into()],
-            ..Default::default()
-        },
+    let write = |output: std::path::PathBuf, batch: RecordBatch| async move {
+        let mut writer = LanceWriter::create(
+            &output,
+            batch.schema(),
+            WriteOptions {
+                blob_columns: vec!["uri".into()],
+                ..Default::default()
+            },
+        )
+        .await?;
+        writer.write_batch(batch).await?;
+        writer.finish().await
+    };
+    write(output.clone(), batch).await.unwrap();
+    assert_values(&read_lance(&output).await, &expected);
+
+    let error = write(
+        temp.path().join("query.lance"),
+        uri_batch(vec![Some(format!("{server}/second.bin?signature=x"))]),
     )
     .await
+    .err()
     .unwrap();
-    writer.write_batch(batch).await.unwrap();
-    writer.finish().await.unwrap();
-    assert_values(&read_lance(&output).await, &expected);
+    assert!(
+        error.to_string().contains("must not have a query"),
+        "{error}"
+    );
     spawn_blocking(move || temp.close()).await.unwrap().unwrap();
+}
+
+/// Serves `body` at every path, one request per connection, honoring a single
+/// byte range.
+async fn serve_http(body: &'static [u8]) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let read = socket.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            let range = request
+                .lines()
+                .find_map(|line| line.strip_prefix("range: bytes="))
+                .and_then(|range| range.split_once('-'))
+                .map(|(start, end)| {
+                    start.parse().unwrap()..end.parse().map_or(body.len(), |end: usize| end + 1)
+                });
+            let mut response = match &range {
+                Some(range) => format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\n",
+                    range.start,
+                    range.end - 1,
+                    body.len()
+                ),
+                None => "HTTP/1.1 200 OK\r\n".to_owned(),
+            };
+            let content = &body[range.unwrap_or(0..body.len())];
+            response += &format!(
+                "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                content.len()
+            );
+            let mut response = response.into_bytes();
+            if !request.starts_with("head") {
+                response.extend_from_slice(content);
+            }
+            socket.write_all(&response).await.unwrap();
+        }
+    });
+    format!("http://{address}")
 }
 
 #[tokio::test]

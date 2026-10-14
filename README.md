@@ -371,10 +371,12 @@ TO 'output.lance' (FORMAT LANCE, COLUMN_COMPRESSION {'body': 'zstd', 'id': 'lz4'
 ```
 
 `BLOB_COLUMNS` converts selected top-level `VARCHAR` columns containing local
-paths or URIs into Lance Blob v2 columns. Lance asynchronously reads each
-referenced object during the write and stores its bytes using the thresholds
-above; it does not retain the source URI as an external reference. NULL values
-remain NULL.
+paths, `file://`, `s3://`, or `http(s)://` URIs into Lance Blob v2 columns.
+Lance asynchronously reads each referenced object during the write and stores
+its bytes using the thresholds above; it does not retain the source URI as an
+external reference. NULL values remain NULL. S3 URIs use the destination's S3
+secret, or the unscoped S3 secret (anonymous access if none) for a local
+destination. URIs with a query string, such as presigned URLs, are rejected.
 
 ```sql
 COPY (
