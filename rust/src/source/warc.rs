@@ -210,27 +210,19 @@ impl WarcSource {
             ));
         }
         let parallelism = self.read_options.max_read_parallelism;
-        let files = stream::iter(segment.files(&operator).await?)
-            .map(|file| {
-                let operator = operator.clone();
-                async move {
-                    let size = operator.stat(&file).await.context(&file)?.content_length();
-                    Ok::<_, Error>((file, size))
-                }
-            })
-            .buffer_unordered(parallelism)
-            .try_collect::<Vec<_>>()
-            .await?;
-        self.metrics
-            .set_total_bytes(files.iter().map(|(_, size)| size).sum());
+        let files = segment.files(&operator).await?;
+        // A whole crawl has ~100k files, too many to stat before reading.
+        let file_count = files.len() as u64;
         let (batch_size, metrics) = (self.batch_size, self.metrics);
         let batches = stream::iter(files)
-            .map(move |(file, size)| {
+            .map(move |file| {
                 let operator = operator.clone();
                 let projection = projection.clone();
                 let schema = schema.clone();
                 let metrics = metrics.clone();
                 stream::once(async move {
+                    let size = operator.stat(&file).await.context(&file)?.content_length();
+                    metrics.add_object(size, file_count);
                     let reader = read_object(&operator, &file, size, metrics)
                         .await
                         .context(&file)?;
@@ -783,11 +775,12 @@ mod tests {
         assert!(snapshot.total_bytes > 0);
         assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
 
-        let error = WarcSource::new(crawl.join("segments/3").to_string_lossy())
+        // The whole crawl includes segment 3, whose file fails once reached.
+        let (_, stream) = WarcSource::new(crawl.join("warc.paths.gz").to_string_lossy())
             .open()
             .await
-            .err()
             .unwrap();
+        let error = stream.try_collect::<Vec<_>>().await.unwrap_err();
         assert!(error
             .to_string()
             .contains("crawl-data/c/segments/3/warc/missing.warc"));

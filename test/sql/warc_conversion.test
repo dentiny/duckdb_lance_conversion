@@ -86,6 +86,12 @@ COPY (
 ----
 4
 
+# The whole crawl includes the missing segment 10 file.
+statement error
+SELECT count(*) FROM read_warc('test/data/crawl-data/CC-TEST/warc.paths.gz');
+----
+crawl-data/CC-TEST/segments/10/warc/missing.warc
+
 statement error
 SELECT * FROM read_warc('gs://bucket/archive.warc');
 ----

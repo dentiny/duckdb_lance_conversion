@@ -194,10 +194,11 @@ subdirectory. It reads the crawl's `warc.paths.gz`, keeps only that segment's
 entries, and streams up to `max_read_parallelism` of those files at once.
 Records keep their order within a file, but rows from different files
 interleave. Entries resolve relative to the directory containing `crawl-data/`,
-so the same layout works over HTTP(S), S3, and local mirrors. Before streaming,
-every file in the segment is stat'ed (also up to `max_read_parallelism` at a
-time) so progress covers the whole segment. An empty segment is an error, and
-`index_path` is not supported for segments.
+so the same layout works over HTTP(S), S3, and local mirrors. A crawl's
+`crawl-data/<crawl>/warc.paths.gz` reads every file of the crawl the same way.
+Files are stat'ed as they are opened, so progress is estimated from the mean
+size of the files opened so far. An empty segment is an error, and `index_path`
+is not supported for segments.
 
 ```sql
 COPY (
