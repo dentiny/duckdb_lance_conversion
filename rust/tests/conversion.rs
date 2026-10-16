@@ -300,7 +300,7 @@ async fn atif_reads_http_urls() {
     assert!(
         error
             .to_string()
-            .contains("ATIF HTTP(S) URLs must not include a query"),
+            .contains("HTTP(S) URL must not include a query"),
         "{error}"
     );
 }

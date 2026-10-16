@@ -4,11 +4,6 @@
 
 require lance_conversion
 
-statement error
-SELECT * FROM read_atif('gs://bucket/trajectories.jsonl');
-----
-read_atif supports only local, s3://, and http(s):// paths
-
 query TIT
 SELECT trajectory_id, source_record_index, agent.name
 FROM read_atif('test/data/trajectories.jsonl')

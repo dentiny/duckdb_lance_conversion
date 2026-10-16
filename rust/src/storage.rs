@@ -354,24 +354,23 @@ impl OpendalStorage {
 /// A file read from a local path, an `s3://` URI, or an HTTP(S) URL.
 pub(crate) struct InputFile {
     pub operator: Operator,
-    pub path: String,
+    /// Path within `operator`, without a leading slash.
+    pub opendal_path: String,
     /// The absolute local path, or the URL for remote files.
     pub uri: String,
 }
 
 impl InputFile {
-    /// `kind` names the input in error messages.
     pub fn open(
         path: &str,
         s3_config: Option<&S3StorageConfig>,
         opendal_config: &OpendalConfig,
-        kind: &str,
     ) -> Result<Self> {
         let input = match Url::parse(path) {
             Ok(url) if matches!(url.scheme(), "http" | "https") => {
                 if url.query().is_some() || url.fragment().is_some() {
                     return Err(Error::message(format!(
-                        "{kind} HTTP(S) URLs must not include a query or fragment"
+                        "HTTP(S) URL must not include a query or fragment: {path}"
                     )));
                 }
                 // OpenDAL percent-encodes the path again.
@@ -382,7 +381,7 @@ impl InputFile {
                         None,
                         opendal_config,
                     )?,
-                    path: object_path.trim_start_matches('/').to_owned(),
+                    opendal_path: object_path.trim_start_matches('/').to_owned(),
                     uri: url.to_string(),
                 }
             }
@@ -394,14 +393,14 @@ impl InputFile {
                 };
                 Self {
                     operator: storage.operator,
-                    path: storage.object_path.to_string(),
+                    opendal_path: storage.object_path.to_string(),
                     uri,
                 }
             }
         };
-        if input.path.is_empty() {
+        if input.opendal_path.is_empty() {
             return Err(Error::message(format!(
-                "{kind} input must not be a storage root"
+                "input must not be a storage root: {path}"
             )));
         }
         Ok(input)

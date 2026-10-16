@@ -160,13 +160,8 @@ impl WarcSource {
 impl WarcSource {
     /// Returns the operator holding the input and the input's path within it.
     fn location(&self) -> Result<(Operator, String)> {
-        let input = InputFile::open(
-            &self.path,
-            self.s3_config.as_ref(),
-            &self.opendal_config,
-            "WARC",
-        )?;
-        Ok((input.operator, input.path))
+        let input = InputFile::open(&self.path, self.s3_config.as_ref(), &self.opendal_config)?;
+        Ok((input.operator, input.opendal_path))
     }
 
     /// Streams up to `max_read_parallelism` of the segment's files at once.

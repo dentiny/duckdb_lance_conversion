@@ -90,23 +90,22 @@ impl AtifSource {
 
 impl BatchSource for AtifSource {
     async fn open(self) -> Result<(SchemaRef, BatchStream)> {
-        let input = InputFile::open(
-            &self.path,
-            self.s3_config.as_ref(),
-            &self.opendal_config,
-            "ATIF",
-        )?;
-        let format = input_format(&input.path, self.format.as_deref())?;
+        let input = InputFile::open(&self.path, self.s3_config.as_ref(), &self.opendal_config)?;
+        let format = input_format(&input.opendal_path, self.format.as_deref())?;
         let full_schema = atif_schema();
         let projection = self.projection.filter(|projection| !projection.is_empty());
         let schema = match &projection {
             Some(projection) => Arc::new(full_schema.project(projection)?),
             None => full_schema,
         };
-        let size = input.operator.stat(&input.path).await?.content_length();
+        let size = input
+            .operator
+            .stat(&input.opendal_path)
+            .await?
+            .content_length();
         self.metrics.set_total_bytes(size);
-        let reader = read_object(&input.operator, &input.path, size, self.metrics).await?;
-        let reader = decompressed_input(reader, is_gzipped(&input.path));
+        let reader = read_object(&input.operator, &input.opendal_path, size, self.metrics).await?;
+        let reader = decompressed_input(reader, is_gzipped(&input.opendal_path));
         let reader = TrajectoryReader::new(reader, format, BATCH_SIZE, Some(input.uri))
             .map_err(|error| Error::message(format!("ATIF reader: {error}")))?;
         // The ATIF converter always produces every column; projection only
