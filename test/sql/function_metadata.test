@@ -14,6 +14,6 @@ FROM duckdb_functions()
 WHERE function_name IN ('read_atif', 'read_huggingface', 'read_warc')
 ORDER BY function_name;
 ----
-read_atif	Reads ATIF agent trajectories from a local or S3 JSON or JSONL file, optionally gzipped.	path,format	SELECT * FROM read_atif('trajectories.jsonl');	lance_conversion,reader
+read_atif	Reads ATIF agent trajectories from a local, S3, or HTTP(S) JSON or JSONL file, optionally gzipped.	path,format	SELECT * FROM read_atif('trajectories.jsonl');	lance_conversion,reader
 read_huggingface	Reads a Hugging Face dataset's Parquet files.	dataset,config,split,preserve_insertion_order,max_read_parallelism,read_ahead_bytes	SELECT * FROM read_huggingface('lhoestq/demo1');	lance_conversion,reader
 read_warc	Reads records from a local, S3, or HTTP(S) WARC file or Common Crawl crawl or segment.	path,index_path,max_read_parallelism	SELECT * FROM read_warc('archive.warc.gz');	lance_conversion,reader

@@ -22,7 +22,7 @@ format or data source that DuckDB can query, including:
 - S3-compatible object storage through DuckDB filesystem extensions
 - Hugging Face Parquet datasets through `read_huggingface`
 - Local, S3, and HTTP(S) WARC/WARC.GZ files and Common Crawl segments through `read_warc`
-- Local and S3 ATIF agent trajectory JSON/JSONL files, plain or gzipped, through `read_atif`
+- Local, S3, and HTTP(S) ATIF agent trajectory JSON/JSONL files, plain or gzipped, through `read_atif`
 
 The Lance sink supports local and S3-compatible destinations, Create/Append/
 Overwrite modes, Blob v2 storage policies, target file sizing, and scalar,
@@ -235,7 +235,8 @@ dynamic JSON values are JSON text, and `raw_json` keeps the original document.
 omitted, it is inferred from a `.json`, `.jsonl`, or `.ndjson` extension.
 Files ending in `.gz`, such as `trajectories.jsonl.gz`, are decompressed while
 reading, and the format is inferred from the extension before `.gz`.
-Local and `s3://` paths are supported:
+Local, `s3://`, and `http(s)://` paths are supported; HTTP(S) URLs must not
+include a query string:
 
 ```sql
 COPY (

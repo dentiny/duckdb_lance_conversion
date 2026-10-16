@@ -30,11 +30,11 @@ unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput
 		format = format_entry->second.GetValue<string>();
 	}
 	unique_ptr<LanceS3Options> s3;
-	if (FileSystem::IsRemoteFile(path)) {
-		if (!StringUtil::CIStartsWith(path, "s3://")) {
-			throw BinderException("read_atif supports only local and s3:// paths");
-		}
+	if (StringUtil::CIStartsWith(path, "s3://")) {
 		s3 = ReadS3Options(context, path);
+	} else if (FileSystem::IsRemoteFile(path) && !StringUtil::CIStartsWith(path, "http://") &&
+	           !StringUtil::CIStartsWith(path, "https://")) {
+		throw BinderException("read_atif supports only local, s3://, and http(s):// paths");
 	}
 
 	auto opendal_config = ReadOpendalConfig(context);
@@ -53,7 +53,7 @@ void RegisterAtifScanFunction(ExtensionLoader &loader) {
 	RegisterTableFunctionWithMetadata(
 	    loader, std::move(function),
 	    /*parameter_names=*/ {"path", "format"},
-	    /*description=*/"Reads ATIF agent trajectories from a local or S3 JSON or JSONL file, optionally gzipped.",
+	    /*description=*/"Reads ATIF agent trajectories from a local, S3, or HTTP(S) JSON or JSONL file, optionally gzipped.",
 	    /*examples=*/ {"SELECT * FROM read_atif('trajectories.jsonl');"},
 	    /*categories=*/ {"lance_conversion", "reader"});
 }

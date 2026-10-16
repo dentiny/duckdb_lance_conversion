@@ -7,10 +7,8 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use futures::{future, stream, StreamExt, TryStreamExt};
 use opendal::Operator;
-use percent_encoding::percent_decode_str;
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
-use url::Url;
 use warc_rs::{Record, StreamingBody, WarcHeader, WarcReader};
 
 use super::warc_index::open_indexed_warc;
@@ -20,7 +18,7 @@ use super::{
     SourceInput, SourceReadOptions,
 };
 use crate::error::ResultExt;
-use crate::storage::{http_operator, OpendalStorage};
+use crate::storage::InputFile;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
@@ -162,37 +160,13 @@ impl WarcSource {
 impl WarcSource {
     /// Returns the operator holding the input and the input's path within it.
     fn location(&self) -> Result<(Operator, String)> {
-        let (operator, path) = match Url::parse(&self.path) {
-            Ok(url) if matches!(url.scheme(), "http" | "https") => {
-                if url.query().is_some() || url.fragment().is_some() {
-                    return Err(Error::message(
-                        "WARC HTTP(S) URLs must not include a query or fragment",
-                    ));
-                }
-                // OpenDAL percent-encodes the path again.
-                let path = percent_decode_str(url.path()).decode_utf8()?;
-                (
-                    http_operator(
-                        &url[..url::Position::BeforePath],
-                        None,
-                        &self.opendal_config,
-                    )?,
-                    path.trim_start_matches('/').to_owned(),
-                )
-            }
-            _ => {
-                let storage = OpendalStorage::from_path(
-                    &self.path,
-                    self.s3_config.as_ref(),
-                    &self.opendal_config,
-                )?;
-                (storage.operator, storage.object_path.to_string())
-            }
-        };
-        if path.is_empty() {
-            return Err(Error::message("WARC input must not be a storage root"));
-        }
-        Ok((operator, path))
+        let input = InputFile::open(
+            &self.path,
+            self.s3_config.as_ref(),
+            &self.opendal_config,
+            "WARC",
+        )?;
+        Ok((input.operator, input.path))
     }
 
     /// Streams up to `max_read_parallelism` of the segment's files at once.

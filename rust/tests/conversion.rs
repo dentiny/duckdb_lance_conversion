@@ -6,8 +6,11 @@ use arrow_array::{
     ArrayRef, BinaryArray, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
+use futures::TryStreamExt;
 use lance::index::DatasetIndexExt;
-use lance_conversion::{ColumnEncoding, LanceWriter, WriteMode, WriteOptions};
+use lance_conversion::{
+    AtifSource, BatchSource, ColumnEncoding, LanceWriter, WriteMode, WriteOptions,
+};
 use tempfile::tempdir;
 use tokio::{
     fs,
@@ -267,6 +270,39 @@ async fn string_uri_column_is_ingested_as_a_blob() {
         "{error}"
     );
     spawn_blocking(move || temp.close()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn atif_reads_http_urls() {
+    const DOCUMENT: &str = r#"{"schema_version":"ATIF-v1.8","agent":{"name":"test","version":"1"},"steps":[{"step_id":1,"source":"user","message":"hello"}]}"#;
+    static BODY: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| format!("{DOCUMENT}\n{DOCUMENT}\n"));
+    let server = serve_http(BODY.as_bytes()).await;
+    let url = format!("{server}/runs/my%20trajectories.jsonl");
+
+    let (_, stream) = AtifSource::new(url.as_str()).open().await.unwrap();
+    let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+    let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+    assert_eq!(batch.num_rows(), 2);
+    let source_uri = batch
+        .column_by_name("source_uri")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(source_uri.value(0), url);
+
+    let error = AtifSource::new(format!("{url}?signature=x"))
+        .open()
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("ATIF HTTP(S) URLs must not include a query"),
+        "{error}"
+    );
 }
 
 /// Serves `body` at every path, one request per connection, honoring a single
