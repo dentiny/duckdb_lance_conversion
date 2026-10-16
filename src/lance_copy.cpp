@@ -42,6 +42,10 @@ struct LanceBindData : public FunctionData {
 	// Column compression
 	vector<string> compression_columns;
 	vector<string> compression_algorithms;
+	vector<string> compression_level_columns;
+	vector<int32_t> compression_levels;
+	vector<string> structural_encoding_columns;
+	vector<string> structural_encodings;
 	// Blob columns
 	vector<string> blob_columns;
 	// Index columns
@@ -63,6 +67,10 @@ struct LanceBindData : public FunctionData {
 		result->storage_version = storage_version;
 		result->compression_columns = compression_columns;
 		result->compression_algorithms = compression_algorithms;
+		result->compression_level_columns = compression_level_columns;
+		result->compression_levels = compression_levels;
+		result->structural_encoding_columns = structural_encoding_columns;
+		result->structural_encodings = structural_encodings;
 		result->blob_columns = blob_columns;
 		result->scalar_index_columns = scalar_index_columns;
 		result->vector_index_columns = vector_index_columns;
@@ -77,7 +85,11 @@ struct LanceBindData : public FunctionData {
 		       blob_dedicated_size_threshold == other.blob_dedicated_size_threshold &&
 		       target_file_size == other.target_file_size && storage_version == other.storage_version &&
 		       compression_columns == other.compression_columns &&
-		       compression_algorithms == other.compression_algorithms && blob_columns == other.blob_columns &&
+		       compression_algorithms == other.compression_algorithms &&
+		       compression_level_columns == other.compression_level_columns &&
+		       compression_levels == other.compression_levels &&
+		       structural_encoding_columns == other.structural_encoding_columns &&
+		       structural_encodings == other.structural_encodings && blob_columns == other.blob_columns &&
 		       scalar_index_columns == other.scalar_index_columns &&
 		       vector_index_columns == other.vector_index_columns && text_index_columns == other.text_index_columns &&
 		       bloom_filter_index_columns == other.bloom_filter_index_columns;
@@ -240,30 +252,47 @@ vector<string> ParseIndexColumns(ClientContext &context, const string &option_na
 	return result;
 }
 
-void ParseColumnCompression(ClientContext &context, const vector<Value> &values, const vector<string> &names,
-                            const ColumnIndexMap &column_indexes, LanceBindData &result) {
+// Parses a struct option such as {'column': value}, appending canonical column names and parsed values.
+template <class T, class PARSE>
+void ParseColumnSettings(const string &option_name, const string &example, const string &value_name,
+                         const vector<Value> &values, const vector<string> &names, const ColumnIndexMap &column_indexes,
+                         vector<string> &columns, vector<T> &settings, PARSE parse) {
 	if (values.size() != 1 || values[0].type().id() != LogicalTypeId::STRUCT || values[0].IsNull()) {
-		throw BinderException("COLUMN_COMPRESSION requires a struct such as {'column': 'zstd'}");
+		throw BinderException("%s requires a struct such as %s", option_name, example);
 	}
 	auto &entries = StructType::GetChildTypes(values[0].type());
-	auto &algorithms = StructValue::GetChildren(values[0]);
-	case_insensitive_set_t seen(result.compression_columns.begin(), result.compression_columns.end());
+	auto &children = StructValue::GetChildren(values[0]);
+	case_insensitive_set_t seen(columns.begin(), columns.end());
 	for (idx_t i = 0; i < entries.size(); i++) {
 		const auto &requested = entries[i].first;
 		auto entry = column_indexes.find(requested);
 		if (entry == column_indexes.end()) {
-			throw BinderException("COLUMN_COMPRESSION column not found: %s", requested);
+			throw BinderException("%s column not found: %s", option_name, requested);
 		}
 		auto index = entry->second;
 		if (!seen.insert(names[index]).second) {
-			throw BinderException("Duplicate COLUMN_COMPRESSION column: %s", names[index]);
+			throw BinderException("Duplicate %s column: %s", option_name, names[index]);
 		}
-		if (algorithms[i].IsNull()) {
-			throw BinderException("COLUMN_COMPRESSION algorithm cannot be NULL: %s", names[index]);
+		if (children[i].IsNull()) {
+			throw BinderException("%s %s cannot be NULL: %s", option_name, value_name, names[index]);
 		}
-		result.compression_columns.push_back(names[index]);
-		result.compression_algorithms.push_back(algorithms[i].CastAs(context, LogicalType::VARCHAR).GetValue<string>());
+		columns.push_back(names[index]);
+		settings.push_back(parse(children[i], names[index]));
 	}
+}
+
+string ParseStringSetting(ClientContext &context, const Value &value) {
+	return value.CastAs(context, LogicalType::VARCHAR).GetValue<string>();
+}
+
+// Lance silently ignores compression levels it cannot parse, so reject them here.
+int32_t ParseCompressionLevel(const Value &value, const string &column) {
+	Value level;
+	string error;
+	if (!value.type().IsIntegral() || !value.DefaultTryCastAs(LogicalType::INTEGER, level, &error)) {
+		throw BinderException("COLUMN_COMPRESSION_LEVEL level must be an integer: %s", column);
+	}
+	return level.GetValue<int32_t>();
 }
 
 void ValidateIndexColumns(const LanceBindData &data) {
@@ -331,7 +360,19 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			}
 			result->storage_version = option.second[0].CastAs(context, LogicalType::VARCHAR).GetValue<string>();
 		} else if (StringUtil::CIEquals(option.first, "column_compression")) {
-			ParseColumnCompression(context, option.second, names, column_indexes, *result);
+			ParseColumnSettings("COLUMN_COMPRESSION", /*example=*/"{'column': 'zstd'}", /*value_name=*/"algorithm",
+			                    option.second, names, column_indexes, result->compression_columns,
+			                    result->compression_algorithms,
+			                    [&](const Value &value, const string &) { return ParseStringSetting(context, value); });
+		} else if (StringUtil::CIEquals(option.first, "column_compression_level")) {
+			ParseColumnSettings("COLUMN_COMPRESSION_LEVEL", /*example=*/"{'column': 3}", /*value_name=*/"level",
+			                    option.second, names, column_indexes, result->compression_level_columns,
+			                    result->compression_levels, ParseCompressionLevel);
+		} else if (StringUtil::CIEquals(option.first, "column_structural_encoding")) {
+			ParseColumnSettings("COLUMN_STRUCTURAL_ENCODING", /*example=*/"{'column': 'miniblock'}",
+			                    /*value_name=*/"encoding", option.second, names, column_indexes,
+			                    result->structural_encoding_columns, result->structural_encodings,
+			                    [&](const Value &value, const string &) { return ParseStringSetting(context, value); });
 		} else if (StringUtil::CIEquals(option.first, "blob_columns")) {
 			result->blob_columns = ParseBlobColumns(context, option.second, names, types, column_indexes);
 		} else if (StringUtil::CIEquals(option.first, "scalar_index_columns")) {
@@ -386,11 +427,24 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	auto blob_columns = string_pointers(bind.blob_columns);
 	write_config.blob_columns = blob_columns.data();
 	write_config.blob_column_count = blob_columns.size();
+
 	auto compression_columns = string_pointers(bind.compression_columns);
 	auto compression_algorithms = string_pointers(bind.compression_algorithms);
 	write_config.compression_columns = compression_columns.data();
 	write_config.compression_algorithms = compression_algorithms.data();
 	write_config.compression_column_count = compression_columns.size();
+
+	auto compression_level_columns = string_pointers(bind.compression_level_columns);
+	write_config.compression_level_columns = compression_level_columns.data();
+	write_config.compression_levels = bind.compression_levels.data();
+	write_config.compression_level_column_count = compression_level_columns.size();
+
+	auto structural_encoding_columns = string_pointers(bind.structural_encoding_columns);
+	auto structural_encodings = string_pointers(bind.structural_encodings);
+	write_config.structural_encoding_columns = structural_encoding_columns.data();
+	write_config.structural_encodings = structural_encodings.data();
+	write_config.structural_encoding_column_count = structural_encoding_columns.size();
+
 	auto scalar_index_columns = string_pointers(bind.scalar_index_columns);
 	auto vector_index_columns = string_pointers(bind.vector_index_columns);
 	auto text_index_columns = string_pointers(bind.text_index_columns);
@@ -403,6 +457,7 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	write_config.text_index_column_count = text_index_columns.size();
 	write_config.bloom_filter_index_columns = bloom_filter_index_columns.data();
 	write_config.bloom_filter_index_column_count = bloom_filter_index_columns.size();
+
 	unique_ptr<LanceS3Options> s3;
 	// S3 blob URIs are read with the destination's S3 secret, or the unscoped one for a local destination.
 	if (bind.s3 || !bind.blob_columns.empty()) {

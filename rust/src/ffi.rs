@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
@@ -13,9 +14,9 @@ use futures::TryStreamExt;
 
 use crate::source::ReadMetrics;
 use crate::{
-    atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, Error, HuggingFaceSource,
-    LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result, S3StorageConfig, WarcSource,
-    WriteMode, WriteOptions, WriteSummary,
+    atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, ColumnEncoding, Error,
+    HuggingFaceSource, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
+    S3StorageConfig, WarcSource, WriteMode, WriteOptions, WriteSummary,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -53,6 +54,12 @@ pub struct LanceWriteConfig {
     compression_columns: *const *const c_char,
     compression_algorithms: *const *const c_char,
     compression_column_count: usize,
+    compression_level_columns: *const *const c_char,
+    compression_levels: *const i32,
+    compression_level_column_count: usize,
+    structural_encoding_columns: *const *const c_char,
+    structural_encodings: *const *const c_char,
+    structural_encoding_column_count: usize,
     blob_columns: *const *const c_char,
     blob_column_count: usize,
     scalar_index_columns: *const *const c_char,
@@ -201,6 +208,54 @@ unsafe fn string_list(values: *const *const c_char, count: usize) -> Result<Vec<
         })
         .collect()
 }
+unsafe fn i32_list(values: *const i32, count: usize) -> Result<Vec<i32>> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if values.is_null() {
+        return Err(Error::message("null integer list"));
+    }
+    Ok(std::slice::from_raw_parts(values, count).to_vec())
+}
+
+unsafe fn column_encoding(config: &LanceWriteConfig) -> Result<BTreeMap<String, ColumnEncoding>> {
+    let mut encodings = BTreeMap::<String, ColumnEncoding>::new();
+    let compression = string_list(config.compression_columns, config.compression_column_count)?
+        .into_iter()
+        .zip(string_list(
+            config.compression_algorithms,
+            config.compression_column_count,
+        )?);
+    for (column, algorithm) in compression {
+        encodings.entry(column).or_default().compression = Some(algorithm);
+    }
+    let levels = string_list(
+        config.compression_level_columns,
+        config.compression_level_column_count,
+    )?
+    .into_iter()
+    .zip(i32_list(
+        config.compression_levels,
+        config.compression_level_column_count,
+    )?);
+    for (column, level) in levels {
+        encodings.entry(column).or_default().compression_level = Some(level);
+    }
+    let structural = string_list(
+        config.structural_encoding_columns,
+        config.structural_encoding_column_count,
+    )?
+    .into_iter()
+    .zip(string_list(
+        config.structural_encodings,
+        config.structural_encoding_column_count,
+    )?);
+    for (column, encoding) in structural {
+        encodings.entry(column).or_default().structural_encoding = Some(encoding);
+    }
+    Ok(encodings)
+}
+
 unsafe fn parse_opendal_config(config: *const OpendalConfig) -> Result<OpendalConfig> {
     config.as_ref().copied().unwrap_or_default().validate()
 }
@@ -303,16 +358,7 @@ pub unsafe extern "C" fn lance_conversion_open(
             .unwrap_or_else(|| WriteOptions::default().target_file_size),
             storage_version: optional_string(config.storage_version)?
                 .unwrap_or_else(|| WriteOptions::default().storage_version),
-            column_compression: string_list(
-                config.compression_columns,
-                config.compression_column_count,
-            )?
-            .into_iter()
-            .zip(string_list(
-                config.compression_algorithms,
-                config.compression_column_count,
-            )?)
-            .collect(),
+            column_encoding: column_encoding(config)?,
             blob_columns: string_list(config.blob_columns, config.blob_column_count)?,
             scalar_index_columns: string_list(
                 config.scalar_index_columns,

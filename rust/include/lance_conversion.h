@@ -49,6 +49,14 @@ struct LanceWriteConfig {
 	const char *const *compression_columns = NULL;
 	const char *const *compression_algorithms = NULL;
 	size_t compression_column_count = 0;
+	// Per-column Lance compression levels.
+	const char *const *compression_level_columns = NULL;
+	const int32_t *compression_levels = NULL;
+	size_t compression_level_column_count = 0;
+	// Per-column Lance structural encodings such as "miniblock" or "fullzip", passed to Lance as-is.
+	const char *const *structural_encoding_columns = NULL;
+	const char *const *structural_encodings = NULL;
+	size_t structural_encoding_column_count = 0;
 	// Blob columns.
 	const char *const *blob_columns = NULL;
 	size_t blob_column_count = 0;

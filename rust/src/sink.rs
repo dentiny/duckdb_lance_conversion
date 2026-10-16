@@ -1,5 +1,7 @@
 mod lance;
-pub use lance::{LanceDatasetWriter, LanceFragmentWriter, LanceWriter, WriteMode, WriteOptions};
+pub use lance::{
+    ColumnEncoding, LanceDatasetWriter, LanceFragmentWriter, LanceWriter, WriteMode, WriteOptions,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WriteSummary {

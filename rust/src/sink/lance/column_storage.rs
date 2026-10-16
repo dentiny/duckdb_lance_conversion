@@ -8,19 +8,17 @@ use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordB
 use futures::StreamExt;
 use lance::{blob_field_with_options, BlobFieldOptions};
 
-use super::WriteOptions;
+use super::{column_encoding::configure_column_encoding, WriteOptions};
 use crate::{Error, Result};
 
-const COMPRESSION_META_KEY: &str = "lance-encoding:compression";
-
 /// Rewrites the stream schema into the schema Lance stores: blob columns and
-/// per-column compression metadata.
+/// per-column encoding metadata.
 pub(super) fn configure_column_storage(
     stream: SendableRecordBatchStream,
     options: &WriteOptions,
 ) -> Result<SendableRecordBatchStream> {
     let stream = configure_blob_storage(stream, options)?;
-    configure_column_compression(stream, options)
+    configure_column_encoding(stream, &options.column_encoding)
 }
 
 fn transform_blob_batch(
@@ -155,35 +153,6 @@ fn configure_blob_storage(
             &uri_blob_columns,
         )?)
     });
-    Ok(Box::pin(RecordBatchStreamAdapter::new(
-        output_schema,
-        batches,
-    )))
-}
-
-fn configure_column_compression(
-    stream: SendableRecordBatchStream,
-    options: &WriteOptions,
-) -> Result<SendableRecordBatchStream> {
-    if options.column_compression.is_empty() {
-        return Ok(stream);
-    }
-    let input_schema = stream.schema();
-    let mut fields = input_schema.fields().to_vec();
-    for (name, algorithm) in &options.column_compression {
-        let index = input_schema
-            .index_of(name)
-            .map_err(|_| Error::message(format!("COLUMN_COMPRESSION column not found: {name}")))?;
-        let mut metadata = fields[index].metadata().clone();
-        metadata.insert(COMPRESSION_META_KEY.into(), algorithm.clone());
-        fields[index] = Arc::new(fields[index].as_ref().clone().with_metadata(metadata));
-    }
-    let output_schema = Arc::new(Schema::new_with_metadata(
-        fields,
-        input_schema.metadata().clone(),
-    ));
-    let batch_schema = output_schema.clone();
-    let batches = stream.map(move |batch| Ok(batch?.with_schema(batch_schema.clone())?));
     Ok(Box::pin(RecordBatchStreamAdapter::new(
         output_schema,
         batches,
