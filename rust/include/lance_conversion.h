@@ -47,6 +47,8 @@ enum LanceBlobOnError : int32_t {
 struct LanceWriteConfig {
 	// Write mode.
 	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
+	// Error handling for blob columns.
+	LanceBlobOnError blob_on_error = LANCE_BLOB_ON_ERROR_FAIL;
 	// Storage configurations.
 	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
 	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
@@ -68,7 +70,6 @@ struct LanceWriteConfig {
 	// Blob columns.
 	const char *const *blob_columns = NULL;
 	size_t blob_column_count = 0;
-	LanceBlobOnError blob_on_error = LANCE_BLOB_ON_ERROR_FAIL;
 	// Scalar index columns.
 	const char *const *scalar_index_columns = NULL;
 	size_t scalar_index_column_count = 0;
