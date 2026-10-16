@@ -7,7 +7,8 @@ use flate2::read::MultiGzDecoder;
 use futures::{stream, StreamExt, TryStreamExt};
 use serde_json::Value;
 
-use super::warc::{is_gzipped, spawn_records, warc_input};
+use super::warc::spawn_records;
+use super::{decompressed_input, is_gzipped};
 use super::{BatchStream, ReadMetrics};
 use crate::storage::OpendalStorage;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
@@ -183,7 +184,7 @@ pub(super) async fn open_indexed_warc(
             async move {
                 let bytes = operator.read_with(&path).range(range).await?.to_bytes();
                 metrics.add_bytes_read(bytes.len());
-                let input = warc_input(futures::io::Cursor::new(bytes), gzipped);
+                let input = decompressed_input(futures::io::Cursor::new(bytes), gzipped);
                 Ok::<_, Error>(spawn_records(input, batch_size, projection, schema))
             }
         })

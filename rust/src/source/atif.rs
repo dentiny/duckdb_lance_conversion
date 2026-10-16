@@ -1,10 +1,11 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
 use atif_io::{InputFormat, TrajectoryReader};
 use futures::{StreamExt, TryStreamExt};
 
-use super::{read_object, BatchSource, BatchStream, ReadMetrics};
+use super::{decompressed_input, is_gzipped, read_object, BatchSource, BatchStream, ReadMetrics};
 use crate::storage::OpendalStorage;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
@@ -16,10 +17,16 @@ pub fn atif_schema() -> SchemaRef {
 }
 
 /// `json` holds one trajectory and `jsonl` or `ndjson` one per line. Without
-/// an explicit format, the file extension decides.
+/// an explicit format, the file extension decides, looking past a `.gz` suffix.
 fn input_format(path: &str, format: Option<&str>) -> Result<InputFormat> {
     let format = format
-        .or_else(|| std::path::Path::new(path).extension()?.to_str())
+        .or_else(|| {
+            let mut path = Path::new(path);
+            if is_gzipped(path.to_str()?) {
+                path = Path::new(path.file_stem()?);
+            }
+            path.extension()?.to_str()
+        })
         .unwrap_or_default()
         .to_ascii_lowercase();
     match format.as_str() {
@@ -52,7 +59,8 @@ impl AtifSource {
         }
     }
 
-    /// `json` or `jsonl`; inferred from the file extension when unset.
+    /// `json` or `jsonl`; inferred from the file extension when unset. A
+    /// `.gz` file is decompressed either way.
     pub fn with_format(mut self, format: impl Into<String>) -> Self {
         self.format = Some(format.into());
         self
@@ -102,6 +110,7 @@ impl BatchSource for AtifSource {
         let size = storage.operator.stat(&path).await?.content_length();
         self.metrics.set_total_bytes(size);
         let reader = read_object(&storage.operator, &path, size, self.metrics).await?;
+        let reader = decompressed_input(reader, is_gzipped(&path));
         let reader = TrajectoryReader::new(reader, format, BATCH_SIZE, Some(source_uri))
             .map_err(|error| Error::message(format!("ATIF reader: {error}")))?;
         // The ATIF converter always produces every column; projection only
@@ -121,6 +130,7 @@ impl BatchSource for AtifSource {
 mod tests {
     use arrow_array::{RecordBatch, StringArray, UInt64Array};
 
+    use super::super::test_util::gzip;
     use super::*;
 
     const DOCUMENT: &str = r#"{"schema_version":"ATIF-v1.8","agent":{"name":"test","version":"1"},"steps":[{"step_id":1,"source":"user","message":"hello"}]}"#;
@@ -148,9 +158,23 @@ mod tests {
             input_format("a/trajectories.txt", Some("ndjson")).unwrap(),
             InputFormat::JsonLines
         ));
+        assert!(matches!(
+            input_format("a/trajectory.json.GZ", None).unwrap(),
+            InputFormat::Json
+        ));
+        assert!(matches!(
+            input_format("a/trajectories.ndjson.gz", None).unwrap(),
+            InputFormat::JsonLines
+        ));
+        assert!(matches!(
+            input_format("a/trajectories.gz", Some("jsonl")).unwrap(),
+            InputFormat::JsonLines
+        ));
         for (path, format) in [
             ("a/trajectories.txt", None),
             ("a/trajectory.json", Some("csv")),
+            ("a/trajectories.gz", None),
+            ("a/trajectories.txt.gz", None),
         ] {
             assert!(input_format(path, format)
                 .unwrap_err()
@@ -188,6 +212,26 @@ mod tests {
         let source_uri = column::<StringArray>(&batches[0], "source_uri").value(0);
         assert!(std::path::Path::new(source_uri).is_absolute());
         assert!(source_uri.ends_with("trajectories.jsonl"));
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
+    }
+
+    #[tokio::test]
+    async fn reads_gzipped_jsonl_across_members() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("trajectories.jsonl.gz");
+        let mut bytes = gzip(format!("{DOCUMENT}\n").as_bytes());
+        bytes.extend(gzip(format!("{DOCUMENT}\n").as_bytes()));
+        tokio::fs::write(&path, bytes).await.unwrap();
+        let metrics = Arc::new(ReadMetrics::default());
+        let (_, stream) = AtifSource::new(path.to_string_lossy())
+            .with_metrics(metrics.clone())
+            .open()
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let indices = column::<UInt64Array>(&batches[0], "source_record_index");
+        assert_eq!(indices.values(), &[1, 2]);
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
     }

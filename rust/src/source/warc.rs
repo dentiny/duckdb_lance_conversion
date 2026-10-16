@@ -5,18 +5,20 @@ use arrow_array::{
     ArrayRef, RecordBatch,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use futures::io::AsyncBufRead;
 use futures::{future, stream, StreamExt, TryStreamExt};
 use opendal::Operator;
 use percent_encoding::percent_decode_str;
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 use url::Url;
-use warc_rs::{GzipReader, Record, StreamingBody, WarcHeader, WarcReader};
+use warc_rs::{Record, StreamingBody, WarcHeader, WarcReader};
 
 use super::warc_index::open_indexed_warc;
 use super::warc_segment::WarcSegment;
-use super::{read_object, BatchSource, BatchStream, ReadMetrics, SourceReadOptions};
+use super::{
+    decompressed_input, is_gzipped, read_object, BatchSource, BatchStream, ReadMetrics,
+    SourceInput, SourceReadOptions,
+};
 use crate::error::ResultExt;
 use crate::storage::{http_operator, OpendalStorage};
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
@@ -28,9 +30,7 @@ const MAX_BATCH_BODY_BYTES: usize = 16 * 1024 * 1024;
 const CHANNEL_CAPACITY: usize = 1;
 const BODY_COLUMN_INDEX: usize = 19;
 
-/// Decompressed WARC bytes ready for record parsing.
-pub(super) type WarcInput = Box<dyn AsyncBufRead + Unpin + Send>;
-type WarcRecord<'r> = Record<StreamingBody<'r, WarcInput>>;
+type WarcRecord<'r> = Record<StreamingBody<'r, SourceInput>>;
 
 static WARC_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     Arc::new(Schema::new(vec![
@@ -227,7 +227,7 @@ impl WarcSource {
                         .await
                         .context(&file)?;
                     let records = spawn_records(
-                        warc_input(reader, is_gzipped(&file)),
+                        decompressed_input(reader, is_gzipped(&file)),
                         batch_size,
                         projection,
                         schema,
@@ -303,7 +303,7 @@ impl BatchSource for WarcSource {
         self.metrics.set_total_bytes(size);
         let reader = read_object(&operator, &path, size, self.metrics).await?;
         let batches = spawn_records(
-            warc_input(reader, gzipped),
+            decompressed_input(reader, gzipped),
             self.batch_size,
             projection,
             schema.clone(),
@@ -312,26 +312,11 @@ impl BatchSource for WarcSource {
     }
 }
 
-pub(super) fn is_gzipped(path: &str) -> bool {
-    path.to_ascii_lowercase().ends_with(".gz")
-}
-
-pub(super) fn warc_input(
-    reader: impl AsyncBufRead + Unpin + Send + 'static,
-    gzipped: bool,
-) -> WarcInput {
-    if gzipped {
-        Box::new(GzipReader::new(reader))
-    } else {
-        Box::new(reader)
-    }
-}
-
 /// Parses `input` in its own runtime task, so parsing and decompression
 /// continue while the consumer is busy. Dropping the returned stream aborts
 /// the task, and a panic surfaces as an error rather than truncated output.
 pub(super) fn spawn_records(
-    input: WarcInput,
+    input: SourceInput,
     batch_size: usize,
     projection: Vec<usize>,
     schema: SchemaRef,
@@ -354,7 +339,7 @@ pub(super) fn spawn_records(
 }
 
 async fn stream_records(
-    input: WarcInput,
+    input: SourceInput,
     batch_size: usize,
     projection: Vec<usize>,
     schema: SchemaRef,
