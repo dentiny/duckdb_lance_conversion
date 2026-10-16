@@ -53,6 +53,12 @@ pub struct LanceWriteConfig {
     compression_columns: *const *const c_char,
     compression_algorithms: *const *const c_char,
     compression_column_count: usize,
+    compression_level_columns: *const *const c_char,
+    compression_levels: *const i32,
+    compression_level_column_count: usize,
+    structural_encoding_columns: *const *const c_char,
+    structural_encodings: *const *const c_char,
+    structural_encoding_column_count: usize,
     blob_columns: *const *const c_char,
     blob_column_count: usize,
     scalar_index_columns: *const *const c_char,
@@ -201,6 +207,16 @@ unsafe fn string_list(values: *const *const c_char, count: usize) -> Result<Vec<
         })
         .collect()
 }
+unsafe fn i32_list(values: *const i32, count: usize) -> Result<Vec<i32>> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if values.is_null() {
+        return Err(Error::message("null integer list"));
+    }
+    Ok(std::slice::from_raw_parts(values, count).to_vec())
+}
+
 unsafe fn parse_opendal_config(config: *const OpendalConfig) -> Result<OpendalConfig> {
     config.as_ref().copied().unwrap_or_default().validate()
 }
@@ -311,6 +327,26 @@ pub unsafe extern "C" fn lance_conversion_open(
             .zip(string_list(
                 config.compression_algorithms,
                 config.compression_column_count,
+            )?)
+            .collect(),
+            column_compression_level: string_list(
+                config.compression_level_columns,
+                config.compression_level_column_count,
+            )?
+            .into_iter()
+            .zip(i32_list(
+                config.compression_levels,
+                config.compression_level_column_count,
+            )?)
+            .collect(),
+            column_structural_encoding: string_list(
+                config.structural_encoding_columns,
+                config.structural_encoding_column_count,
+            )?
+            .into_iter()
+            .zip(string_list(
+                config.structural_encodings,
+                config.structural_encoding_column_count,
             )?)
             .collect(),
             blob_columns: string_list(config.blob_columns, config.blob_column_count)?,

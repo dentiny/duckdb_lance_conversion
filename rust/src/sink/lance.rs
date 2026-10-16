@@ -31,6 +31,10 @@ pub struct WriteOptions {
     pub storage_version: String,
     /// (column, algorithm) pairs set as `lance-encoding:compression` field metadata.
     pub column_compression: Vec<(String, String)>,
+    /// (column, level) pairs set as `lance-encoding:compression-level` field metadata.
+    pub column_compression_level: Vec<(String, i32)>,
+    /// (column, encoding) pairs set as `lance-encoding:structural-encoding` field metadata.
+    pub column_structural_encoding: Vec<(String, String)>,
     pub blob_columns: Vec<String>,
     pub scalar_index_columns: Vec<String>,
     pub vector_index_columns: Vec<String>,
@@ -49,6 +53,8 @@ impl Default for WriteOptions {
             target_file_size: DEFAULT_TARGET_FILE_SIZE,
             storage_version: DEFAULT_STORAGE_VERSION.into(),
             column_compression: Vec::new(),
+            column_compression_level: Vec::new(),
+            column_structural_encoding: Vec::new(),
             blob_columns: Vec::new(),
             scalar_index_columns: Vec::new(),
             vector_index_columns: Vec::new(),

@@ -12,15 +12,17 @@ use super::WriteOptions;
 use crate::{Error, Result};
 
 const COMPRESSION_META_KEY: &str = "lance-encoding:compression";
+const COMPRESSION_LEVEL_META_KEY: &str = "lance-encoding:compression-level";
+const STRUCTURAL_ENCODING_META_KEY: &str = "lance-encoding:structural-encoding";
 
 /// Rewrites the stream schema into the schema Lance stores: blob columns and
-/// per-column compression metadata.
+/// per-column encoding metadata.
 pub(super) fn configure_column_storage(
     stream: SendableRecordBatchStream,
     options: &WriteOptions,
 ) -> Result<SendableRecordBatchStream> {
     let stream = configure_blob_storage(stream, options)?;
-    configure_column_compression(stream, options)
+    configure_column_encoding(stream, options)
 }
 
 fn transform_blob_batch(
@@ -161,21 +163,49 @@ fn configure_blob_storage(
     )))
 }
 
-fn configure_column_compression(
+fn configure_column_encoding(
     stream: SendableRecordBatchStream,
     options: &WriteOptions,
 ) -> Result<SendableRecordBatchStream> {
-    if options.column_compression.is_empty() {
+    let settings = options
+        .column_compression
+        .iter()
+        .map(|(name, algorithm)| {
+            ("COLUMN_COMPRESSION", name, COMPRESSION_META_KEY, algorithm.clone())
+        })
+        .chain(options.column_compression_level.iter().map(|(name, level)| {
+            (
+                "COLUMN_COMPRESSION_LEVEL",
+                name,
+                COMPRESSION_LEVEL_META_KEY,
+                level.to_string(),
+            )
+        }))
+        .chain(
+            options
+                .column_structural_encoding
+                .iter()
+                .map(|(name, encoding)| {
+                    (
+                        "COLUMN_STRUCTURAL_ENCODING",
+                        name,
+                        STRUCTURAL_ENCODING_META_KEY,
+                        encoding.clone(),
+                    )
+                }),
+        )
+        .collect::<Vec<_>>();
+    if settings.is_empty() {
         return Ok(stream);
     }
     let input_schema = stream.schema();
     let mut fields = input_schema.fields().to_vec();
-    for (name, algorithm) in &options.column_compression {
+    for (option, name, key, value) in settings {
         let index = input_schema
             .index_of(name)
-            .map_err(|_| Error::message(format!("COLUMN_COMPRESSION column not found: {name}")))?;
+            .map_err(|_| Error::message(format!("{option} column not found: {name}")))?;
         let mut metadata = fields[index].metadata().clone();
-        metadata.insert(COMPRESSION_META_KEY.into(), algorithm.clone());
+        metadata.insert(key.into(), value);
         fields[index] = Arc::new(fields[index].as_ref().clone().with_metadata(metadata));
     }
     let output_schema = Arc::new(Schema::new_with_metadata(
