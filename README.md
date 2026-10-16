@@ -392,8 +392,31 @@ TO 'media.lance' (
 );
 ```
 
-Every named column must exist and have type `VARCHAR`. A failed object read
-fails the COPY.
+Every named column must exist and have type `VARCHAR`.
+
+`BLOB_ON_ERROR` controls what happens when an object cannot be read, for
+example a missing file, a dead link, or a URI with a query string:
+
+- `'fail'` (default): fail the COPY.
+- `'null'`: store NULL for that value and keep the row.
+- `'skip'`: drop the row from the dataset.
+
+```sql
+COPY (SELECT id, caption, image_url FROM read_parquet('laion/*.parquet'))
+TO 'laion.lance' (
+    FORMAT LANCE,
+    BLOB_COLUMNS (image_url),
+    BLOB_ON_ERROR 'skip'
+);
+```
+
+With `'null'` or `'skip'`, the extension reads each object (up to 64 at a time
+per writer) before Lance stores it, using the same S3 secret and
+`lance_conversion_storage_*` settings. Objects larger than
+`BLOB_DEDICATED_SIZE_THRESHOLD` are only checked for existence and size, then
+streamed by Lance; an error while streaming them still fails the COPY. The
+returned row count includes skipped rows, because DuckDB reports the rows passed
+to COPY rather than the rows written.
 
 ### Indexes
 
@@ -455,6 +478,7 @@ TO 'catalog.lance' (
     BLOB_INLINE_SIZE_THRESHOLD 2097152,
     BLOB_DEDICATED_SIZE_THRESHOLD 16777216,
     BLOB_COLUMNS (asset_uri),
+    BLOB_ON_ERROR 'fail',
 
     -- Lance indexes.
     SCALAR_INDEX_COLUMNS (id, category),

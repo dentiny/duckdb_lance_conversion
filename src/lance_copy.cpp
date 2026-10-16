@@ -48,6 +48,7 @@ struct LanceBindData : public FunctionData {
 	vector<string> structural_encodings;
 	// Blob columns
 	vector<string> blob_columns;
+	LanceBlobOnError blob_on_error = LANCE_BLOB_ON_ERROR_FAIL;
 	// Index columns
 	vector<string> scalar_index_columns;
 	vector<string> vector_index_columns;
@@ -72,6 +73,7 @@ struct LanceBindData : public FunctionData {
 		result->structural_encoding_columns = structural_encoding_columns;
 		result->structural_encodings = structural_encodings;
 		result->blob_columns = blob_columns;
+		result->blob_on_error = blob_on_error;
 		result->scalar_index_columns = scalar_index_columns;
 		result->vector_index_columns = vector_index_columns;
 		result->text_index_columns = text_index_columns;
@@ -90,7 +92,7 @@ struct LanceBindData : public FunctionData {
 		       compression_levels == other.compression_levels &&
 		       structural_encoding_columns == other.structural_encoding_columns &&
 		       structural_encodings == other.structural_encodings && blob_columns == other.blob_columns &&
-		       scalar_index_columns == other.scalar_index_columns &&
+		       blob_on_error == other.blob_on_error && scalar_index_columns == other.scalar_index_columns &&
 		       vector_index_columns == other.vector_index_columns && text_index_columns == other.text_index_columns &&
 		       bloom_filter_index_columns == other.bloom_filter_index_columns;
 	}
@@ -227,6 +229,23 @@ vector<string> ParseBlobColumns(ClientContext &context, const vector<Value> &val
 	return result;
 }
 
+LanceBlobOnError ParseBlobOnError(ClientContext &context, const vector<Value> &values) {
+	if (values.size() != 1 || values[0].IsNull()) {
+		throw BinderException("BLOB_ON_ERROR requires one of 'fail', 'null', or 'skip'");
+	}
+	auto value = values[0].CastAs(context, LogicalType::VARCHAR).GetValue<string>();
+	if (StringUtil::CIEquals(value, "fail")) {
+		return LANCE_BLOB_ON_ERROR_FAIL;
+	}
+	if (StringUtil::CIEquals(value, "null")) {
+		return LANCE_BLOB_ON_ERROR_NULL;
+	}
+	if (StringUtil::CIEquals(value, "skip")) {
+		return LANCE_BLOB_ON_ERROR_SKIP;
+	}
+	throw BinderException("BLOB_ON_ERROR must be 'fail', 'null', or 'skip': %s", value);
+}
+
 vector<string> ParseIndexColumns(ClientContext &context, const string &option_name, const vector<Value> &values,
                                  const vector<string> &names, const ColumnIndexMap &column_indexes) {
 	if (values.empty()) {
@@ -327,6 +346,7 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 	}
 	auto column_indexes = BuildColumnIndexMap(names);
 	bool has_write_mode = false;
+	bool has_blob_on_error = false;
 	for (auto &option : input.info.options) {
 		if (StringUtil::CIEquals(option.first, "overwrite") || StringUtil::CIEquals(option.first, "append")) {
 			if (has_write_mode) {
@@ -375,6 +395,9 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			                    [&](const Value &value, const string &) { return ParseStringSetting(context, value); });
 		} else if (StringUtil::CIEquals(option.first, "blob_columns")) {
 			result->blob_columns = ParseBlobColumns(context, option.second, names, types, column_indexes);
+		} else if (StringUtil::CIEquals(option.first, "blob_on_error")) {
+			result->blob_on_error = ParseBlobOnError(context, option.second);
+			has_blob_on_error = true;
 		} else if (StringUtil::CIEquals(option.first, "scalar_index_columns")) {
 			result->scalar_index_columns =
 			    ParseIndexColumns(context, option.first, option.second, names, column_indexes);
@@ -389,6 +412,9 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 		} else {
 			throw BinderException("Unsupported option for FORMAT LANCE: %s", option.first);
 		}
+	}
+	if (has_blob_on_error && result->blob_columns.empty()) {
+		throw BinderException("BLOB_ON_ERROR requires BLOB_COLUMNS");
 	}
 	ValidateIndexColumns(*result);
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -427,6 +453,7 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	auto blob_columns = string_pointers(bind.blob_columns);
 	write_config.blob_columns = blob_columns.data();
 	write_config.blob_column_count = blob_columns.size();
+	write_config.blob_on_error = bind.blob_on_error;
 
 	auto compression_columns = string_pointers(bind.compression_columns);
 	auto compression_algorithms = string_pointers(bind.compression_algorithms);

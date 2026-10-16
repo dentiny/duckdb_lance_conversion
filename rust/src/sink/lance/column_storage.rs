@@ -7,17 +7,24 @@ use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream};
 use futures::StreamExt;
 use lance::{blob_field_with_options, BlobFieldOptions};
+use lance_io::object_store::ObjectStoreRegistry;
 
-use super::{column_encoding::configure_column_encoding, WriteOptions};
+use super::blob_fetch::BlobFetcher;
+use super::{
+    column_encoding::configure_column_encoding, BlobOnError, WriteOptions,
+    DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD,
+};
 use crate::{Error, Result};
 
 /// Rewrites the stream schema into the schema Lance stores: blob columns and
-/// per-column encoding metadata.
+/// per-column encoding metadata. Unless `blob_on_error` is `Fail`, URI blob
+/// objects are read through `registry` before Lance ingests them.
 pub(super) fn configure_column_storage(
     stream: SendableRecordBatchStream,
     options: &WriteOptions,
+    registry: Option<Arc<ObjectStoreRegistry>>,
 ) -> Result<SendableRecordBatchStream> {
-    let stream = configure_blob_storage(stream, options)?;
+    let stream = configure_blob_storage(stream, options, registry)?;
     configure_column_encoding(stream, &options.column_encoding)
 }
 
@@ -65,6 +72,7 @@ fn transform_blob_batch(
 fn configure_blob_storage(
     stream: SendableRecordBatchStream,
     options: &WriteOptions,
+    registry: Option<Arc<ObjectStoreRegistry>>,
 ) -> Result<SendableRecordBatchStream> {
     if options.blob_inline_size_threshold.is_none()
         && options.blob_dedicated_size_threshold.is_none()
@@ -144,15 +152,30 @@ fn configure_blob_storage(
         input_schema.metadata().clone(),
     ));
     let batch_schema = output_schema.clone();
-    let batches = stream.map(move |batch| {
-        let batch = batch?;
-        Ok(transform_blob_batch(
-            batch,
-            batch_schema.clone(),
-            &binary_blob_columns,
-            &uri_blob_columns,
-        )?)
-    });
+    let transform = {
+        let uri_blob_columns = uri_blob_columns.clone();
+        move |batch| {
+            transform_blob_batch(
+                batch,
+                batch_schema.clone(),
+                &binary_blob_columns,
+                &uri_blob_columns,
+            )
+        }
+    };
+    if let Some(registry) = registry
+        .filter(|_| options.blob_on_error != BlobOnError::Fail && !uri_blob_columns.is_empty())
+    {
+        let fetcher = Arc::new(BlobFetcher {
+            registry,
+            on_error: options.blob_on_error,
+            dedicated_threshold: options
+                .blob_dedicated_size_threshold
+                .unwrap_or(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
+        });
+        return Ok(fetcher.fetch_stream(stream, output_schema, uri_blob_columns, transform));
+    }
+    let batches = stream.map(move |batch| Ok(transform(batch?)?));
     Ok(Box::pin(RecordBatchStreamAdapter::new(
         output_schema,
         batches,

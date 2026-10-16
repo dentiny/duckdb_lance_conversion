@@ -36,6 +36,13 @@ enum LanceWriteMode : int32_t {
 	LANCE_WRITE_MODE_OVERWRITE = 2,
 };
 
+// What to do with a blob column value whose object cannot be read.
+enum LanceBlobOnError : int32_t {
+	LANCE_BLOB_ON_ERROR_FAIL = 0,
+	LANCE_BLOB_ON_ERROR_NULL = 1,
+	LANCE_BLOB_ON_ERROR_SKIP = 2,
+};
+
 struct LanceWriteConfig {
 	// Write mode.
 	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
@@ -60,6 +67,7 @@ struct LanceWriteConfig {
 	// Blob columns.
 	const char *const *blob_columns = NULL;
 	size_t blob_column_count = 0;
+	LanceBlobOnError blob_on_error = LANCE_BLOB_ON_ERROR_FAIL;
 	// Scalar index columns.
 	const char *const *scalar_index_columns = NULL;
 	size_t scalar_index_column_count = 0;

@@ -65,7 +65,12 @@ impl DatasetWrite {
         &self,
         stream: SendableRecordBatchStream,
     ) -> Result<Transaction> {
-        let stream = configure_column_storage(stream, &self.options)?;
+        let registry = self
+            .params
+            .session
+            .as_ref()
+            .map(|session| session.store_registry());
+        let stream = configure_column_storage(stream, &self.options, registry)?;
         let count = self.rows_written.clone();
         let schema = stream.schema();
         let counted = stream.inspect_ok(move |batch| {
@@ -189,7 +194,7 @@ impl LanceDatasetWriter {
             ));
         }
         // Validate options against the stored schema before any file is written.
-        let stored = configure_column_storage(empty_stream(schema.clone()), &options)?;
+        let stored = configure_column_storage(empty_stream(schema.clone()), &options, None)?;
         let indexes = LanceIndexPlan::new(&stored.schema(), &options)?;
 
         let session = Session::default();

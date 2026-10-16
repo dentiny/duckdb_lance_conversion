@@ -7,7 +7,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use lance::index::DatasetIndexExt;
-use lance_conversion::{ColumnEncoding, LanceWriter, WriteMode, WriteOptions};
+use lance_conversion::{BlobOnError, ColumnEncoding, LanceWriter, WriteMode, WriteOptions};
 use tempfile::tempdir;
 use tokio::{
     fs,
@@ -265,6 +265,91 @@ async fn string_uri_column_is_ingested_as_a_blob() {
     assert!(
         error.to_string().contains("must not have a query"),
         "{error}"
+    );
+    spawn_blocking(move || temp.close()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn blob_on_error_controls_unreadable_uris() {
+    let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
+    let small = temp.path().join("small.bin");
+    let large = temp.path().join("large.bin");
+    fs::write(&small, b"abc").await.unwrap();
+    fs::write(&large, b"0123456789").await.unwrap();
+    let uri = |path: &std::path::Path| url::Url::from_file_path(path).unwrap().to_string();
+    let missing = uri(&temp.path().join("missing.bin"));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("uri", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..5)) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                Some(uri(&small)),
+                Some(missing.clone()),
+                None,
+                Some(uri(&large)),
+                Some(missing),
+            ])),
+        ],
+    )
+    .unwrap();
+    let write = |name: &str, blob_on_error: BlobOnError| {
+        let output = temp.path().join(name);
+        let batch = batch.clone();
+        async move {
+            let mut writer = LanceWriter::create(
+                &output,
+                batch.schema(),
+                WriteOptions {
+                    blob_columns: vec!["uri".into()],
+                    blob_on_error,
+                    // Keeps large.bin as a URI that Lance streams itself.
+                    blob_inline_size_threshold: Some(2),
+                    blob_dedicated_size_threshold: Some(4),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            writer.write_batch(batch).await?;
+            let summary = writer.finish().await?;
+            Ok::<_, lance_conversion::Error>((summary, read_lance(&output).await))
+        }
+    };
+    let expected = |ids: Vec<i64>, values: Vec<Option<&'static [u8]>>| {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("uri", DataType::Binary, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(ids)) as ArrayRef,
+                Arc::new(BinaryArray::from(values)),
+            ],
+        )
+        .unwrap()
+    };
+
+    let error = write("fail.lance", BlobOnError::Fail).await.err().unwrap();
+    assert!(error.to_string().contains("missing.bin"), "{error}");
+
+    let (summary, actual) = write("null.lance", BlobOnError::Null).await.unwrap();
+    assert_eq!(summary.rows_written, 5);
+    assert_values(
+        &actual,
+        &expected(
+            vec![0, 1, 2, 3, 4],
+            vec![Some(b"abc"), None, None, Some(b"0123456789"), None],
+        ),
+    );
+
+    let (summary, actual) = write("skip.lance", BlobOnError::Skip).await.unwrap();
+    assert_eq!(summary.rows_written, 3);
+    assert_values(
+        &actual,
+        &expected(vec![0, 2, 3], vec![Some(b"abc"), None, Some(b"0123456789")]),
     );
     spawn_blocking(move || temp.close()).await.unwrap().unwrap();
 }

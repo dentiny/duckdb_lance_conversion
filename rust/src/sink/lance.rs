@@ -8,6 +8,7 @@ pub use lance::dataset::write::WriteMode;
 use super::WriteSummary;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
+mod blob_fetch;
 mod column_encoding;
 mod column_storage;
 mod dataset;
@@ -23,6 +24,18 @@ const DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD: usize = 16 * 1024 * 1024;
 const DEFAULT_TARGET_FILE_SIZE: usize = 512 * 1024 * 1024;
 const DEFAULT_STORAGE_VERSION: &str = "stable";
 
+/// What to do with a `blob_columns` value whose object cannot be read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlobOnError {
+    /// Fail the write.
+    #[default]
+    Fail,
+    /// Store NULL for that value.
+    Null,
+    /// Drop the row.
+    Skip,
+}
+
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
     pub mode: WriteMode,
@@ -35,6 +48,7 @@ pub struct WriteOptions {
     /// Per-column Lance encoding settings, keyed by column name.
     pub column_encoding: BTreeMap<String, ColumnEncoding>,
     pub blob_columns: Vec<String>,
+    pub blob_on_error: BlobOnError,
     pub scalar_index_columns: Vec<String>,
     pub vector_index_columns: Vec<String>,
     pub text_index_columns: Vec<String>,
@@ -53,6 +67,7 @@ impl Default for WriteOptions {
             storage_version: DEFAULT_STORAGE_VERSION.into(),
             column_encoding: BTreeMap::new(),
             blob_columns: Vec::new(),
+            blob_on_error: BlobOnError::Fail,
             scalar_index_columns: Vec::new(),
             vector_index_columns: Vec::new(),
             text_index_columns: Vec::new(),
