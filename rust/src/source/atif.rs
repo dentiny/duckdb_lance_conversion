@@ -6,7 +6,7 @@ use atif_io::{InputFormat, TrajectoryReader};
 use futures::{StreamExt, TryStreamExt};
 
 use super::{decompressed_input, is_gzipped, read_object, BatchSource, BatchStream, ReadMetrics};
-use crate::storage::OpendalStorage;
+use crate::storage::InputFile;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 // Each row holds a whole trajectory, including its raw JSON, so batches are
@@ -90,28 +90,23 @@ impl AtifSource {
 
 impl BatchSource for AtifSource {
     async fn open(self) -> Result<(SchemaRef, BatchStream)> {
-        let format = input_format(&self.path, self.format.as_deref())?;
+        let input = InputFile::open(&self.path, self.s3_config.as_ref(), &self.opendal_config)?;
+        let format = input_format(&input.opendal_path, self.format.as_deref())?;
         let full_schema = atif_schema();
         let projection = self.projection.filter(|projection| !projection.is_empty());
         let schema = match &projection {
             Some(projection) => Arc::new(full_schema.project(projection)?),
             None => full_schema,
         };
-        let storage =
-            OpendalStorage::from_path(&self.path, self.s3_config.as_ref(), &self.opendal_config)?;
-        let path = storage.object_path.to_string();
-        if path.is_empty() {
-            return Err(Error::message("ATIF input must not be a storage root"));
-        }
-        let source_uri = match storage.location.to_file_path() {
-            Ok(local_path) => local_path.display().to_string(),
-            Err(()) => storage.location.to_string(),
-        };
-        let size = storage.operator.stat(&path).await?.content_length();
+        let size = input
+            .operator
+            .stat(&input.opendal_path)
+            .await?
+            .content_length();
         self.metrics.set_total_bytes(size);
-        let reader = read_object(&storage.operator, &path, size, self.metrics).await?;
-        let reader = decompressed_input(reader, is_gzipped(&path));
-        let reader = TrajectoryReader::new(reader, format, BATCH_SIZE, Some(source_uri))
+        let reader = read_object(&input.operator, &input.opendal_path, size, self.metrics).await?;
+        let reader = decompressed_input(reader, is_gzipped(&input.opendal_path));
+        let reader = TrajectoryReader::new(reader, format, BATCH_SIZE, Some(input.uri))
             .map_err(|error| Error::message(format!("ATIF reader: {error}")))?;
         // The ATIF converter always produces every column; projection only
         // trims the batches DuckDB receives.

@@ -14,6 +14,7 @@ use opendal::{
     services::{Fs, Http, S3},
     Operator,
 };
+use percent_encoding::percent_decode_str;
 use url::Url;
 
 use crate::error::ResultExt;
@@ -347,6 +348,62 @@ impl OpendalStorage {
             object_path,
             location,
         })
+    }
+}
+
+/// A file read from a local path, an `s3://` URI, or an HTTP(S) URL.
+pub(crate) struct InputFile {
+    pub operator: Operator,
+    /// Path within `operator`, without a leading slash.
+    pub opendal_path: String,
+    /// The absolute local path, or the URL for remote files.
+    pub uri: String,
+}
+
+impl InputFile {
+    pub fn open(
+        path: &str,
+        s3_config: Option<&S3StorageConfig>,
+        opendal_config: &OpendalConfig,
+    ) -> Result<Self> {
+        let input = match Url::parse(path) {
+            Ok(url) if matches!(url.scheme(), "http" | "https") => {
+                if url.query().is_some() || url.fragment().is_some() {
+                    return Err(Error::message(format!(
+                        "HTTP(S) URL must not include a query or fragment: {path}"
+                    )));
+                }
+                // OpenDAL percent-encodes the path again.
+                let object_path = percent_decode_str(url.path()).decode_utf8()?;
+                Self {
+                    operator: http_operator(
+                        &url[..url::Position::BeforePath],
+                        None,
+                        opendal_config,
+                    )?,
+                    opendal_path: object_path.trim_start_matches('/').to_owned(),
+                    uri: url.to_string(),
+                }
+            }
+            _ => {
+                let storage = OpendalStorage::from_path(path, s3_config, opendal_config)?;
+                let uri = match storage.location.to_file_path() {
+                    Ok(local_path) => local_path.display().to_string(),
+                    Err(()) => storage.location.to_string(),
+                };
+                Self {
+                    operator: storage.operator,
+                    opendal_path: storage.object_path.to_string(),
+                    uri,
+                }
+            }
+        };
+        if input.opendal_path.is_empty() {
+            return Err(Error::message(format!(
+                "input must not be a storage root: {path}"
+            )));
+        }
+        Ok(input)
     }
 }
 
