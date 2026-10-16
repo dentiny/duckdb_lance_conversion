@@ -19,6 +19,7 @@ constexpr uint64_t DEFAULT_READ_AHEAD_BYTES = 32 * 1024 * 1024;
 
 unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBindInput &input,
                                          vector<LogicalType> &return_types, vector<string> &names) {
+	RejectNullParameters("read_huggingface", "dataset", input);
 	auto dataset = input.inputs[0].GetValue<string>();
 	auto config = string("default");
 	auto split = string("train");

@@ -4,6 +4,7 @@
 #include "function_metadata.hpp"
 #include "lance_conversion.h"
 #include "lance_ffi.hpp"
+#include "source_options.hpp"
 #include "storage_options.hpp"
 
 #include "duckdb/common/file_system.hpp"
@@ -16,9 +17,7 @@ namespace {
 
 unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput &input,
                                   vector<LogicalType> &return_types, vector<string> &names) {
-	if (input.inputs[0].IsNull()) {
-		throw BinderException("read_atif path must not be NULL");
-	}
+	RejectNullParameters("read_atif", "path", input);
 	// Trajectories must keep their file order, which DuckDB may otherwise reorder across threads.
 	if (!Settings::Get<PreserveInsertionOrderSetting>(context)) {
 		throw BinderException("read_atif requires preserve_insertion_order = true");

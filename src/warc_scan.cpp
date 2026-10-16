@@ -16,9 +16,7 @@ namespace {
 
 unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput &input,
                                   vector<LogicalType> &return_types, vector<string> &names) {
-	if (input.inputs[0].IsNull()) {
-		throw BinderException("read_warc path must not be NULL");
-	}
+	RejectNullParameters("read_warc", "path", input);
 	auto path = input.inputs[0].GetValue<string>();
 	auto read_options = SourceReadOptions::From(input);
 	string index_path;

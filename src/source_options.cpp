@@ -21,4 +21,16 @@ void SourceReadOptions::Register(TableFunction &function) {
 	function.named_parameters["max_read_parallelism"] = LogicalType::UBIGINT;
 }
 
+void RejectNullParameters(const string &function_name, const string &argument_name,
+                          const TableFunctionBindInput &input) {
+	if (input.inputs[0].IsNull()) {
+		throw BinderException("%s %s must not be NULL", function_name, argument_name);
+	}
+	for (const auto &entry : input.named_parameters) {
+		if (entry.second.IsNull()) {
+			throw BinderException("%s parameter %s must not be NULL", function_name, entry.first);
+		}
+	}
+}
+
 } // namespace duckdb
