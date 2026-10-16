@@ -1,6 +1,7 @@
 mod lance;
 pub use lance::{
-    ColumnEncoding, LanceDatasetWriter, LanceFragmentWriter, LanceWriter, WriteMode, WriteOptions,
+    BlobOnError, ColumnEncoding, LanceDatasetWriter, LanceFragmentWriter, LanceWriter, WriteMode,
+    WriteOptions,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

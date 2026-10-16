@@ -14,8 +14,8 @@ use futures::TryStreamExt;
 
 use crate::source::ReadMetrics;
 use crate::{
-    atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, ColumnEncoding, Error,
-    HuggingFaceSource, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
+    atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, BlobOnError, ColumnEncoding,
+    Error, HuggingFaceSource, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
     S3StorageConfig, WarcSource, WriteMode, WriteOptions, WriteSummary,
 };
 
@@ -62,6 +62,7 @@ pub struct LanceWriteConfig {
     structural_encoding_column_count: usize,
     blob_columns: *const *const c_char,
     blob_column_count: usize,
+    blob_on_error: i32,
     scalar_index_columns: *const *const c_char,
     scalar_index_column_count: usize,
     vector_index_columns: *const *const c_char,
@@ -297,6 +298,15 @@ fn write_mode(mode: i32) -> Result<WriteMode> {
     }
 }
 
+fn blob_on_error(value: i32) -> Result<BlobOnError> {
+    match value {
+        0 => Ok(BlobOnError::Fail),
+        1 => Ok(BlobOnError::Null),
+        2 => Ok(BlobOnError::Skip),
+        _ => Err(Error::message(format!("invalid BLOB_ON_ERROR: {value}"))),
+    }
+}
+
 fn call(operation: impl FnOnce() -> Result<()>) -> *mut c_char {
     let error = match catch_unwind(AssertUnwindSafe(operation)) {
         Ok(Ok(())) => return ptr::null_mut(),
@@ -360,6 +370,7 @@ pub unsafe extern "C" fn lance_conversion_open(
                 .unwrap_or_else(|| WriteOptions::default().storage_version),
             column_encoding: column_encoding(config)?,
             blob_columns: string_list(config.blob_columns, config.blob_column_count)?,
+            blob_on_error: blob_on_error(config.blob_on_error)?,
             scalar_index_columns: string_list(
                 config.scalar_index_columns,
                 config.scalar_index_column_count,

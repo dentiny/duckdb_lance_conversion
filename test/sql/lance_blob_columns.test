@@ -51,6 +51,69 @@ COPY (SELECT 1 AS uri) TO '__TEST_DIR__/invalid_blob_column.lance' (
 ----
 BLOB_COLUMNS column must be VARCHAR
 
+statement ok
+CREATE TABLE blob_uris AS
+SELECT *
+FROM (VALUES
+    (1, 'test/data/records.warc'),
+    (2, 'test/data/does_not_exist.bin'),
+    (3, NULL)
+) t(id, uri);
+
+# An unreadable object fails the COPY by default.
+statement error
+COPY blob_uris TO '__TEST_DIR__/blob_on_error_default.lance' (
+    FORMAT LANCE,
+    BLOB_COLUMNS (uri)
+);
+----
+does_not_exist.bin
+
+statement error
+COPY blob_uris TO '__TEST_DIR__/blob_on_error_fail.lance' (
+    FORMAT LANCE,
+    BLOB_COLUMNS (uri),
+    BLOB_ON_ERROR 'fail'
+);
+----
+does_not_exist.bin
+
+query I
+COPY blob_uris TO '__TEST_DIR__/blob_on_error_null.lance' (
+    FORMAT LANCE,
+    BLOB_COLUMNS (uri),
+    BLOB_ON_ERROR 'null'
+);
+----
+3
+
+# DuckDB reports the rows it passed to COPY, including skipped ones.
+query I
+COPY blob_uris TO '__TEST_DIR__/blob_on_error_skip.lance' (
+    FORMAT LANCE,
+    BLOB_COLUMNS (uri),
+    BLOB_ON_ERROR 'SKIP'
+);
+----
+3
+
+statement error
+COPY blob_uris TO '__TEST_DIR__/blob_on_error_invalid.lance' (
+    FORMAT LANCE,
+    BLOB_COLUMNS (uri),
+    BLOB_ON_ERROR 'ignore'
+);
+----
+BLOB_ON_ERROR must be 'fail', 'null', or 'skip'
+
+statement error
+COPY blob_uris TO '__TEST_DIR__/blob_on_error_without_columns.lance' (
+    FORMAT LANCE,
+    BLOB_ON_ERROR 'skip'
+);
+----
+BLOB_ON_ERROR requires BLOB_COLUMNS
+
 restart no_extension_load
 
 statement ok
@@ -68,3 +131,16 @@ SELECT id FROM '__TEST_DIR__/native_blobs.lance' ORDER BY id;
 2
 3
 4
+
+query I
+SELECT id FROM '__TEST_DIR__/blob_on_error_null.lance' ORDER BY id;
+----
+1
+2
+3
+
+query I
+SELECT id FROM '__TEST_DIR__/blob_on_error_skip.lance' ORDER BY id;
+----
+1
+3
