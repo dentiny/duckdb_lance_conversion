@@ -454,7 +454,6 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	write_config.blob_columns = blob_columns.data();
 	write_config.blob_column_count = blob_columns.size();
 	write_config.blob_on_error = bind.blob_on_error;
-
 	auto compression_columns = string_pointers(bind.compression_columns);
 	auto compression_algorithms = string_pointers(bind.compression_algorithms);
 	write_config.compression_columns = compression_columns.data();

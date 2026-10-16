@@ -36,7 +36,8 @@ enum LanceWriteMode : int32_t {
 	LANCE_WRITE_MODE_OVERWRITE = 2,
 };
 
-// What to do with a blob column value whose object cannot be read.
+// What to do with a blob column value whose object is missing or forbidden.
+// Other read errors, such as rate limits, always fail the write.
 enum LanceBlobOnError : int32_t {
 	LANCE_BLOB_ON_ERROR_FAIL = 0,
 	LANCE_BLOB_ON_ERROR_NULL = 1,

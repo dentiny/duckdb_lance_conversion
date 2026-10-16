@@ -1,5 +1,6 @@
-//! Reads `blob_columns` objects before Lance ingests them, so an unreadable
-//! object can become NULL or drop its row instead of failing the write.
+//! Reads `blob_columns` objects before Lance ingests them, so a permanently
+//! unreadable object can become NULL or drop its row instead of failing the
+//! write. Transient errors, such as rate limits or timeouts, still fail it.
 
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordB
 use futures::{future::join_all, stream, FutureExt, StreamExt, TryStreamExt};
 use lance::deps::datafusion::error::DataFusionError;
 use lance_io::object_store::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry};
+use object_store::path::Path;
 
 use super::BlobOnError;
 
@@ -29,7 +31,8 @@ enum Fetched {
     Data(Bytes),
     /// Too large to buffer; Lance streams it from the URI.
     Uri,
-    Failed,
+    /// Permanently unreadable, with the reason.
+    Failed(String),
 }
 
 impl Fetched {
@@ -39,6 +42,39 @@ impl Fetched {
             _ => 0,
         }
     }
+}
+
+/// Whether `error` means the object is missing or forbidden, so retrying
+/// cannot succeed. Anything unrecognized is treated as transient.
+fn is_permanent(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(error) = error.downcast_ref::<opendal::Error>() {
+            return matches!(
+                error.kind(),
+                opendal::ErrorKind::NotFound | opendal::ErrorKind::PermissionDenied
+            );
+        }
+        let permanent = matches!(
+            error.downcast_ref::<object_store::Error>(),
+            Some(
+                object_store::Error::NotFound { .. } | object_store::Error::PermissionDenied { .. }
+            )
+        ) || matches!(
+            error.downcast_ref::<lance::Error>(),
+            Some(lance::Error::NotFound { .. })
+        ) || error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            )
+        });
+        if permanent {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 /// An input batch with its URI blob columns cast to `Utf8`.
@@ -61,14 +97,29 @@ pub(super) struct BlobFetcher {
 }
 
 impl BlobFetcher {
-    async fn fetch(&self, uri: &str) -> lance::Result<Fetched> {
-        let (store, path) = ObjectStore::from_uri_and_params(
+    async fn fetch(&self, uri: &str) -> Result<Fetched, DataFusionError> {
+        // Resolving a URI performs no IO, so its errors are permanent.
+        let (store, path) = match ObjectStore::from_uri_and_params(
             self.registry.clone(),
             uri,
             &ObjectStoreParams::default(),
         )
-        .await?;
-        let reader = store.open(&path).await?;
+        .await
+        {
+            Ok(resolved) => resolved,
+            Err(error) => return Ok(Fetched::Failed(error.to_string())),
+        };
+        match self.read(&store, &path).await {
+            Ok(fetched) => Ok(fetched),
+            Err(error) if is_permanent(&error) => Ok(Fetched::Failed(error.to_string())),
+            Err(error) => Err(DataFusionError::Execution(format!(
+                "reading blob {uri}: {error}"
+            ))),
+        }
+    }
+
+    async fn read(&self, store: &ObjectStore, path: &Path) -> lance::Result<Fetched> {
+        let reader = store.open(path).await?;
         let size = reader.size().await?;
         if size > self.dedicated_threshold {
             return Ok(Fetched::Uri);
@@ -79,16 +130,22 @@ impl BlobFetcher {
         Ok(Fetched::Data(reader.get_range(0..size).await?))
     }
 
-    async fn fetch_row(self: Arc<Self>, input: Arc<InputBatch>, row: usize) -> FetchedRow {
+    async fn fetch_row(
+        self: Arc<Self>,
+        input: Arc<InputBatch>,
+        row: usize,
+    ) -> Result<FetchedRow, DataFusionError> {
         let values = join_all(input.uris.iter().map(|uris| async {
             if uris.is_null(row) {
-                Fetched::Null
+                Ok(Fetched::Null)
             } else {
-                self.fetch(uris.value(row)).await.unwrap_or(Fetched::Failed)
+                self.fetch(uris.value(row)).await
             }
         }))
-        .await;
-        FetchedRow { input, row, values }
+        .await
+        .into_iter()
+        .collect::<Result<_, _>>()?;
+        Ok(FetchedRow { input, row, values })
     }
 
     /// Replaces the URI blob columns of `stream` with fetched data, applying
@@ -100,9 +157,9 @@ impl BlobFetcher {
         uri_columns: Vec<usize>,
         transform: impl Fn(RecordBatch) -> Result<RecordBatch, ArrowError> + Send + Sync + 'static,
     ) -> SendableRecordBatchStream {
-        let on_error = self.on_error;
         let uri_columns = Arc::new(uri_columns);
         let columns = uri_columns.clone();
+        let fetcher = self.clone();
         let rows = stream
             .map(move |batch| -> Result<_, DataFusionError> {
                 let batch = batch?;
@@ -120,15 +177,12 @@ impl BlobFetcher {
                 })))
             })
             .try_flatten()
-            .map_ok(move |(input, row)| {
-                self.clone()
-                    .fetch_row(input, row)
-                    .map(Ok::<_, DataFusionError>)
-            })
+            .map_ok(move |(input, row)| fetcher.clone().fetch_row(input, row))
             .try_buffered(FETCH_CONCURRENCY);
         let transform = Arc::new(transform);
         let output_schema = schema.clone();
         let batches = stream::try_unfold(Box::pin(rows.peekable()), move |mut rows| {
+            let fetcher = self.clone();
             let schema = output_schema.clone();
             let uri_columns = uri_columns.clone();
             let transform = transform.clone();
@@ -154,78 +208,91 @@ impl BlobFetcher {
                     slice.push(next);
                 }
                 let batch =
-                    build_batch(&slice, &schema, &uri_columns, on_error, transform.as_ref())?;
+                    fetcher.build_batch(&slice, &schema, &uri_columns, transform.as_ref())?;
                 Ok(Some((batch, rows)))
             }
+            .boxed()
         })
         .try_filter(|batch| futures::future::ready(batch.num_rows() > 0));
         Box::pin(RecordBatchStreamAdapter::new(schema, batches))
+    }
+
+    /// Builds the output batch for consecutive rows of one input batch.
+    fn build_batch(
+        &self,
+        slice: &[FetchedRow],
+        schema: &SchemaRef,
+        uri_columns: &[usize],
+        transform: &impl Fn(RecordBatch) -> Result<RecordBatch, ArrowError>,
+    ) -> Result<RecordBatch, ArrowError> {
+        let input = &slice[0].input;
+        let rows = input.batch.slice(slice[0].row, slice.len());
+        let mut columns = transform(rows)?.columns().to_vec();
+        let mut keep = vec![true; slice.len()];
+        for (position, &index) in uri_columns.iter().enumerate() {
+            let field = schema.field(index);
+            let DataType::Struct(children) = field.data_type() else {
+                return Err(ArrowError::SchemaError(format!(
+                    "blob field '{}' is not a struct",
+                    field.name()
+                )));
+            };
+            let uris = &input.uris[position];
+            let mut data = LargeBinaryBuilder::new();
+            let mut uri = StringBuilder::new();
+            let mut valid = Vec::with_capacity(slice.len());
+            for (offset, row) in slice.iter().enumerate() {
+                match &row.values[position] {
+                    Fetched::Data(bytes) => {
+                        data.append_value(bytes);
+                        uri.append_null();
+                    }
+                    Fetched::Uri => {
+                        data.append_null();
+                        uri.append_value(uris.value(row.row));
+                    }
+                    Fetched::Null => {
+                        data.append_null();
+                        uri.append_null();
+                    }
+                    Fetched::Failed(error) => {
+                        data.append_null();
+                        uri.append_null();
+                        let action = if self.on_error == BlobOnError::Skip {
+                            keep[offset] = false;
+                            "skipped the row"
+                        } else {
+                            "stored NULL"
+                        };
+                        eprintln!(
+                            "WARNING: FORMAT LANCE {action} for unreadable BLOB_COLUMNS value '{}' in column '{}': {error}",
+                            uris.value(row.row),
+                            field.name()
+                        );
+                    }
+                }
+                valid.push(matches!(
+                    row.values[position],
+                    Fetched::Data(_) | Fetched::Uri
+                ));
+            }
+            columns[index] = Arc::new(StructArray::try_new(
+                children.clone(),
+                vec![
+                    Arc::new(data.finish()) as ArrayRef,
+                    Arc::new(uri.finish()) as ArrayRef,
+                ],
+                Some(BooleanArray::from(valid).values().clone().into()),
+            )?);
+        }
+        let batch = RecordBatch::try_new(schema.clone(), columns)?;
+        if keep.iter().all(|&keep| keep) {
+            return Ok(batch);
+        }
+        filter_record_batch(&batch, &BooleanArray::from(keep))
     }
 }
 
 fn row_bytes(row: &FetchedRow) -> usize {
     row.values.iter().map(Fetched::len).sum()
-}
-
-/// Builds the output batch for consecutive rows of one input batch.
-fn build_batch(
-    slice: &[FetchedRow],
-    schema: &SchemaRef,
-    uri_columns: &[usize],
-    on_error: BlobOnError,
-    transform: &impl Fn(RecordBatch) -> Result<RecordBatch, ArrowError>,
-) -> Result<RecordBatch, ArrowError> {
-    let input = &slice[0].input;
-    let start = slice[0].row;
-    let mut columns = transform(input.batch.slice(start, slice.len()))?
-        .columns()
-        .to_vec();
-    let mut keep = vec![true; slice.len()];
-    for (position, &index) in uri_columns.iter().enumerate() {
-        let DataType::Struct(children) = schema.field(index).data_type() else {
-            return Err(ArrowError::SchemaError(format!(
-                "blob field '{}' is not a struct",
-                schema.field(index).name()
-            )));
-        };
-        let uris = &input.uris[position];
-        let mut data = LargeBinaryBuilder::new();
-        let mut uri = StringBuilder::new();
-        let mut valid = Vec::with_capacity(slice.len());
-        for (offset, row) in slice.iter().enumerate() {
-            match &row.values[position] {
-                Fetched::Data(bytes) => {
-                    data.append_value(bytes);
-                    uri.append_null();
-                    valid.push(true);
-                }
-                Fetched::Uri => {
-                    data.append_null();
-                    uri.append_value(uris.value(row.row));
-                    valid.push(true);
-                }
-                fetched => {
-                    if matches!(fetched, Fetched::Failed) && on_error == BlobOnError::Skip {
-                        keep[offset] = false;
-                    }
-                    data.append_null();
-                    uri.append_null();
-                    valid.push(false);
-                }
-            }
-        }
-        columns[index] = Arc::new(StructArray::try_new(
-            children.clone(),
-            vec![
-                Arc::new(data.finish()) as ArrayRef,
-                Arc::new(uri.finish()) as ArrayRef,
-            ],
-            Some(BooleanArray::from(valid).values().clone().into()),
-        )?);
-    }
-    let batch = RecordBatch::try_new(schema.clone(), columns)?;
-    if keep.iter().all(|&keep| keep) {
-        return Ok(batch);
-    }
-    filter_record_batch(&batch, &BooleanArray::from(keep))
 }

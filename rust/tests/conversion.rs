@@ -7,7 +7,9 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use lance::index::DatasetIndexExt;
-use lance_conversion::{BlobOnError, ColumnEncoding, LanceWriter, WriteMode, WriteOptions};
+use lance_conversion::{
+    BlobOnError, ColumnEncoding, LanceWriter, OpendalConfig, WriteMode, WriteOptions,
+};
 use tempfile::tempdir;
 use tokio::{
     fs,
@@ -354,6 +356,67 @@ async fn blob_on_error_controls_unreadable_uris() {
     spawn_blocking(move || temp.close()).await.unwrap().unwrap();
 }
 
+#[tokio::test]
+async fn blob_on_error_tolerates_only_permanent_http_errors() {
+    let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
+    let server = serve_http(b"ok").await;
+    let write = |name: &str, paths: &[&str]| {
+        let output = temp.path().join(name);
+        let uris = paths
+            .iter()
+            .map(|path| Some(format!("{server}{path}")))
+            .collect::<Vec<_>>();
+        async move {
+            let batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("uri", DataType::Utf8, true)])),
+                vec![Arc::new(StringArray::from(uris)) as ArrayRef],
+            )
+            .unwrap();
+            let mut writer = LanceWriter::create(
+                &output,
+                batch.schema(),
+                WriteOptions {
+                    blob_columns: vec!["uri".into()],
+                    blob_on_error: BlobOnError::Skip,
+                    opendal_config: OpendalConfig {
+                        retry_max_times: 0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await?;
+            writer.write_batch(batch).await?;
+            let summary = writer.finish().await?;
+            Ok::<_, lance_conversion::Error>(summary)
+        }
+    };
+
+    let summary = write(
+        "permanent.lance",
+        &[
+            "/ok.bin",
+            "/status/404/gone.bin",
+            "/status/403/forbidden.bin",
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary.rows_written, 1);
+
+    for status in ["429", "503"] {
+        let error = write(
+            &format!("transient_{status}.lance"),
+            &["/ok.bin", &format!("/status/{status}/busy.bin")],
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("busy.bin"), "{error}");
+    }
+    spawn_blocking(move || temp.close()).await.unwrap().unwrap();
+}
+
 /// Serves `body` at every path, one request per connection, honoring a single
 /// byte range.
 async fn serve_http(body: &'static [u8]) -> String {
@@ -365,6 +428,19 @@ async fn serve_http(body: &'static [u8]) -> String {
             let mut request = [0; 4096];
             let read = socket.read(&mut request).await.unwrap();
             let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            // Paths under /status/<code>/ return that status with no body.
+            let status = request
+                .split_whitespace()
+                .nth(1)
+                .and_then(|path| path.strip_prefix("/status/"))
+                .and_then(|path| path.get(..3));
+            if let Some(status) = status {
+                let response = format!(
+                    "HTTP/1.1 {status} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                continue;
+            }
             let range = request
                 .lines()
                 .find_map(|line| line.strip_prefix("range: bytes="))

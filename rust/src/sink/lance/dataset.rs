@@ -19,10 +19,11 @@ use lance::{
 };
 use lance_io::utils::tracking_store::IOTracker;
 
+use super::blob_fetch::BlobFetcher;
 use super::column_storage::configure_column_storage;
 use super::fragment::LanceFragmentWriter;
 use super::index::LanceIndexPlan;
-use super::{WriteMode, WriteOptions};
+use super::{BlobOnError, WriteMode, WriteOptions, DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD};
 use crate::error::ResultExt;
 use crate::schema::validate_schema;
 use crate::sink::WriteSummary;
@@ -42,6 +43,8 @@ pub(super) struct DatasetWrite {
     options: WriteOptions,
     schema: SchemaRef,
     indexes: LanceIndexPlan,
+    /// Reads URI blobs before Lance when `blob_on_error` is not `Fail`.
+    blob_fetcher: Option<Arc<BlobFetcher>>,
     io_tracker: Arc<IOTracker>,
     rows_written: Arc<AtomicU64>,
     transactions: Mutex<Vec<Transaction>>,
@@ -65,12 +68,7 @@ impl DatasetWrite {
         &self,
         stream: SendableRecordBatchStream,
     ) -> Result<Transaction> {
-        let registry = self
-            .params
-            .session
-            .as_ref()
-            .map(|session| session.store_registry());
-        let stream = configure_column_storage(stream, &self.options, registry)?;
+        let stream = configure_column_storage(stream, &self.options, self.blob_fetcher.clone())?;
         let count = self.rows_written.clone();
         let schema = stream.schema();
         let counted = stream.inspect_ok(move |batch| {
@@ -208,6 +206,17 @@ impl LanceDatasetWriter {
             session.store_registry().insert(scheme, provider.clone());
         }
         let session = Arc::new(session);
+        let blob_fetcher = (options.blob_on_error != BlobOnError::Fail
+            && !options.blob_columns.is_empty())
+        .then(|| {
+            Arc::new(BlobFetcher {
+                registry: session.store_registry(),
+                on_error: options.blob_on_error,
+                dedicated_threshold: options
+                    .blob_dedicated_size_threshold
+                    .unwrap_or(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
+            })
+        });
         let uri = destination.location.as_str().to_owned();
         let dataset = match DatasetBuilder::from_uri(&uri)
             .with_session(session.clone())
@@ -238,6 +247,7 @@ impl LanceDatasetWriter {
                 options,
                 schema,
                 indexes,
+                blob_fetcher,
                 io_tracker,
                 rows_written: Arc::new(AtomicU64::new(0)),
                 transactions: Mutex::new(Vec::new()),

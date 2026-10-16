@@ -24,7 +24,8 @@ const DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD: usize = 16 * 1024 * 1024;
 const DEFAULT_TARGET_FILE_SIZE: usize = 512 * 1024 * 1024;
 const DEFAULT_STORAGE_VERSION: &str = "stable";
 
-/// What to do with a `blob_columns` value whose object cannot be read.
+/// What to do with a `blob_columns` value whose object is missing or
+/// forbidden. Other read errors, such as rate limits, always fail the write.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BlobOnError {
     /// Fail the write.

@@ -394,12 +394,20 @@ TO 'media.lance' (
 
 Every named column must exist and have type `VARCHAR`.
 
-`BLOB_ON_ERROR` controls what happens when an object cannot be read, for
-example a missing file, a dead link, or a URI with a query string:
+`BLOB_ON_ERROR` controls what happens when an object is permanently
+unreadable: it does not exist (HTTP 404), access is forbidden (HTTP 403), or
+the URI itself is invalid, such as a URI with a query string:
 
 - `'fail'` (default): fail the COPY.
 - `'null'`: store NULL for that value and keep the row.
 - `'skip'`: drop the row from the dataset.
+
+Every other error, such as a rate limit (HTTP 429), a server error (HTTP 5xx),
+a timeout, or a connection failure, is treated as transient and fails the COPY
+in every mode, after the `lance_conversion_storage_*` retries.
+
+With `'null'` or `'skip'`, each tolerated failure prints a `WARNING:` line to
+stderr with the column, URI, and error.
 
 ```sql
 COPY (SELECT id, caption, image_url FROM read_parquet('laion/*.parquet'))
@@ -414,9 +422,9 @@ With `'null'` or `'skip'`, the extension reads each object (up to 64 at a time
 per writer) before Lance stores it, using the same S3 secret and
 `lance_conversion_storage_*` settings. Objects larger than
 `BLOB_DEDICATED_SIZE_THRESHOLD` are only checked for existence and size, then
-streamed by Lance; an error while streaming them still fails the COPY. The
-returned row count includes skipped rows, because DuckDB reports the rows passed
-to COPY rather than the rows written.
+streamed by Lance; any error while streaming them fails the COPY. The returned
+row count includes skipped rows, because DuckDB reports the rows passed to COPY
+rather than the rows written.
 
 ### Indexes
 
