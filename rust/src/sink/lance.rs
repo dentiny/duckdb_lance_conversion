@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use arrow_array::RecordBatch;
@@ -7,11 +8,13 @@ pub use lance::dataset::write::WriteMode;
 use super::WriteSummary;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
+mod column_encoding;
 mod column_storage;
 mod dataset;
 mod fragment;
 mod index;
 
+pub use column_encoding::ColumnEncoding;
 pub use dataset::LanceDatasetWriter;
 pub use fragment::LanceFragmentWriter;
 
@@ -29,12 +32,8 @@ pub struct WriteOptions {
     pub blob_dedicated_size_threshold: Option<usize>,
     pub target_file_size: usize,
     pub storage_version: String,
-    /// (column, algorithm) pairs set as `lance-encoding:compression` field metadata.
-    pub column_compression: Vec<(String, String)>,
-    /// (column, level) pairs set as `lance-encoding:compression-level` field metadata.
-    pub column_compression_level: Vec<(String, i32)>,
-    /// (column, encoding) pairs set as `lance-encoding:structural-encoding` field metadata.
-    pub column_structural_encoding: Vec<(String, String)>,
+    /// Per-column Lance encoding settings, keyed by column name.
+    pub column_encoding: BTreeMap<String, ColumnEncoding>,
     pub blob_columns: Vec<String>,
     pub scalar_index_columns: Vec<String>,
     pub vector_index_columns: Vec<String>,
@@ -52,9 +51,7 @@ impl Default for WriteOptions {
             blob_dedicated_size_threshold: Some(DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD),
             target_file_size: DEFAULT_TARGET_FILE_SIZE,
             storage_version: DEFAULT_STORAGE_VERSION.into(),
-            column_compression: Vec::new(),
-            column_compression_level: Vec::new(),
-            column_structural_encoding: Vec::new(),
+            column_encoding: BTreeMap::new(),
             blob_columns: Vec::new(),
             scalar_index_columns: Vec::new(),
             vector_index_columns: Vec::new(),

@@ -255,9 +255,8 @@ vector<string> ParseIndexColumns(ClientContext &context, const string &option_na
 // Parses a struct option such as {'column': value}, appending canonical column names and parsed values.
 template <class T, class PARSE>
 void ParseColumnSettings(const string &option_name, const string &example, const string &value_name,
-                         const vector<Value> &values, const vector<string> &names,
-                         const ColumnIndexMap &column_indexes, vector<string> &columns, vector<T> &settings,
-                         PARSE parse) {
+                         const vector<Value> &values, const vector<string> &names, const ColumnIndexMap &column_indexes,
+                         vector<string> &columns, vector<T> &settings, PARSE parse) {
 	if (values.size() != 1 || values[0].type().id() != LogicalTypeId::STRUCT || values[0].IsNull()) {
 		throw BinderException("%s requires a struct such as %s", option_name, example);
 	}
@@ -361,8 +360,8 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			}
 			result->storage_version = option.second[0].CastAs(context, LogicalType::VARCHAR).GetValue<string>();
 		} else if (StringUtil::CIEquals(option.first, "column_compression")) {
-			ParseColumnSettings("COLUMN_COMPRESSION", "{'column': 'zstd'}", "algorithm", option.second, names, column_indexes,
-			                    result->compression_columns, result->compression_algorithms,
+			ParseColumnSettings("COLUMN_COMPRESSION", "{'column': 'zstd'}", "algorithm", option.second, names,
+			                    column_indexes, result->compression_columns, result->compression_algorithms,
 			                    [&](const Value &value, const string &) { return ParseStringSetting(context, value); });
 		} else if (StringUtil::CIEquals(option.first, "column_compression_level")) {
 			ParseColumnSettings("COLUMN_COMPRESSION_LEVEL", "{'column': 3}", "level", option.second, names,
@@ -427,20 +426,24 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	auto blob_columns = string_pointers(bind.blob_columns);
 	write_config.blob_columns = blob_columns.data();
 	write_config.blob_column_count = blob_columns.size();
+
 	auto compression_columns = string_pointers(bind.compression_columns);
 	auto compression_algorithms = string_pointers(bind.compression_algorithms);
 	write_config.compression_columns = compression_columns.data();
 	write_config.compression_algorithms = compression_algorithms.data();
 	write_config.compression_column_count = compression_columns.size();
+
 	auto compression_level_columns = string_pointers(bind.compression_level_columns);
 	write_config.compression_level_columns = compression_level_columns.data();
 	write_config.compression_levels = bind.compression_levels.data();
 	write_config.compression_level_column_count = compression_level_columns.size();
+
 	auto structural_encoding_columns = string_pointers(bind.structural_encoding_columns);
 	auto structural_encodings = string_pointers(bind.structural_encodings);
 	write_config.structural_encoding_columns = structural_encoding_columns.data();
 	write_config.structural_encodings = structural_encodings.data();
 	write_config.structural_encoding_column_count = structural_encoding_columns.size();
+
 	auto scalar_index_columns = string_pointers(bind.scalar_index_columns);
 	auto vector_index_columns = string_pointers(bind.vector_index_columns);
 	auto text_index_columns = string_pointers(bind.text_index_columns);
@@ -453,6 +456,7 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	write_config.text_index_column_count = text_index_columns.size();
 	write_config.bloom_filter_index_columns = bloom_filter_index_columns.data();
 	write_config.bloom_filter_index_column_count = bloom_filter_index_columns.size();
+
 	unique_ptr<LanceS3Options> s3;
 	// S3 blob URIs are read with the destination's S3 secret, or the unscoped one for a local destination.
 	if (bind.s3 || !bind.blob_columns.empty()) {

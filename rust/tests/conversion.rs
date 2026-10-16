@@ -7,7 +7,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use lance::index::DatasetIndexExt;
-use lance_conversion::{LanceWriter, WriteMode, WriteOptions};
+use lance_conversion::{ColumnEncoding, LanceWriter, WriteMode, WriteOptions};
 use tempfile::tempdir;
 use tokio::{
     fs,
@@ -92,15 +92,27 @@ async fn storage_version_selects_the_lance_file_format() {
 async fn column_compression_is_passed_to_lance() {
     let temp = spawn_blocking(tempdir).await.unwrap().unwrap();
     let batch = fixture(1000).project(&[0, 1, 2]).unwrap();
-    let write = |name: &str, column_compression: Vec<(String, String)>| {
+    let write = |name: &str, column_compression: Vec<(&str, &str)>| {
         let output = temp.path().join(name);
         let batch = batch.clone();
+        let column_encoding = column_compression
+            .into_iter()
+            .map(|(column, algorithm)| {
+                (
+                    column.to_string(),
+                    ColumnEncoding {
+                        compression: Some(algorithm.to_string()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
         async move {
             let mut writer = LanceWriter::create(
                 &output,
                 batch.schema(),
                 WriteOptions {
-                    column_compression,
+                    column_encoding,
                     ..Default::default()
                 },
             )
@@ -111,12 +123,9 @@ async fn column_compression_is_passed_to_lance() {
         }
     };
 
-    let output = write(
-        "zstd.lance",
-        vec![("id".into(), "zstd".into()), ("text".into(), "lz4".into())],
-    )
-    .await
-    .unwrap();
+    let output = write("zstd.lance", vec![("id", "zstd"), ("text", "lz4")])
+        .await
+        .unwrap();
     let dataset = lance::Dataset::open(output.to_str().unwrap())
         .await
         .unwrap();
@@ -132,7 +141,7 @@ async fn column_compression_is_passed_to_lance() {
     }
     assert_values(&read_lance(&output).await, &batch);
 
-    let error = write("bogus.lance", vec![("id".into(), "bogus".into())])
+    let error = write("bogus.lance", vec![("id", "bogus")])
         .await
         .unwrap_err();
     assert!(format!("{error:?}").contains("bogus"), "{error:?}");

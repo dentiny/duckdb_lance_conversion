@@ -92,9 +92,13 @@ unique_ptr<LanceS3Options> ReadS3Options(ClientContext &context, const string &p
 		throw InvalidConfigurationException("S3 secret url_style must be either 'path' or 'vhost'");
 	}
 	result->virtual_host_style = url_style == "vhost";
-	result->config = {result->endpoint.c_str(),      result->region.c_str(), result->key_id.c_str(),
-	                  result->secret.c_str(),        result->session_token.c_str(),
-	                  result->use_ssl ? 1 : 0,       result->virtual_host_style ? 1 : 0};
+	result->config = {result->endpoint.c_str(),
+	                  result->region.c_str(),
+	                  result->key_id.c_str(),
+	                  result->secret.c_str(),
+	                  result->session_token.c_str(),
+	                  result->use_ssl ? 1 : 0,
+	                  result->virtual_host_style ? 1 : 0};
 	return result;
 }
 
