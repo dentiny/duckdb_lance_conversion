@@ -360,17 +360,18 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			}
 			result->storage_version = option.second[0].CastAs(context, LogicalType::VARCHAR).GetValue<string>();
 		} else if (StringUtil::CIEquals(option.first, "column_compression")) {
-			ParseColumnSettings("COLUMN_COMPRESSION", "{'column': 'zstd'}", "algorithm", option.second, names,
-			                    column_indexes, result->compression_columns, result->compression_algorithms,
+			ParseColumnSettings("COLUMN_COMPRESSION", /*example=*/"{'column': 'zstd'}", /*value_name=*/"algorithm",
+			                    option.second, names, column_indexes, result->compression_columns,
+			                    result->compression_algorithms,
 			                    [&](const Value &value, const string &) { return ParseStringSetting(context, value); });
 		} else if (StringUtil::CIEquals(option.first, "column_compression_level")) {
-			ParseColumnSettings("COLUMN_COMPRESSION_LEVEL", "{'column': 3}", "level", option.second, names,
-			                    column_indexes, result->compression_level_columns, result->compression_levels,
-			                    ParseCompressionLevel);
+			ParseColumnSettings("COLUMN_COMPRESSION_LEVEL", /*example=*/"{'column': 3}", /*value_name=*/"level",
+			                    option.second, names, column_indexes, result->compression_level_columns,
+			                    result->compression_levels, ParseCompressionLevel);
 		} else if (StringUtil::CIEquals(option.first, "column_structural_encoding")) {
-			ParseColumnSettings("COLUMN_STRUCTURAL_ENCODING", "{'column': 'miniblock'}", "encoding", option.second,
-			                    names, column_indexes, result->structural_encoding_columns,
-			                    result->structural_encodings,
+			ParseColumnSettings("COLUMN_STRUCTURAL_ENCODING", /*example=*/"{'column': 'miniblock'}",
+			                    /*value_name=*/"encoding", option.second, names, column_indexes,
+			                    result->structural_encoding_columns, result->structural_encodings,
 			                    [&](const Value &value, const string &) { return ParseStringSetting(context, value); });
 		} else if (StringUtil::CIEquals(option.first, "blob_columns")) {
 			result->blob_columns = ParseBlobColumns(context, option.second, names, types, column_indexes);
