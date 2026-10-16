@@ -1,5 +1,5 @@
 # name: test/sql/atif_conversion.test
-# description: ATIF trajectory JSON and JSONL to Lance datasets
+# description: ATIF trajectory JSON and JSONL, plain or gzipped, to Lance datasets
 # group: [sql]
 
 require lance_conversion
@@ -30,6 +30,20 @@ query I
 SELECT count(*) FROM read_atif('test/data/trajectories.jsonl', format = 'jsonl');
 ----
 2
+
+query TII
+SELECT trajectory_id, source_record_index, len(steps)
+FROM read_atif('test/data/trajectories.jsonl.gz')
+ORDER BY source_record_index;
+----
+t1	1	2
+t2	2	1
+
+query TT
+SELECT trajectory_id, steps[1].message[1].text
+FROM read_atif('test/data/trajectory.json.gz');
+----
+single	hello
 
 query I
 COPY (

@@ -395,7 +395,7 @@ checksum = "f2d85fd3d291fabcc40c7232c92c280ec1754fd7b5d7ea769f143222143e179a"
 [[package]]
 name = "atif-arrow"
 version = "0.1.0"
-source = "git+https://github.com/dentiny/atif-arrow?rev=34e08364ba01214ced1af9796a39ae4639bc1ca1#34e08364ba01214ced1af9796a39ae4639bc1ca1"
+source = "git+https://github.com/dentiny/atif-arrow?rev=df70cf11dffe4110b9c6dc85dcbadc70d406d426#df70cf11dffe4110b9c6dc85dcbadc70d406d426"
 dependencies = [
  "arrow-array",
  "arrow-json",
@@ -409,9 +409,10 @@ dependencies = [
 [[package]]
 name = "atif-io"
 version = "0.1.0"
-source = "git+https://github.com/dentiny/atif-arrow?rev=34e08364ba01214ced1af9796a39ae4639bc1ca1#34e08364ba01214ced1af9796a39ae4639bc1ca1"
+source = "git+https://github.com/dentiny/atif-arrow?rev=df70cf11dffe4110b9c6dc85dcbadc70d406d426#df70cf11dffe4110b9c6dc85dcbadc70d406d426"
 dependencies = [
  "arrow-array",
+ "async-compression",
  "atif-arrow",
  "futures",
  "opendal",
@@ -5497,7 +5498,7 @@ version = "2.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.9.5",
 ]
 
 [[package]]

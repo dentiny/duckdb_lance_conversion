@@ -3,7 +3,9 @@ use std::pin::Pin;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use futures::io::AsyncBufRead;
 use futures::Stream;
+use warc_rs::GzipReader;
 
 use crate::Result;
 
@@ -25,6 +27,25 @@ pub(crate) use metrics::{read_object, ReadMetrics};
 pub use warc::{warc_schema, WarcSource};
 
 pub type BatchStream = Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send + 'static>>;
+
+/// Decompressed bytes of a source object.
+type SourceInput = Box<dyn AsyncBufRead + Unpin + Send>;
+
+fn is_gzipped(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".gz")
+}
+
+/// Wraps `reader` in a multi-member gzip decoder when `gzipped` is set.
+fn decompressed_input(
+    reader: impl AsyncBufRead + Unpin + Send + 'static,
+    gzipped: bool,
+) -> SourceInput {
+    if gzipped {
+        Box::new(GzipReader::new(reader))
+    } else {
+        Box::new(reader)
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct SourceReadOptions {
