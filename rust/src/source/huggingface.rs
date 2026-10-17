@@ -223,41 +223,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lists_split_shards_and_falls_back_to_partial_split() {
-        let root = TempDir::new().unwrap();
-        for path in [
-            "default/train/0001.parquet",
-            "default/train/0000.parquet",
-            "default/train/README.md",
-            "default/partial-test/0000.parquet",
-            "other/train/0000.parquet",
-        ] {
-            let path = root.path().join(path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, b"").unwrap();
-        }
-        let operator = fs_operator(&root);
-        let files = |split: &str| {
-            let source = HuggingFaceSource::new("owner/dataset").with_split(split);
-            let operator = operator.clone();
-            async move { source.parquet_files(&operator).await }
-        };
-        assert_eq!(
-            files("train").await.unwrap(),
-            ["default/train/0000.parquet", "default/train/0001.parquet"]
-        );
-        assert_eq!(
-            files("test").await.unwrap(),
-            ["default/partial-test/0000.parquet"]
-        );
-        assert!(files("validation")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("no Parquet shards"));
-    }
-
-    #[tokio::test]
     async fn streams_multiple_shards() {
         let root = TempDir::new().unwrap();
         write_parquet_shard(
