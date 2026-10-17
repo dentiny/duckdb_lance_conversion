@@ -17,6 +17,7 @@ use crate::{
     atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, ColumnEncoding, Error,
     HuggingFaceSource, IndexKind, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
     S3StorageConfig, StructuralEncoding, WarcSource, WriteMode, WriteOptions, WriteSummary,
+    DEFAULT_MAX_READ_PARALLELISM, DEFAULT_READ_AHEAD_BYTES,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -79,6 +80,12 @@ pub struct LanceWriteConfig {
     index_columns: *const *const c_char,
     index_kinds: *const i32,
     index_column_count: usize,
+}
+
+#[repr(C)]
+pub struct LanceSourceDefaults {
+    max_read_parallelism: u64,
+    read_ahead_bytes: u64,
 }
 
 #[repr(C)]
@@ -344,6 +351,37 @@ fn call(operation: impl FnOnce() -> Result<()>) -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn lance_opendal_default_config() -> OpendalConfig {
     OpendalConfig::default()
+}
+
+#[no_mangle]
+pub extern "C" fn lance_write_default_config() -> LanceWriteConfig {
+    // A negative threshold keeps Lance's own default.
+    fn threshold(value: Option<usize>) -> i64 {
+        value.map_or(-1, |value| value as i64)
+    }
+    let defaults = WriteOptions::default();
+    LanceWriteConfig {
+        mode: LANCE_WRITE_MODE_CREATE,
+        blob_inline_size_threshold: threshold(defaults.blob_inline_size_threshold),
+        blob_dedicated_size_threshold: threshold(defaults.blob_dedicated_size_threshold),
+        target_file_size: threshold(Some(defaults.target_file_size)),
+        storage_version: ptr::null(),
+        column_encodings: ptr::null(),
+        column_encoding_count: 0,
+        blob_columns: ptr::null(),
+        blob_column_count: 0,
+        index_columns: ptr::null(),
+        index_kinds: ptr::null(),
+        index_column_count: 0,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lance_source_defaults() -> LanceSourceDefaults {
+    LanceSourceDefaults {
+        max_read_parallelism: DEFAULT_MAX_READ_PARALLELISM as u64,
+        read_ahead_bytes: DEFAULT_READ_AHEAD_BYTES as u64,
+    }
 }
 
 #[no_mangle]
