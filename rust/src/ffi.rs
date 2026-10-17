@@ -15,7 +15,7 @@ use futures::TryStreamExt;
 use crate::source::ReadMetrics;
 use crate::{
     atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, ColumnEncoding, Error,
-    HuggingFaceSource, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
+    HuggingFaceSource, IndexKind, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
     S3StorageConfig, WarcSource, WriteMode, WriteOptions, WriteSummary,
 };
 
@@ -62,14 +62,9 @@ pub struct LanceWriteConfig {
     structural_encoding_column_count: usize,
     blob_columns: *const *const c_char,
     blob_column_count: usize,
-    scalar_index_columns: *const *const c_char,
-    scalar_index_column_count: usize,
-    vector_index_columns: *const *const c_char,
-    vector_index_column_count: usize,
-    text_index_columns: *const *const c_char,
-    text_index_column_count: usize,
-    bloom_filter_index_columns: *const *const c_char,
-    bloom_filter_index_column_count: usize,
+    index_columns: *const *const c_char,
+    index_kinds: *const i32,
+    index_column_count: usize,
 }
 
 #[repr(C)]
@@ -288,6 +283,24 @@ fn optional_threshold(value: i64, name: &str, allow_zero: bool) -> Result<Option
     })?))
 }
 
+unsafe fn indexes(config: &LanceWriteConfig) -> Result<Vec<(String, IndexKind)>> {
+    string_list(config.index_columns, config.index_column_count)?
+        .into_iter()
+        .zip(i32_list(config.index_kinds, config.index_column_count)?)
+        .map(|(column, kind)| Ok((column, index_kind(kind)?)))
+        .collect()
+}
+
+fn index_kind(kind: i32) -> Result<IndexKind> {
+    match kind {
+        0 => Ok(IndexKind::Scalar),
+        1 => Ok(IndexKind::Vector),
+        2 => Ok(IndexKind::Text),
+        3 => Ok(IndexKind::BloomFilter),
+        _ => Err(Error::message(format!("invalid Lance index kind: {kind}"))),
+    }
+}
+
 fn write_mode(mode: i32) -> Result<WriteMode> {
     match mode {
         0 => Ok(WriteMode::Create),
@@ -360,22 +373,7 @@ pub unsafe extern "C" fn lance_conversion_open(
                 .unwrap_or_else(|| WriteOptions::default().storage_version),
             column_encoding: column_encoding(config)?,
             blob_columns: string_list(config.blob_columns, config.blob_column_count)?,
-            scalar_index_columns: string_list(
-                config.scalar_index_columns,
-                config.scalar_index_column_count,
-            )?,
-            vector_index_columns: string_list(
-                config.vector_index_columns,
-                config.vector_index_column_count,
-            )?,
-            text_index_columns: string_list(
-                config.text_index_columns,
-                config.text_index_column_count,
-            )?,
-            bloom_filter_index_columns: string_list(
-                config.bloom_filter_index_columns,
-                config.bloom_filter_index_column_count,
-            )?,
+            indexes: indexes(config)?,
         };
         let runtime = Arc::new(
             tokio::runtime::Builder::new_multi_thread()

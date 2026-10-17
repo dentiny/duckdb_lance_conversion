@@ -48,11 +48,9 @@ struct LanceBindData : public FunctionData {
 	vector<string> structural_encodings;
 	// Blob columns
 	vector<string> blob_columns;
-	// Index columns
-	vector<string> scalar_index_columns;
-	vector<string> vector_index_columns;
-	vector<string> text_index_columns;
-	vector<string> bloom_filter_index_columns;
+	// Indexes; index_kinds[i] applies to index_columns[i]
+	vector<string> index_columns;
+	vector<LanceIndexKind> index_kinds;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<LanceBindData>();
@@ -72,10 +70,8 @@ struct LanceBindData : public FunctionData {
 		result->structural_encoding_columns = structural_encoding_columns;
 		result->structural_encodings = structural_encodings;
 		result->blob_columns = blob_columns;
-		result->scalar_index_columns = scalar_index_columns;
-		result->vector_index_columns = vector_index_columns;
-		result->text_index_columns = text_index_columns;
-		result->bloom_filter_index_columns = bloom_filter_index_columns;
+		result->index_columns = index_columns;
+		result->index_kinds = index_kinds;
 		return std::move(result);
 	}
 	bool Equals(const FunctionData &other_p) const override {
@@ -90,9 +86,7 @@ struct LanceBindData : public FunctionData {
 		       compression_levels == other.compression_levels &&
 		       structural_encoding_columns == other.structural_encoding_columns &&
 		       structural_encodings == other.structural_encodings && blob_columns == other.blob_columns &&
-		       scalar_index_columns == other.scalar_index_columns &&
-		       vector_index_columns == other.vector_index_columns && text_index_columns == other.text_index_columns &&
-		       bloom_filter_index_columns == other.bloom_filter_index_columns;
+		       index_columns == other.index_columns && index_kinds == other.index_kinds;
 	}
 };
 
@@ -227,12 +221,34 @@ vector<string> ParseBlobColumns(ClientContext &context, const vector<Value> &val
 	return result;
 }
 
-vector<string> ParseIndexColumns(ClientContext &context, const string &option_name, const vector<Value> &values,
-                                 const vector<string> &names, const ColumnIndexMap &column_indexes) {
+struct IndexOptionSpec {
+	const char *name;
+	LanceIndexKind kind;
+};
+
+constexpr IndexOptionSpec INDEX_OPTION_SPECS[] = {
+    {"scalar_index_columns", LANCE_INDEX_SCALAR},
+    {"vector_index_columns", LANCE_INDEX_VECTOR},
+    {"text_index_columns", LANCE_INDEX_TEXT},
+    {"bloom_filter_index_columns", LANCE_INDEX_BLOOM_FILTER},
+};
+
+const IndexOptionSpec *FindIndexOption(const string &option_name) {
+	for (const auto &spec : INDEX_OPTION_SPECS) {
+		if (StringUtil::CIEquals(option_name, spec.name)) {
+			return &spec;
+		}
+	}
+	return nullptr;
+}
+
+// Appends each listed column, with the option's index kind, to the bind data's indexes.
+void ParseIndexColumns(ClientContext &context, const string &option_name, LanceIndexKind kind,
+                       const vector<Value> &values, const vector<string> &names, const ColumnIndexMap &column_indexes,
+                       LanceBindData &data) {
 	if (values.empty()) {
 		throw BinderException("%s requires at least one column", option_name);
 	}
-	vector<string> result;
 	case_insensitive_set_t seen;
 	for (const auto &value : values) {
 		if (value.IsNull()) {
@@ -247,9 +263,9 @@ vector<string> ParseIndexColumns(ClientContext &context, const string &option_na
 		if (!seen.insert(names[index]).second) {
 			throw BinderException("Duplicate index column: %s", names[index]);
 		}
-		result.push_back(names[index]);
+		data.index_columns.push_back(names[index]);
+		data.index_kinds.push_back(kind);
 	}
-	return result;
 }
 
 // Parses a struct option such as {'column': value}, appending canonical column names and parsed values.
@@ -298,15 +314,12 @@ int32_t ParseCompressionLevel(const Value &value, const string &column) {
 void ValidateIndexColumns(const LanceBindData &data) {
 	case_insensitive_set_t blob_columns(data.blob_columns.begin(), data.blob_columns.end());
 	case_insensitive_set_t indexed;
-	for (const auto *group : {&data.scalar_index_columns, &data.vector_index_columns, &data.text_index_columns,
-	                          &data.bloom_filter_index_columns}) {
-		for (const auto &column : *group) {
-			if (!indexed.insert(column).second) {
-				throw BinderException("Column cannot have multiple indexes in one COPY: %s", column);
-			}
-			if (blob_columns.count(column)) {
-				throw BinderException("BLOB_COLUMNS column cannot also be indexed: %s", column);
-			}
+	for (const auto &column : data.index_columns) {
+		if (!indexed.insert(column).second) {
+			throw BinderException("Column cannot have multiple indexes in one COPY: %s", column);
+		}
+		if (blob_columns.count(column)) {
+			throw BinderException("BLOB_COLUMNS column cannot also be indexed: %s", column);
 		}
 	}
 }
@@ -375,17 +388,9 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			                    [&](const Value &value, const string &) { return ParseStringSetting(context, value); });
 		} else if (StringUtil::CIEquals(option.first, "blob_columns")) {
 			result->blob_columns = ParseBlobColumns(context, option.second, names, types, column_indexes);
-		} else if (StringUtil::CIEquals(option.first, "scalar_index_columns")) {
-			result->scalar_index_columns =
-			    ParseIndexColumns(context, option.first, option.second, names, column_indexes);
-		} else if (StringUtil::CIEquals(option.first, "vector_index_columns")) {
-			result->vector_index_columns =
-			    ParseIndexColumns(context, option.first, option.second, names, column_indexes);
-		} else if (StringUtil::CIEquals(option.first, "text_index_columns")) {
-			result->text_index_columns = ParseIndexColumns(context, option.first, option.second, names, column_indexes);
-		} else if (StringUtil::CIEquals(option.first, "bloom_filter_index_columns")) {
-			result->bloom_filter_index_columns =
-			    ParseIndexColumns(context, option.first, option.second, names, column_indexes);
+		} else if (auto index_option = FindIndexOption(option.first)) {
+			ParseIndexColumns(context, option.first, index_option->kind, option.second, names, column_indexes,
+			                  *result);
 		} else {
 			throw BinderException("Unsupported option for FORMAT LANCE: %s", option.first);
 		}
@@ -445,18 +450,10 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	write_config.structural_encodings = structural_encodings.data();
 	write_config.structural_encoding_column_count = structural_encoding_columns.size();
 
-	auto scalar_index_columns = string_pointers(bind.scalar_index_columns);
-	auto vector_index_columns = string_pointers(bind.vector_index_columns);
-	auto text_index_columns = string_pointers(bind.text_index_columns);
-	auto bloom_filter_index_columns = string_pointers(bind.bloom_filter_index_columns);
-	write_config.scalar_index_columns = scalar_index_columns.data();
-	write_config.scalar_index_column_count = scalar_index_columns.size();
-	write_config.vector_index_columns = vector_index_columns.data();
-	write_config.vector_index_column_count = vector_index_columns.size();
-	write_config.text_index_columns = text_index_columns.data();
-	write_config.text_index_column_count = text_index_columns.size();
-	write_config.bloom_filter_index_columns = bloom_filter_index_columns.data();
-	write_config.bloom_filter_index_column_count = bloom_filter_index_columns.size();
+	auto index_columns = string_pointers(bind.index_columns);
+	write_config.index_columns = index_columns.data();
+	write_config.index_kinds = bind.index_kinds.data();
+	write_config.index_column_count = index_columns.size();
 
 	unique_ptr<LanceS3Options> s3;
 	// S3 blob URIs are read with the destination's S3 secret, or the unscoped one for a local destination.
