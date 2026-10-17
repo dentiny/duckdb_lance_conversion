@@ -27,12 +27,10 @@ lance-io = { git = "https://github.com/lance-format/lance.git", rev = "b94b20c78
 lance-linalg = { git = "https://github.com/lance-format/lance.git", rev = "b94b20c785caadc3c95239af0108eaed8b35a118" }
 object_store = "0.14"
 object_store_opendal = "0.60"
-opendal = { version = "0.59.3", default-features = false, features = ["executors-tokio", "http-transport-reqwest", "layers-retry", "layers-timeout", "services-fs", "services-http", "services-s3"] }
+opendal = { version = "0.59.3", default-features = false, features = ["executors-tokio", "http-transport-reqwest", "layers-retry", "layers-timeout", "services-fs", "services-hf", "services-http", "services-s3"] }
 opendal-http-transport-reqwest = "0.59"
 parquet = { version = "58", features = ["arrow", "arrow_canonical_extension_types", "async"] }
 percent-encoding = "2"
-reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "fs", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
