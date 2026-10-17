@@ -501,6 +501,50 @@ accounts exported Arrow batches for their full Rust-side lifetime. Allocations
 inside Rust dependencies are represented by conservative reservations rather
 than exact per-allocation tracking.
 
+### Type conversion
+
+`FORMAT LANCE` has no option for declaring column types. Convert columns in the
+source query instead; the Lance schema is derived from the query's result
+types. For example, to turn timestamp strings from JSON into Arrow timestamps:
+
+```sql
+COPY (
+    SELECT
+        id,
+        -- ISO 8601 strings, such as '2024-02-29 12:34:56.123456'
+        created_at::TIMESTAMP AS created_at,
+        -- Custom formats; try_strptime returns NULL instead of failing
+        try_strptime(local_time, '%d/%m/%Y %H:%M') AS local_time,
+        -- Strings with an offset, such as '2024-02-29T12:34:56+05:30'
+        updated_at::TIMESTAMPTZ AS updated_at
+    FROM read_ndjson('events.jsonl', columns = {
+        'id': 'INTEGER',
+        'created_at': 'VARCHAR',
+        'local_time': 'VARCHAR',
+        'updated_at': 'VARCHAR'
+    })
+)
+TO 'events.lance' (FORMAT LANCE);
+```
+
+Readers such as `read_csv` and `read_json` can also assign types directly, for
+example `read_csv('events.csv', types = {'created_at': 'TIMESTAMP'})`. Use
+`TRY_CAST` instead of `CAST` to write NULL for values that do not convert.
+
+The DuckDB type selects the Arrow type:
+
+| DuckDB type | Arrow type |
+| --- | --- |
+| `TIMESTAMP` | `timestamp[us]` |
+| `TIMESTAMP_S` | `timestamp[s]` |
+| `TIMESTAMP_MS` | `timestamp[ms]` |
+| `TIMESTAMP_NS` | `timestamp[ns]` |
+| `TIMESTAMPTZ` | `timestamp[us, tz=<session TimeZone>]` |
+
+`TIMESTAMPTZ` values are stored as instants; the Arrow field's time zone is
+DuckDB's `TimeZone` setting, which is UTC unless the ICU extension is loaded
+and the setting is changed.
+
 ### S3-compatible storage
 
 An `s3://bucket/prefix.lance` destination uses the best matching scoped DuckDB
