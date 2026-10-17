@@ -15,10 +15,14 @@ use crate::{Error, Result};
 
 const TARGET_VECTOR_PARTITION_ROWS: usize = 8192;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum IndexKind {
-    BTree,
+/// An index built on one column after the write is committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexKind {
+    /// BTree index.
+    Scalar,
+    /// IVF_FLAT index with L2 distance.
     Vector,
+    /// Inverted full-text index.
     Text,
     BloomFilter,
 }
@@ -29,20 +33,12 @@ pub(super) struct LanceIndexPlan {
 
 impl LanceIndexPlan {
     pub(super) fn new(schema: &SchemaRef, options: &WriteOptions) -> Result<Self> {
-        let mut indexes = Vec::new();
-        for (columns, kind) in [
-            (&options.scalar_index_columns, IndexKind::BTree),
-            (&options.vector_index_columns, IndexKind::Vector),
-            (&options.text_index_columns, IndexKind::Text),
-            (&options.bloom_filter_index_columns, IndexKind::BloomFilter),
-        ] {
-            for column in columns {
-                let field = schema
-                    .field_with_name(column)
-                    .map_err(|_| Error::message(format!("index column not found: {column}")))?;
-                validate_index_type(field.data_type(), column, kind)?;
-                indexes.push((column.clone(), kind));
-            }
+        let mut indexes = options.indexes.clone();
+        for (column, kind) in &indexes {
+            let field = schema
+                .field_with_name(column)
+                .map_err(|_| Error::message(format!("index column not found: {column}")))?;
+            validate_index_type(field.data_type(), column, *kind)?;
         }
         indexes.sort_by(|left, right| left.0.cmp(&right.0));
         if indexes
@@ -73,7 +69,7 @@ impl LanceIndexPlan {
 
         for (column, kind) in &self.indexes {
             let (index_type, params, label): (_, Box<dyn IndexParams>, _) = match kind {
-                IndexKind::BTree => (
+                IndexKind::Scalar => (
                     IndexType::BTree,
                     Box::new(ScalarIndexParams::for_builtin(BuiltinIndexType::BTree)),
                     "BTree",
@@ -117,7 +113,7 @@ impl LanceIndexPlan {
 fn validate_index_type(data_type: &DataType, column: &str, kind: IndexKind) -> Result<()> {
     use DataType::*;
     let supported = match kind {
-        IndexKind::BTree => matches!(
+        IndexKind::Scalar => matches!(
             data_type,
             Boolean
                 | Int8

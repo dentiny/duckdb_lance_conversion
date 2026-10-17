@@ -36,6 +36,13 @@ enum LanceWriteMode : int32_t {
 	LANCE_WRITE_MODE_OVERWRITE = 2,
 };
 
+enum LanceIndexKind : int32_t {
+	LANCE_INDEX_SCALAR = 0,
+	LANCE_INDEX_VECTOR = 1,
+	LANCE_INDEX_TEXT = 2,
+	LANCE_INDEX_BLOOM_FILTER = 3,
+};
+
 struct LanceWriteConfig {
 	// Write mode.
 	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
@@ -60,18 +67,10 @@ struct LanceWriteConfig {
 	// Blob columns.
 	const char *const *blob_columns = NULL;
 	size_t blob_column_count = 0;
-	// Scalar index columns.
-	const char *const *scalar_index_columns = NULL;
-	size_t scalar_index_column_count = 0;
-	// Vector index columns.
-	const char *const *vector_index_columns = NULL;
-	size_t vector_index_column_count = 0;
-	// Text index columns.
-	const char *const *text_index_columns = NULL;
-	size_t text_index_column_count = 0;
-	// Bloom filter index columns.
-	const char *const *bloom_filter_index_columns = NULL;
-	size_t bloom_filter_index_column_count = 0;
+	// Indexes built after the write, one per column; index_kinds[i] applies to index_columns[i].
+	const char *const *index_columns = NULL;
+	const LanceIndexKind *index_kinds = NULL;
+	size_t index_column_count = 0;
 };
 
 // Cumulative source metrics sampled while a scan is running.

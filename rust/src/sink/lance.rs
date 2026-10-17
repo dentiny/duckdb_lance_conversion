@@ -17,6 +17,7 @@ mod index;
 pub use column_encoding::ColumnEncoding;
 pub use dataset::LanceDatasetWriter;
 pub use fragment::LanceFragmentWriter;
+pub use index::IndexKind;
 
 const DEFAULT_BLOB_INLINE_SIZE_THRESHOLD: usize = 2 * 1024 * 1024;
 const DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD: usize = 16 * 1024 * 1024;
@@ -35,10 +36,8 @@ pub struct WriteOptions {
     /// Per-column Lance encoding settings, keyed by column name.
     pub column_encoding: BTreeMap<String, ColumnEncoding>,
     pub blob_columns: Vec<String>,
-    pub scalar_index_columns: Vec<String>,
-    pub vector_index_columns: Vec<String>,
-    pub text_index_columns: Vec<String>,
-    pub bloom_filter_index_columns: Vec<String>,
+    /// Indexes built after the write, at most one per column.
+    pub indexes: Vec<(String, IndexKind)>,
 }
 
 impl Default for WriteOptions {
@@ -53,10 +52,7 @@ impl Default for WriteOptions {
             storage_version: DEFAULT_STORAGE_VERSION.into(),
             column_encoding: BTreeMap::new(),
             blob_columns: Vec::new(),
-            scalar_index_columns: Vec::new(),
-            vector_index_columns: Vec::new(),
-            text_index_columns: Vec::new(),
-            bloom_filter_index_columns: Vec::new(),
+            indexes: Vec::new(),
         }
     }
 }

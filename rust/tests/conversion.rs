@@ -9,7 +9,7 @@ use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lance::index::DatasetIndexExt;
 use lance_conversion::{
-    AtifSource, BatchSource, ColumnEncoding, LanceWriter, WriteMode, WriteOptions,
+    AtifSource, BatchSource, ColumnEncoding, IndexKind, LanceWriter, WriteMode, WriteOptions,
 };
 use tempfile::tempdir;
 use tokio::{
@@ -385,10 +385,12 @@ async fn index_types_are_inferred_from_the_schema() {
         &output,
         batch.schema(),
         WriteOptions {
-            scalar_index_columns: vec!["id".into()],
-            vector_index_columns: vec!["embedding".into()],
-            text_index_columns: vec!["name".into()],
-            bloom_filter_index_columns: vec!["category".into()],
+            indexes: vec![
+                ("id".into(), IndexKind::Scalar),
+                ("embedding".into(), IndexKind::Vector),
+                ("name".into(), IndexKind::Text),
+                ("category".into(), IndexKind::BloomFilter),
+            ],
             ..Default::default()
         },
     )
