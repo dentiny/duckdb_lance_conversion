@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{btree_map::Entry, BTreeMap};
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
@@ -16,7 +16,7 @@ use crate::source::ReadMetrics;
 use crate::{
     atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, ColumnEncoding, Error,
     HuggingFaceSource, IndexKind, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
-    S3StorageConfig, WarcSource, WriteMode, WriteOptions, WriteSummary,
+    S3StorageConfig, StructuralEncoding, WarcSource, WriteMode, WriteOptions, WriteSummary,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -33,6 +33,18 @@ fn source_runtime() -> Result<&'static tokio::runtime::Runtime> {
         .map_err(|error| Error::message(error.clone()))
 }
 
+// Values of the C enums in lance_conversion.h.
+const LANCE_WRITE_MODE_CREATE: i32 = 0;
+const LANCE_WRITE_MODE_APPEND: i32 = 1;
+const LANCE_WRITE_MODE_OVERWRITE: i32 = 2;
+const LANCE_INDEX_SCALAR: i32 = 0;
+const LANCE_INDEX_VECTOR: i32 = 1;
+const LANCE_INDEX_TEXT: i32 = 2;
+const LANCE_INDEX_BLOOM_FILTER: i32 = 3;
+const LANCE_STRUCTURAL_ENCODING_DEFAULT: i32 = 0;
+const LANCE_STRUCTURAL_ENCODING_MINIBLOCK: i32 = 1;
+const LANCE_STRUCTURAL_ENCODING_FULLZIP: i32 = 2;
+
 #[repr(C)]
 pub struct LanceS3Config {
     endpoint: *const c_char,
@@ -45,21 +57,23 @@ pub struct LanceS3Config {
 }
 
 #[repr(C)]
+pub struct LanceColumnEncoding {
+    column: *const c_char,
+    compression: *const c_char,
+    has_compression_level: i32,
+    compression_level: i32,
+    structural_encoding: i32,
+}
+
+#[repr(C)]
 pub struct LanceWriteConfig {
     mode: i32,
     blob_inline_size_threshold: i64,
     blob_dedicated_size_threshold: i64,
     target_file_size: i64,
     storage_version: *const c_char,
-    compression_columns: *const *const c_char,
-    compression_algorithms: *const *const c_char,
-    compression_column_count: usize,
-    compression_level_columns: *const *const c_char,
-    compression_levels: *const i32,
-    compression_level_column_count: usize,
-    structural_encoding_columns: *const *const c_char,
-    structural_encodings: *const *const c_char,
-    structural_encoding_column_count: usize,
+    column_encodings: *const LanceColumnEncoding,
+    column_encoding_count: usize,
     blob_columns: *const *const c_char,
     blob_column_count: usize,
     index_columns: *const *const c_char,
@@ -214,39 +228,35 @@ unsafe fn i32_list(values: *const i32, count: usize) -> Result<Vec<i32>> {
 }
 
 unsafe fn column_encoding(config: &LanceWriteConfig) -> Result<BTreeMap<String, ColumnEncoding>> {
-    let mut encodings = BTreeMap::<String, ColumnEncoding>::new();
-    let compression = string_list(config.compression_columns, config.compression_column_count)?
-        .into_iter()
-        .zip(string_list(
-            config.compression_algorithms,
-            config.compression_column_count,
-        )?);
-    for (column, algorithm) in compression {
-        encodings.entry(column).or_default().compression = Some(algorithm);
+    if config.column_encoding_count == 0 {
+        return Ok(BTreeMap::new());
     }
-    let levels = string_list(
-        config.compression_level_columns,
-        config.compression_level_column_count,
-    )?
-    .into_iter()
-    .zip(i32_list(
-        config.compression_levels,
-        config.compression_level_column_count,
-    )?);
-    for (column, level) in levels {
-        encodings.entry(column).or_default().compression_level = Some(level);
+    if config.column_encodings.is_null() {
+        return Err(Error::message("null column encoding list"));
     }
-    let structural = string_list(
-        config.structural_encoding_columns,
-        config.structural_encoding_column_count,
-    )?
-    .into_iter()
-    .zip(string_list(
-        config.structural_encodings,
-        config.structural_encoding_column_count,
-    )?);
-    for (column, encoding) in structural {
-        encodings.entry(column).or_default().structural_encoding = Some(encoding);
+    let mut encodings = BTreeMap::new();
+    for encoding in
+        std::slice::from_raw_parts(config.column_encodings, config.column_encoding_count)
+    {
+        let column = optional_string(encoding.column)?
+            .ok_or_else(|| Error::message("column encoding has no column"))?;
+        let settings = ColumnEncoding {
+            compression: optional_string(encoding.compression)?,
+            compression_level: (encoding.has_compression_level != 0)
+                .then_some(encoding.compression_level),
+            structural_encoding: structural_encoding(encoding.structural_encoding)?,
+        };
+        match encodings.entry(column) {
+            Entry::Occupied(entry) => {
+                return Err(Error::message(format!(
+                    "duplicate column encoding column: {}",
+                    entry.key()
+                )))
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(settings);
+            }
+        }
     }
     Ok(encodings)
 }
@@ -293,19 +303,30 @@ unsafe fn indexes(config: &LanceWriteConfig) -> Result<Vec<(String, IndexKind)>>
 
 fn index_kind(kind: i32) -> Result<IndexKind> {
     match kind {
-        0 => Ok(IndexKind::Scalar),
-        1 => Ok(IndexKind::Vector),
-        2 => Ok(IndexKind::Text),
-        3 => Ok(IndexKind::BloomFilter),
+        LANCE_INDEX_SCALAR => Ok(IndexKind::Scalar),
+        LANCE_INDEX_VECTOR => Ok(IndexKind::Vector),
+        LANCE_INDEX_TEXT => Ok(IndexKind::Text),
+        LANCE_INDEX_BLOOM_FILTER => Ok(IndexKind::BloomFilter),
         _ => Err(Error::message(format!("invalid Lance index kind: {kind}"))),
+    }
+}
+
+fn structural_encoding(encoding: i32) -> Result<Option<StructuralEncoding>> {
+    match encoding {
+        LANCE_STRUCTURAL_ENCODING_DEFAULT => Ok(None),
+        LANCE_STRUCTURAL_ENCODING_MINIBLOCK => Ok(Some(StructuralEncoding::MiniBlock)),
+        LANCE_STRUCTURAL_ENCODING_FULLZIP => Ok(Some(StructuralEncoding::FullZip)),
+        _ => Err(Error::message(format!(
+            "invalid Lance structural encoding: {encoding}"
+        ))),
     }
 }
 
 fn write_mode(mode: i32) -> Result<WriteMode> {
     match mode {
-        0 => Ok(WriteMode::Create),
-        1 => Ok(WriteMode::Append),
-        2 => Ok(WriteMode::Overwrite),
+        LANCE_WRITE_MODE_CREATE => Ok(WriteMode::Create),
+        LANCE_WRITE_MODE_APPEND => Ok(WriteMode::Append),
+        LANCE_WRITE_MODE_OVERWRITE => Ok(WriteMode::Overwrite),
         _ => Err(Error::message(format!("invalid Lance write mode: {mode}"))),
     }
 }

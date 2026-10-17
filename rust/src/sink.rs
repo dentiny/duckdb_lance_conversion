@@ -1,7 +1,7 @@
 mod lance;
 pub use lance::{
-    ColumnEncoding, IndexKind, LanceDatasetWriter, LanceFragmentWriter, LanceWriter, WriteMode,
-    WriteOptions,
+    ColumnEncoding, IndexKind, LanceDatasetWriter, LanceFragmentWriter, LanceWriter,
+    StructuralEncoding, WriteMode, WriteOptions,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -9,8 +9,8 @@ mod storage;
 
 pub use error::{Error, ErrorStatus, Result};
 pub use sink::{
-    ColumnEncoding, IndexKind, LanceDatasetWriter, LanceFragmentWriter, LanceWriter, WriteMode,
-    WriteOptions, WriteSummary,
+    ColumnEncoding, IndexKind, LanceDatasetWriter, LanceFragmentWriter, LanceWriter,
+    StructuralEncoding, WriteMode, WriteOptions, WriteSummary,
 };
 pub use source::{
     atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, HuggingFaceSource,

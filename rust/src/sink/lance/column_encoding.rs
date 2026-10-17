@@ -11,6 +11,22 @@ const COMPRESSION_META_KEY: &str = "lance-encoding:compression";
 const COMPRESSION_LEVEL_META_KEY: &str = "lance-encoding:compression-level";
 const STRUCTURAL_ENCODING_META_KEY: &str = "lance-encoding:structural-encoding";
 
+/// How Lance lays out a column's values within a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StructuralEncoding {
+    MiniBlock,
+    FullZip,
+}
+
+impl StructuralEncoding {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MiniBlock => "miniblock",
+            Self::FullZip => "fullzip",
+        }
+    }
+}
+
 /// Lance encoding settings for one column; unset fields keep Lance's defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ColumnEncoding {
@@ -19,7 +35,7 @@ pub struct ColumnEncoding {
     /// Set as `lance-encoding:compression-level` field metadata.
     pub compression_level: Option<i32>,
     /// Set as `lance-encoding:structural-encoding` field metadata.
-    pub structural_encoding: Option<String>,
+    pub structural_encoding: Option<StructuralEncoding>,
 }
 
 impl ColumnEncoding {
@@ -32,7 +48,8 @@ impl ColumnEncoding {
             ),
             (
                 STRUCTURAL_ENCODING_META_KEY,
-                self.structural_encoding.clone(),
+                self.structural_encoding
+                    .map(|encoding| encoding.as_str().to_owned()),
             ),
         ]
         .into_iter()
