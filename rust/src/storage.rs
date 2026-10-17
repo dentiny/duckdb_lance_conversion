@@ -11,7 +11,7 @@ use object_store::{path::Path, ObjectStore as ArrowObjectStore};
 use object_store_opendal::OpendalStore;
 use opendal::{
     layers::{RetryLayer, TimeoutLayer},
-    services::{Fs, Http, S3},
+    services::{Fs, Hf, Http, S3},
     Operator,
 };
 use percent_encoding::percent_decode_str;
@@ -188,7 +188,6 @@ impl OpendalStoreProvider {
             }
             "http" | "https" => Arc::new(OpendalStore::new(http_operator(
                 &url[..url::Position::BeforePath],
-                None,
                 &self.opendal_config,
             )?)),
             scheme => {
@@ -376,11 +375,7 @@ impl InputFile {
                 // OpenDAL percent-encodes the path again.
                 let object_path = percent_decode_str(url.path()).decode_utf8()?;
                 Self {
-                    operator: http_operator(
-                        &url[..url::Position::BeforePath],
-                        None,
-                        opendal_config,
-                    )?,
+                    operator: http_operator(&url[..url::Position::BeforePath], opendal_config)?,
                     opendal_path: object_path.trim_start_matches('/').to_owned(),
                     uri: url.to_string(),
                 }
@@ -408,13 +403,25 @@ impl InputFile {
 }
 
 /// Builds a read operator for files under the HTTP(S) `endpoint`.
-pub(crate) fn http_operator(
-    endpoint: &str,
+fn http_operator(endpoint: &str, opendal_config: &OpendalConfig) -> Result<Operator> {
+    opendal_http_transport_reqwest::install_default();
+    opendal_config.apply(Operator::new(Http::default().endpoint(endpoint))?)
+}
+
+/// Builds a read operator over the files of a Hugging Face dataset at `revision`.
+pub(crate) fn huggingface_operator(
+    dataset: &str,
+    revision: &str,
     token: Option<&str>,
     opendal_config: &OpendalConfig,
 ) -> Result<Operator> {
     opendal_http_transport_reqwest::install_default();
-    let mut builder = Http::default().endpoint(endpoint);
+    // Plain HTTP downloads follow the Hub redirect, without the XET client.
+    let mut builder = Hf::default()
+        .repo_type("dataset")
+        .repo_id(dataset)
+        .revision(revision)
+        .download_mode("http");
     if let Some(token) = token {
         builder = builder.token(token);
     }

@@ -1,20 +1,17 @@
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
-use percent_encoding::percent_decode_str;
-use serde::Deserialize;
-use url::Url;
+use opendal::{EntryMode, Operator};
 
 use super::parquet::open_parquet_paths;
 use super::{BatchSource, BatchStream, ReadMetrics, SourceReadOptions};
 use crate::error::ResultExt;
-use crate::storage::http_operator;
+use crate::storage::huggingface_operator;
 use crate::{Error, OpendalConfig, Result};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
 pub const DEFAULT_READ_AHEAD_BYTES: usize = 32 * 1024 * 1024;
 const PARQUET_REVISION: &str = "refs/convert/parquet";
-const PARQUET_API_URL: &str = "https://datasets-server.huggingface.co/parquet";
 
 pub struct HuggingFaceSource {
     dataset: String,
@@ -103,74 +100,35 @@ impl HuggingFaceSource {
         Ok(())
     }
 
-    async fn parquet_files(&self) -> Result<(String, Vec<String>)> {
-        let client = reqwest::Client::new();
-        let mut request = client.get(PARQUET_API_URL).query(&[
-            ("dataset", self.dataset.as_str()),
-            ("revision", PARQUET_REVISION),
-            ("config", self.config.as_str()),
-            ("split", self.split.as_str()),
-        ]);
-        if let Some(token) = &self.token {
-            request = request.bearer_auth(token);
-        }
-        let response = request
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<HuggingFaceParquetResponse>()
-            .await?;
-        let mut endpoint = None;
-        let mut paths = Vec::new();
-        for file in response
-            .parquet_files
-            .into_iter()
-            .filter(|file| file.config == self.config && file.split == self.split)
-        {
-            let (file_endpoint, path) = hugging_face_location(&file.url)?;
-            if endpoint
-                .as_ref()
-                .is_some_and(|endpoint| endpoint != &file_endpoint)
-            {
-                return Err(Error::message(
-                    "Hugging Face parquet files use different HTTP directories",
-                ));
+    /// Lists the split's shards on the Parquet conversion branch, in name order.
+    async fn parquet_files(&self, operator: &Operator) -> Result<Vec<String>> {
+        // Splits too large to convert fully are published as `partial-<split>`.
+        for directory in [
+            format!("{}/{}/", self.config, self.split),
+            format!("{}/partial-{}/", self.config, self.split),
+        ] {
+            let paths = list_parquet_files(operator, &directory).await?;
+            if !paths.is_empty() {
+                return Ok(paths);
             }
-            endpoint = Some(file_endpoint);
-            paths.push(path);
         }
-        paths.sort_unstable();
-        let endpoint =
-            endpoint.ok_or_else(|| Error::message("source contains no Parquet shards"))?;
-        Ok((endpoint, paths))
+        Err(Error::message("source contains no Parquet shards"))
     }
 }
 
-#[derive(Deserialize)]
-struct HuggingFaceParquetResponse {
-    parquet_files: Vec<HuggingFaceParquetFile>,
-}
-
-#[derive(Deserialize)]
-struct HuggingFaceParquetFile {
-    config: String,
-    split: String,
-    url: String,
-}
-
-fn hugging_face_location(uri: &str) -> Result<(String, String)> {
-    let url = Url::parse(uri)?;
-    if url.scheme() != "https" || url.host_str() != Some("huggingface.co") {
-        return Err(Error::message("invalid Hugging Face file URL"));
-    }
-    let (endpoint, encoded_path) = uri
-        .rsplit_once('/')
-        .ok_or_else(|| Error::message("invalid Hugging Face file URL"))?;
-    let path = percent_decode_str(encoded_path)
-        .decode_utf8()
-        .map_err(|error| Error::message(error.to_string()))?
-        .into_owned();
-    Ok((endpoint.to_owned(), path))
+async fn list_parquet_files(operator: &Operator, directory: &str) -> Result<Vec<String>> {
+    let mut paths = operator
+        .list(directory)
+        .await
+        .context(format!("listing {directory}"))?
+        .into_iter()
+        .filter(|entry| {
+            entry.metadata().mode() == EntryMode::FILE && entry.path().ends_with(".parquet")
+        })
+        .map(|entry| entry.path().to_owned())
+        .collect::<Vec<_>>();
+    paths.sort_unstable();
+    Ok(paths)
 }
 
 impl BatchSource for HuggingFaceSource {
@@ -178,8 +136,17 @@ impl BatchSource for HuggingFaceSource {
         self.validate()?;
         self.opendal_config.validate()?;
         let read_options = self.read_options.validate()?;
-        let (endpoint, paths) = self.parquet_files().await?;
-        let operator = http_operator(&endpoint, self.token.as_deref(), &self.opendal_config)?;
+        let context = format!(
+            "reading Hugging Face dataset '{}' config '{}' split '{}'",
+            self.dataset, self.config, self.split
+        );
+        let operator = huggingface_operator(
+            &self.dataset,
+            PARQUET_REVISION,
+            self.token.as_deref(),
+            &self.opendal_config,
+        )?;
+        let paths = self.parquet_files(&operator).await.context(&context)?;
         open_parquet_paths(
             operator,
             paths,
@@ -191,10 +158,7 @@ impl BatchSource for HuggingFaceSource {
             self.metrics,
         )
         .await
-        .context(format!(
-            "reading Hugging Face dataset '{}' config '{}' split '{}'",
-            self.dataset, self.config, self.split
-        ))
+        .context(context)
     }
 }
 
