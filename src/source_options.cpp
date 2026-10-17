@@ -1,5 +1,6 @@
 #include "source_options.hpp"
 
+#include "lance_conversion.h"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table_function.hpp"
 
@@ -7,6 +8,7 @@ namespace duckdb {
 
 SourceReadOptions SourceReadOptions::From(const TableFunctionBindInput &input) {
 	SourceReadOptions options;
+	options.max_read_parallelism = lance_source_defaults().max_read_parallelism;
 	auto entry = input.named_parameters.find("max_read_parallelism");
 	if (entry != input.named_parameters.end()) {
 		options.max_read_parallelism = entry->second.GetValue<uint64_t>();

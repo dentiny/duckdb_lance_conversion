@@ -14,9 +14,6 @@
 namespace duckdb {
 namespace {
 
-// Matches DEFAULT_READ_AHEAD_BYTES in rust/src/source/huggingface.rs.
-constexpr uint64_t DEFAULT_READ_AHEAD_BYTES = 32 * 1024 * 1024;
-
 unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBindInput &input,
                                          vector<LogicalType> &return_types, vector<string> &names) {
 	RejectNullParameters("read_huggingface", "dataset", input);
@@ -37,7 +34,7 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 		preserve_insertion_order = preserve_insertion_order_entry->second.GetValue<bool>();
 	}
 	auto read_options = SourceReadOptions::From(input);
-	auto read_ahead_bytes = DEFAULT_READ_AHEAD_BYTES;
+	auto read_ahead_bytes = lance_source_defaults().read_ahead_bytes;
 	auto read_ahead_bytes_entry = input.named_parameters.find("read_ahead_bytes");
 	if (read_ahead_bytes_entry != input.named_parameters.end()) {
 		read_ahead_bytes = read_ahead_bytes_entry->second.GetValue<uint64_t>();

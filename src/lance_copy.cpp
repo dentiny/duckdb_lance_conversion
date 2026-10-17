@@ -54,6 +54,13 @@ struct ColumnEncodingOptions {
 };
 
 struct LanceBindData : public FunctionData {
+	LanceBindData() {
+		const auto defaults = lance_write_default_config();
+		blob_inline_size_threshold = defaults.blob_inline_size_threshold;
+		blob_dedicated_size_threshold = defaults.blob_dedicated_size_threshold;
+		target_file_size = defaults.target_file_size;
+	}
+
 	// Source schema
 	vector<string> names;
 	vector<LogicalType> types;
@@ -62,9 +69,9 @@ struct LanceBindData : public FunctionData {
 	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
 	bool s3 = false;
 	// Storage configuration
-	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
-	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
-	int64_t target_file_size = 512 * 1024 * 1024;
+	int64_t blob_inline_size_threshold;
+	int64_t blob_dedicated_size_threshold;
+	int64_t target_file_size;
 	string storage_version;
 	// Per-column encoding settings, at most one entry per column
 	vector<ColumnEncodingOptions> column_encodings;
@@ -463,7 +470,7 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	ArrowSchemaWrapper schema;
 	ArrowConverter::ToArrowSchema(&schema.arrow_schema, bind.types, bind.names, bind.properties);
 	auto state = make_uniq<LanceGlobalState>();
-	LanceWriteConfig write_config;
+	auto write_config = lance_write_default_config();
 	write_config.mode = bind.mode;
 	write_config.blob_inline_size_threshold = bind.blob_inline_size_threshold;
 	write_config.blob_dedicated_size_threshold = bind.blob_dedicated_size_threshold;

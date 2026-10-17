@@ -60,25 +60,32 @@ struct LanceColumnEncoding {
 	LanceStructuralEncoding structural_encoding = LANCE_STRUCTURAL_ENCODING_DEFAULT;
 };
 
+// Start from lance_write_default_config(), which holds the Rust defaults.
 struct LanceWriteConfig {
 	// Write mode.
-	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
+	LanceWriteMode mode;
 	// Storage configurations.
-	int64_t blob_inline_size_threshold = 2 * 1024 * 1024;
-	int64_t blob_dedicated_size_threshold = 16 * 1024 * 1024;
-	int64_t target_file_size = 512 * 1024 * 1024;
+	int64_t blob_inline_size_threshold;
+	int64_t blob_dedicated_size_threshold;
+	int64_t target_file_size;
 	// Lance file format version such as "2.1" or "stable"; NULL or empty uses "stable".
-	const char *storage_version = NULL;
+	const char *storage_version;
 	// Per-column Lance encoding settings, at most one entry per column.
-	const struct LanceColumnEncoding *column_encodings = NULL;
-	size_t column_encoding_count = 0;
+	const struct LanceColumnEncoding *column_encodings;
+	size_t column_encoding_count;
 	// Blob columns.
-	const char *const *blob_columns = NULL;
-	size_t blob_column_count = 0;
+	const char *const *blob_columns;
+	size_t blob_column_count;
 	// Indexes built after the write, one per column; index_kinds[i] applies to index_columns[i].
-	const char *const *index_columns = NULL;
-	const LanceIndexKind *index_kinds = NULL;
-	size_t index_column_count = 0;
+	const char *const *index_columns;
+	const LanceIndexKind *index_kinds;
+	size_t index_column_count;
+};
+
+// Defaults for the source table function parameters.
+struct LanceSourceDefaults {
+	uint64_t max_read_parallelism;
+	uint64_t read_ahead_bytes;
 };
 
 // Cumulative source metrics sampled while a scan is running.
@@ -101,8 +108,10 @@ struct LanceWriteMetrics {
 extern "C" {
 #endif
 
-// Returns the storage defaults defined in Rust.
+// Return the defaults defined in Rust.
 struct LanceOpendalConfig lance_opendal_default_config(void);
+struct LanceWriteConfig lance_write_default_config(void);
+struct LanceSourceDefaults lance_source_defaults(void);
 
 // NULL means success. Free each owned error with lance_conversion_error_free.
 void lance_conversion_error_free(char *error);
