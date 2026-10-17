@@ -43,6 +43,23 @@ enum LanceIndexKind : int32_t {
 	LANCE_INDEX_BLOOM_FILTER = 3,
 };
 
+enum LanceStructuralEncoding : int32_t {
+	LANCE_STRUCTURAL_ENCODING_DEFAULT = 0,
+	LANCE_STRUCTURAL_ENCODING_MINIBLOCK = 1,
+	LANCE_STRUCTURAL_ENCODING_FULLZIP = 2,
+};
+
+// Lance encoding settings for one column. A NULL compression, has_compression_level = 0, and
+// LANCE_STRUCTURAL_ENCODING_DEFAULT keep Lance's defaults.
+struct LanceColumnEncoding {
+	const char *column = NULL;
+	// Compression algorithm such as "zstd", passed to Lance as-is.
+	const char *compression = NULL;
+	int32_t has_compression_level = 0;
+	int32_t compression_level = 0;
+	LanceStructuralEncoding structural_encoding = LANCE_STRUCTURAL_ENCODING_DEFAULT;
+};
+
 struct LanceWriteConfig {
 	// Write mode.
 	LanceWriteMode mode = LANCE_WRITE_MODE_CREATE;
@@ -52,18 +69,9 @@ struct LanceWriteConfig {
 	int64_t target_file_size = 512 * 1024 * 1024;
 	// Lance file format version such as "2.1" or "stable"; NULL or empty uses "stable".
 	const char *storage_version = NULL;
-	// Per-column Lance compression algorithms, passed to Lance as-is.
-	const char *const *compression_columns = NULL;
-	const char *const *compression_algorithms = NULL;
-	size_t compression_column_count = 0;
-	// Per-column Lance compression levels.
-	const char *const *compression_level_columns = NULL;
-	const int32_t *compression_levels = NULL;
-	size_t compression_level_column_count = 0;
-	// Per-column Lance structural encodings such as "miniblock" or "fullzip", passed to Lance as-is.
-	const char *const *structural_encoding_columns = NULL;
-	const char *const *structural_encodings = NULL;
-	size_t structural_encoding_column_count = 0;
+	// Per-column Lance encoding settings, at most one entry per column.
+	const struct LanceColumnEncoding *column_encodings = NULL;
+	size_t column_encoding_count = 0;
 	// Blob columns.
 	const char *const *blob_columns = NULL;
 	size_t blob_column_count = 0;

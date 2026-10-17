@@ -62,6 +62,7 @@ if(APPLE)
       resolv
       "-framework CoreFoundation"
       "-framework IOKit"
+      "-framework OpenDirectory"
       "-framework Security"
       "-framework SystemConfiguration")
 elseif(UNIX)

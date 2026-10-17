@@ -14,7 +14,7 @@ mod dataset;
 mod fragment;
 mod index;
 
-pub use column_encoding::ColumnEncoding;
+pub use column_encoding::{ColumnEncoding, StructuralEncoding};
 pub use dataset::LanceDatasetWriter;
 pub use fragment::LanceFragmentWriter;
 pub use index::IndexKind;
