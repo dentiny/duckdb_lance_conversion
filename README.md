@@ -189,6 +189,18 @@ TO 'archive.lance' (FORMAT LANCE);
 Local, `s3://`, and `http(s)://` paths are supported. Projection pushdown avoids
 constructing and copying WARC bodies when the query does not select `body`.
 
+Local and `s3://` paths may be glob patterns. `*`, `?`, and `[...]` match
+within one path component, and a `**` component matches any number of
+directories. Matches stream up to `max_read_parallelism` files at once; records
+keep their order within a file, but rows from different files interleave. A
+pattern that matches no files is an error, and `index_path` is not supported
+with a pattern. HTTP(S) URLs cannot be listed, so they do not accept patterns.
+
+```sql
+COPY (SELECT * FROM read_warc('s3://bucket/crawl/**/*.warc.gz'))
+TO 'crawl.lance' (FORMAT LANCE);
+```
+
 `read_warc` also accepts a Common Crawl segment directory, or its `warc/`
 subdirectory. It reads the crawl's `warc.paths.gz`, keeps only that segment's
 entries, and streams up to `max_read_parallelism` of those files at once.
@@ -243,6 +255,15 @@ COPY (
     SELECT trajectory_id, agent, steps, final_metrics
     FROM read_atif('s3://bucket/runs/trajectories.jsonl')
 )
+TO 'trajectories.lance' (FORMAT LANCE);
+```
+
+Local and `s3://` paths may also be glob patterns, with the same syntax as
+`read_warc`. Matching files are read one at a time in path order, and each
+file's format is inferred from its own extension unless `format` is set:
+
+```sql
+COPY (SELECT * FROM read_atif('s3://bucket/runs/*.jsonl.gz'))
 TO 'trajectories.lance' (FORMAT LANCE);
 ```
 

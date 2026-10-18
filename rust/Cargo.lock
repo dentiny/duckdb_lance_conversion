@@ -2985,6 +2985,7 @@ dependencies = [
  "datafusion-physical-plan",
  "flate2",
  "futures",
+ "glob",
  "lance",
  "lance-index",
  "lance-io",

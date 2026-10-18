@@ -21,6 +21,7 @@ bytes = "1"
 datafusion-physical-plan = "54"
 futures = "0.3"
 flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
+glob = "0.3"
 lance = { git = "https://github.com/lance-format/lance.git", rev = "b94b20c785caadc3c95239af0108eaed8b35a118", default-features = false }
 lance-index = { git = "https://github.com/lance-format/lance.git", rev = "b94b20c785caadc3c95239af0108eaed8b35a118" }
 lance-io = { git = "https://github.com/lance-format/lance.git", rev = "b94b20c785caadc3c95239af0108eaed8b35a118", default-features = false }

@@ -52,6 +52,23 @@ COPY (
 ----
 2
 
+# Glob matches are read in path order, each with its own inferred format.
+query TTI
+SELECT trajectory_id, parse_filename(source_uri), source_record_index
+FROM read_atif('test/data/trajector*');
+----
+t1	trajectories.jsonl	1
+t2	trajectories.jsonl	2
+t1	trajectories.jsonl.gz	1
+t2	trajectories.jsonl.gz	2
+single	trajectory.json	1
+single	trajectory.json.gz	1
+
+statement error
+SELECT * FROM read_atif('test/data/*.missing');
+----
+no files match
+
 statement error
 SELECT * FROM read_atif('test/data/records.warc');
 ----
