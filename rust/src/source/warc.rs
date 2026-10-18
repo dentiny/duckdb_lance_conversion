@@ -18,7 +18,7 @@ use super::{
     SourceInput, SourceReadOptions,
 };
 use crate::error::ResultExt;
-use crate::storage::InputFile;
+use crate::storage::{has_glob, InputFile};
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
@@ -164,44 +164,46 @@ impl WarcSource {
         Ok((input.operator, input.opendal_path))
     }
 
-    /// Streams up to `max_read_parallelism` of the segment's files at once.
-    /// Records keep their order within a file, but files interleave.
-    async fn open_segment(
+    /// Streams up to `max_read_parallelism` of `files` at once. Records keep
+    /// their order within a file, but files interleave.
+    fn open_files(
         self,
-        segment: WarcSegment,
-        operator: Operator,
+        files: Vec<InputFile>,
         projection: Vec<usize>,
         schema: SchemaRef,
     ) -> Result<BatchStream> {
         if self.index_path.is_some() {
             return Err(Error::message(
-                "index_path is not supported for WARC segments",
+                "index_path is not supported for WARC segments or glob patterns",
             ));
         }
         let parallelism = self.read_options.max_read_parallelism;
-        let files = segment.files(&operator).await?;
         // A whole crawl has ~100k files, too many to stat before reading.
         let file_count = files.len() as u64;
         let (batch_size, metrics) = (self.batch_size, self.metrics);
         let batches = stream::iter(files)
             .map(move |file| {
-                let operator = operator.clone();
                 let projection = projection.clone();
                 let schema = schema.clone();
                 let metrics = metrics.clone();
                 stream::once(async move {
-                    let size = operator.stat(&file).await.context(&file)?.content_length();
+                    let InputFile {
+                        operator,
+                        opendal_path: path,
+                        uri,
+                    } = file;
+                    let size = operator.stat(&path).await.context(&uri)?.content_length();
                     metrics.add_object(size, file_count);
-                    let reader = read_object(&operator, &file, size, metrics)
+                    let reader = read_object(&operator, &path, size, metrics)
                         .await
-                        .context(&file)?;
+                        .context(&uri)?;
                     let records = spawn_records(
-                        decompressed_input(reader, is_gzipped(&file)),
+                        decompressed_input(reader, is_gzipped(&path)),
                         batch_size,
                         projection,
                         schema,
                     );
-                    Ok::<_, Error>(records.map(move |batch| batch.context(&file)))
+                    Ok::<_, Error>(records.map(move |batch| batch.context(&uri)))
                 })
                 .try_flatten()
                 .boxed()
@@ -244,11 +246,26 @@ impl BatchSource for WarcSource {
         }
         let read_options = self.read_options.validate()?;
         let (projection, schema) = projected_schema(self.projection.take())?;
+        if has_glob(&self.path) {
+            let files =
+                InputFile::glob(&self.path, self.s3_config.as_ref(), &self.opendal_config).await?;
+            let batches = self.open_files(files, projection, schema.clone())?;
+            return Ok((schema, batches));
+        }
         let (operator, path) = self.location()?;
         if let Some(segment) = WarcSegment::parse(&path) {
-            let batches = self
-                .open_segment(segment, operator, projection, schema.clone())
-                .await?;
+            // Manifest entries name the files within `operator`.
+            let files = segment
+                .files(&operator)
+                .await?
+                .into_iter()
+                .map(|path| InputFile {
+                    operator: operator.clone(),
+                    uri: path.clone(),
+                    opendal_path: path,
+                })
+                .collect();
+            let batches = self.open_files(files, projection, schema.clone())?;
             return Ok((schema, batches));
         }
         let gzipped = is_gzipped(&path);
@@ -718,6 +735,49 @@ mod tests {
         assert!(error
             .to_string()
             .contains("not supported for WARC segments"));
+    }
+
+    #[tokio::test]
+    async fn streams_glob_matches() {
+        let temp = TempDir::new().unwrap();
+        let temp = temp.path();
+        let nested = temp.join("nested");
+        tokio::fs::create_dir_all(&nested).await.unwrap();
+        let records = format!("{}{}", record(1, "first"), record(2, "second"));
+        tokio::fs::write(temp.join("a.warc.gz"), gzip(records.as_bytes()))
+            .await
+            .unwrap();
+        tokio::fs::write(nested.join("b.warc"), record(3, "third"))
+            .await
+            .unwrap();
+
+        let metrics = Arc::new(ReadMetrics::default());
+        let (_, stream) = WarcSource::new(format!("{}/**/*.warc*", temp.display()))
+            .with_batch_size(1)
+            .with_metrics(metrics.clone())
+            .open()
+            .await
+            .unwrap();
+        let mut glob_ids = ids(&stream.try_collect::<Vec<_>>().await.unwrap());
+        glob_ids.sort_unstable();
+        assert_eq!(glob_ids, ["<urn:uuid:1>", "<urn:uuid:2>", "<urn:uuid:3>"]);
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
+
+        // `*` does not cross directories, so nested/b.warc is not a match.
+        let error = WarcSource::new(format!("{}/*.warc", temp.display()))
+            .open()
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("no files match"));
+        let error = WarcSource::new(format!("{}/*.warc*", temp.display()))
+            .with_index_path(temp.join("index.cdxj").to_string_lossy())
+            .open()
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("not supported"));
     }
 
     #[tokio::test]

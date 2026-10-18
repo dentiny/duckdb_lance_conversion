@@ -92,6 +92,22 @@ SELECT count(*) FROM read_warc('test/data/crawl-data/CC-TEST/warc.paths.gz');
 ----
 crawl-data/CC-TEST/segments/10/warc/missing.warc
 
+# `**` crosses directories; `*` stays within one.
+query I
+SELECT count(*) FROM read_warc('test/data/crawl-data/**/*.warc*');
+----
+4
+
+query I
+SELECT count(*) FROM read_warc('test/data/records.warc*');
+----
+4
+
+statement error
+SELECT count(*) FROM read_warc('test/data/records.warc*', index_path = 'test/data/records.cdxj');
+----
+index_path is not supported for WARC segments or glob patterns
+
 statement error
 SELECT * FROM read_warc('gs://bucket/archive.warc');
 ----

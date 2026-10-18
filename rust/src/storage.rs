@@ -400,6 +400,97 @@ impl InputFile {
         }
         Ok(input)
     }
+
+    /// Lists the files matching a local or `s3://` glob `pattern`, sorted by
+    /// path. `*`, `?`, and `[...]` match within one path component, and a
+    /// `**` component matches any number of directories.
+    pub async fn glob(
+        pattern: &str,
+        s3_config: Option<&S3StorageConfig>,
+        opendal_config: &OpendalConfig,
+    ) -> Result<Vec<Self>> {
+        if is_http_uri(pattern) {
+            return Err(Error::message(format!(
+                "HTTP(S) URL must not include a glob pattern: {pattern}"
+            )));
+        }
+        // Only the literal directory before the first wildcard is listed.
+        let glob_start = pattern.find(GLOB_CHARS).unwrap_or(pattern.len());
+        let dir_end = pattern[..glob_start]
+            .rfind('/')
+            .map_or(0, |index| index + 1);
+        let (dir, relative_pattern) = pattern.split_at(dir_end);
+        let matcher = glob::Pattern::new(relative_pattern).map_err(|error| {
+            Error::message(format!("invalid glob pattern '{pattern}': {error}"))
+        })?;
+        let options = glob::MatchOptions {
+            case_sensitive: true,
+            require_literal_separator: true,
+            require_literal_leading_dot: false,
+        };
+
+        let storage = OpendalStorage::from_path(dir, s3_config, opendal_config)?;
+        let root = storage.object_path.to_string();
+        let (list_path, prefix) = if root.is_empty() {
+            ("/".to_owned(), String::new())
+        } else {
+            (format!("{root}/"), format!("{root}/"))
+        };
+        let uri_prefix = match storage.location.host_str() {
+            Some(bucket) if is_s3_uri(pattern) => format!("s3://{bucket}/"),
+            _ => "/".to_owned(),
+        };
+        let entries = match storage
+            .operator
+            .list_with(&list_path)
+            .recursive(relative_pattern.contains('/'))
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == opendal::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error).context(format!("listing {dir}")),
+        };
+        let mut paths = entries
+            .iter()
+            .map(opendal::Entry::path)
+            .filter(|path| {
+                path.strip_prefix(&prefix).is_some_and(|relative| {
+                    !relative.is_empty()
+                        && !relative.ends_with('/')
+                        && matcher.matches_with(relative, options)
+                })
+            })
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return Err(Error::message(format!("no files match {pattern}")));
+        }
+        paths.sort_unstable();
+        Ok(paths
+            .into_iter()
+            .map(|opendal_path| Self {
+                operator: storage.operator.clone(),
+                uri: format!("{uri_prefix}{opendal_path}"),
+                opendal_path,
+            })
+            .collect())
+    }
+}
+
+const GLOB_CHARS: [char; 3] = ['*', '?', '['];
+
+/// Returns true when `path` should be expanded by [`InputFile::glob`].
+pub(crate) fn has_glob(path: &str) -> bool {
+    if is_http_uri(path) {
+        path.contains(['*', '['])
+    } else {
+        path.contains(GLOB_CHARS)
+    }
+}
+
+fn is_http_uri(path: &str) -> bool {
+    let lowercase = path.get(..8).unwrap_or(path).to_ascii_lowercase();
+    lowercase.starts_with("http://") || lowercase.starts_with("https://")
 }
 
 /// Builds a read operator for files under the HTTP(S) `endpoint`.
@@ -431,4 +522,76 @@ pub(crate) fn huggingface_operator(
 pub(crate) fn is_s3_uri(path: &str) -> bool {
     path.get(..5)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("s3://"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn glob_names(root: &std::path::Path, pattern: &str) -> Result<Vec<String>> {
+        let pattern = format!("{}/{pattern}", root.display());
+        let files = InputFile::glob(&pattern, None, &OpendalConfig::default()).await?;
+        Ok(files
+            .into_iter()
+            .map(|file| {
+                assert_eq!(file.uri, format!("/{}", file.opendal_path));
+                file.uri
+                    .strip_prefix(&format!("{}/", root.display()))
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect())
+    }
+
+    #[tokio::test]
+    async fn globs_local_files() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        for file in ["b.jsonl", "a.jsonl", "c.json", "x/d.jsonl", "x/y/e.jsonl"] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+
+        assert_eq!(
+            glob_names(&root, "*.jsonl").await.unwrap(),
+            ["a.jsonl", "b.jsonl"]
+        );
+        assert_eq!(
+            glob_names(&root, "**/*.jsonl").await.unwrap(),
+            ["a.jsonl", "b.jsonl", "x/d.jsonl", "x/y/e.jsonl"]
+        );
+        assert_eq!(glob_names(&root, "x/*/*").await.unwrap(), ["x/y/e.jsonl"]);
+        assert_eq!(glob_names(&root, "[ac].json?").await.unwrap(), ["a.jsonl"]);
+        assert!(glob_names(&root, "*.csv")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no files match"));
+        assert!(glob_names(&root, "missing/*")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no files match"));
+    }
+
+    #[tokio::test]
+    async fn rejects_http_globs() {
+        let error = InputFile::glob(
+            "https://example.com/*.jsonl",
+            None,
+            &OpendalConfig::default(),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(error
+            .to_string()
+            .contains("must not include a glob pattern"));
+        assert!(has_glob("s3://bucket/a?.json"));
+        assert!(!has_glob("s3://bucket/a.json"));
+        assert!(has_glob("https://example.com/*.json"));
+        // `?` starts an HTTP query, which `InputFile::open` rejects.
+        assert!(!has_glob("https://example.com/a.json?x=1"));
+    }
 }

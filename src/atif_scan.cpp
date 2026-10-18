@@ -52,7 +52,7 @@ void RegisterAtifScanFunction(ExtensionLoader &loader) {
 	RegisterTableFunctionWithMetadata(
 	    loader, std::move(function),
 	    /*parameter_names=*/ {"path", "format"},
-	    /*description=*/"Reads ATIF agent trajectories from a local, S3, or HTTP(S) JSON or JSONL file, optionally gzipped.",
+	    /*description=*/"Reads ATIF agent trajectories from local, S3, or HTTP(S) JSON or JSONL files, optionally gzipped; local and S3 paths may be glob patterns.",
 	    /*examples=*/ {"SELECT * FROM read_atif('trajectories.jsonl');"},
 	    /*categories=*/ {"lance_conversion", "reader"});
 }
