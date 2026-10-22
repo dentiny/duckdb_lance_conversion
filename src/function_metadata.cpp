@@ -7,6 +7,12 @@ namespace duckdb {
 
 void RegisterTableFunctionWithMetadata(ExtensionLoader &loader, TableFunction function, vector<string> parameter_names,
                                        string description, vector<string> examples, vector<string> categories) {
+	auto &signature = function.GetSignature();
+	D_ASSERT(parameter_names.size() >= signature.GetPositionalParameterCount());
+	for (idx_t index = 0; index < signature.GetPositionalParameterCount(); index++) {
+		signature.GetParameter(index).SetName(Identifier(parameter_names[index]));
+	}
+
 	FunctionDescription metadata;
 	metadata.parameter_names = std::move(parameter_names);
 	metadata.description = std::move(description);
