@@ -66,9 +66,10 @@ void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
 		options.Add("config", LogicalType::VARCHAR);
 		options.Add("split", LogicalType::VARCHAR);
 		options.Add("preserve_insertion_order", LogicalType::BOOLEAN);
-		options.Add("read_ahead_bytes", LogicalType::UBIGINT);
 	});
 	SourceReadOptions::Register(function);
+	function.GetSignature().ExtendTypedKwargs(
+	    [](TypedKwargs &options) { options.Add("read_ahead_bytes", LogicalType::UBIGINT); });
 	RegisterTableFunctionWithMetadata(
 	    loader, std::move(function),
 	    /*parameter_names=*/
