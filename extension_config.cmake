@@ -19,5 +19,5 @@ if(BUILD_UNITTESTS)
   duckdb_extension_load(
     lance GIT_URL https://github.com/lance-format/lance-duckdb.git
     # Pin the upstream Lance reader used by the round-trip SQL tests.
-    GIT_TAG 9a5e06600d6aef53be1a2bae64619a4167bc4775 DONT_LINK)
+    GIT_TAG a7dd61895031a541e8e14e2427cdacdc430d0b1a DONT_LINK)
 endif()

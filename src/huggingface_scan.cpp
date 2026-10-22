@@ -15,7 +15,7 @@ namespace duckdb {
 namespace {
 
 unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBindInput &input,
-                                         vector<LogicalType> &return_types, vector<string> &names) {
+                                         vector<LogicalType> &return_types, vector<Identifier> &names) {
 	RejectNullParameters("read_huggingface", "dataset", input);
 	auto dataset = input.inputs[0].GetValue<string>();
 	auto config = string("default");

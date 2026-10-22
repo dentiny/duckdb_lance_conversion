@@ -15,7 +15,7 @@ namespace duckdb {
 namespace {
 
 unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput &input,
-                                  vector<LogicalType> &return_types, vector<string> &names) {
+                                  vector<LogicalType> &return_types, vector<Identifier> &names) {
 	RejectNullParameters("read_warc", "path", input);
 	auto path = input.inputs[0].GetValue<string>();
 	auto read_options = SourceReadOptions::From(input);

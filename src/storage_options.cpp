@@ -1,6 +1,7 @@
 #include "storage_options.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/identifier.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -8,12 +9,13 @@
 
 #include <cmath>
 #include <limits>
+#include <string_view>
 
 namespace duckdb {
 
 namespace {
 
-constexpr auto STORAGE_SETTING_PREFIX = "lance_conversion_storage_";
+constexpr std::string_view STORAGE_SETTING_PREFIX = "lance_conversion_storage_";
 
 template <bool ALLOW_ZERO>
 void SetStorageInteger(ClientContext &, SetScope, Value &value) {
@@ -34,7 +36,7 @@ template <typename T>
 T ReadStorageSetting(ClientContext &context, const char *suffix) {
 	auto name = string(STORAGE_SETTING_PREFIX) + suffix;
 	Value value;
-	if (!context.TryGetCurrentSetting(name, value)) {
+	if (!context.TryGetCurrentSetting(Identifier(name), value)) {
 		throw InternalException("Missing storage setting: %s", name);
 	}
 	return value.GetValue<T>();
@@ -46,7 +48,7 @@ void RegisterOpendalSettings(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	const auto defaults = lance_opendal_default_config();
 	auto register_integer = [&](const char *name, const char *description, uint64_t value, bool allow_zero = false) {
-		config.AddExtensionOption(string(STORAGE_SETTING_PREFIX) + name, description, LogicalType::BIGINT,
+		config.AddExtensionOption(Identifier(string(STORAGE_SETTING_PREFIX) + name), description, LogicalType::BIGINT,
 		                          Value::BIGINT(value),
 		                          allow_zero ? SetStorageInteger<true> : SetStorageInteger<false>);
 	};
@@ -56,7 +58,7 @@ void RegisterOpendalSettings(ExtensionLoader &loader) {
 	                 defaults.retry_max_times, true);
 	register_integer("retry_min_delay_ms", "Initial exponential retry backoff (ms)", defaults.retry_min_delay_ms);
 	register_integer("retry_max_delay_ms", "Maximum exponential retry backoff (ms)", defaults.retry_max_delay_ms);
-	config.AddExtensionOption(string(STORAGE_SETTING_PREFIX) + "retry_factor",
+	config.AddExtensionOption(Identifier(string(STORAGE_SETTING_PREFIX) + "retry_factor"),
 	                          "Storage exponential retry backoff multiplier for reads and writes", LogicalType::DOUBLE,
 	                          Value::DOUBLE(defaults.retry_factor), SetStorageRetryFactor);
 }
