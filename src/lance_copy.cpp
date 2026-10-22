@@ -4,7 +4,7 @@
 #include "lance_conversion.h"
 #include "duckdb/common/arrow/arrow_converter.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
-#include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/common/identifier.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/function/copy_function.hpp"
@@ -23,13 +23,14 @@
 
 #include <cmath>
 #include <tuple>
+#include <string_view>
 
 namespace duckdb {
 namespace {
 
 // Lance encoding settings for one column; an empty compression and unset level or encoding keep Lance's defaults.
 struct ColumnEncodingOptions {
-	string column;
+	Identifier column;
 	string compression;
 	bool has_compression_level = false;
 	int32_t compression_level = 0;
@@ -62,7 +63,7 @@ struct LanceBindData : public FunctionData {
 	}
 
 	// Source schema
-	vector<string> names;
+	vector<Identifier> names;
 	vector<LogicalType> types;
 	ClientProperties properties;
 	// Write mode and destination
@@ -76,9 +77,9 @@ struct LanceBindData : public FunctionData {
 	// Per-column encoding settings, at most one entry per column
 	vector<ColumnEncodingOptions> column_encodings;
 	// Blob columns
-	vector<string> blob_columns;
+	vector<Identifier> blob_columns;
 	// Indexes; index_kinds[i] applies to index_columns[i]
-	vector<string> index_columns;
+	vector<Identifier> index_columns;
 	vector<LanceIndexKind> index_kinds;
 
 	unique_ptr<FunctionData> Copy() const override {
@@ -96,7 +97,7 @@ struct LanceBindData : public FunctionData {
 		result->blob_columns = blob_columns;
 		result->index_columns = index_columns;
 		result->index_kinds = index_kinds;
-		return std::move(result);
+		return result;
 	}
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<LanceBindData>();
@@ -191,7 +192,7 @@ void ValidateDuckDBType(const LogicalType &type) {
 	}
 }
 
-int64_t ParseSizeOption(ClientContext &context, const string &name, const vector<Value> &values) {
+int64_t ParseSizeOption(ClientContext &context, const Identifier &name, const vector<Value> &values) {
 	if (values.size() != 1 || values[0].IsNull()) {
 		throw BinderException("%s requires one non-negative integer", name);
 	}
@@ -202,9 +203,9 @@ int64_t ParseSizeOption(ClientContext &context, const string &name, const vector
 	return value;
 }
 
-using ColumnIndexMap = case_insensitive_map_t<idx_t>;
+using ColumnIndexMap = identifier_map_t<idx_t>;
 
-ColumnIndexMap BuildColumnIndexMap(const vector<string> &names) {
+ColumnIndexMap BuildColumnIndexMap(const vector<Identifier> &names) {
 	ColumnIndexMap result;
 	for (idx_t index = 0; index < names.size(); index++) {
 		result.emplace(names[index], index);
@@ -212,19 +213,20 @@ ColumnIndexMap BuildColumnIndexMap(const vector<string> &names) {
 	return result;
 }
 
-vector<string> ParseBlobColumns(ClientContext &context, const vector<Value> &values, const vector<string> &names,
-                                const vector<LogicalType> &types, const ColumnIndexMap &column_indexes) {
+vector<Identifier> ParseBlobColumns(ClientContext &context, const vector<Value> &values,
+                                    const vector<Identifier> &names, const vector<LogicalType> &types,
+                                    const ColumnIndexMap &column_indexes) {
 	if (values.empty()) {
 		throw BinderException("BLOB_COLUMNS requires at least one column");
 	}
-	vector<string> result;
-	case_insensitive_set_t seen;
+	vector<Identifier> result;
+	identifier_set_t seen;
 	for (const auto &value : values) {
 		if (value.IsNull()) {
 			throw BinderException("BLOB_COLUMNS cannot contain NULL");
 		}
 		auto requested = value.CastAs(context, LogicalType::VARCHAR).GetValue<string>();
-		auto entry = column_indexes.find(requested);
+		auto entry = column_indexes.find(Identifier(requested));
 		if (entry == column_indexes.end()) {
 			throw BinderException("BLOB_COLUMNS column not found: %s", requested);
 		}
@@ -241,7 +243,7 @@ vector<string> ParseBlobColumns(ClientContext &context, const vector<Value> &val
 }
 
 struct IndexOptionSpec {
-	const char *name;
+	std::string_view name;
 	LanceIndexKind kind;
 };
 
@@ -252,9 +254,9 @@ constexpr IndexOptionSpec INDEX_OPTION_SPECS[] = {
     {"bloom_filter_index_columns", LANCE_INDEX_BLOOM_FILTER},
 };
 
-const IndexOptionSpec *FindIndexOption(const string &option_name) {
+const IndexOptionSpec *FindIndexOption(const Identifier &option_name) {
 	for (const auto &spec : INDEX_OPTION_SPECS) {
-		if (StringUtil::CIEquals(option_name, spec.name)) {
+		if (option_name == Identifier(spec.name)) {
 			return &spec;
 		}
 	}
@@ -262,19 +264,19 @@ const IndexOptionSpec *FindIndexOption(const string &option_name) {
 }
 
 // Appends each listed column, with the option's index kind, to the bind data's indexes.
-void ParseIndexColumns(ClientContext &context, const string &option_name, LanceIndexKind kind,
-                       const vector<Value> &values, const vector<string> &names, const ColumnIndexMap &column_indexes,
-                       LanceBindData &data) {
+void ParseIndexColumns(ClientContext &context, const Identifier &option_name, LanceIndexKind kind,
+                       const vector<Value> &values, const vector<Identifier> &names,
+                       const ColumnIndexMap &column_indexes, LanceBindData &data) {
 	if (values.empty()) {
 		throw BinderException("%s requires at least one column", option_name);
 	}
-	case_insensitive_set_t seen;
+	identifier_set_t seen;
 	for (const auto &value : values) {
 		if (value.IsNull()) {
 			throw BinderException("%s cannot contain NULL", option_name);
 		}
 		auto requested = value.CastAs(context, LogicalType::VARCHAR).GetValue<string>();
-		auto entry = column_indexes.find(requested);
+		auto entry = column_indexes.find(Identifier(requested));
 		if (entry == column_indexes.end()) {
 			throw BinderException("%s column not found: %s", option_name, requested);
 		}
@@ -287,7 +289,7 @@ void ParseIndexColumns(ClientContext &context, const string &option_name, LanceI
 	}
 }
 
-ColumnEncodingOptions &FindOrAddColumnEncoding(vector<ColumnEncodingOptions> &encodings, const string &column) {
+ColumnEncodingOptions &FindOrAddColumnEncoding(vector<ColumnEncodingOptions> &encodings, const Identifier &column) {
 	for (auto &encoding : encodings) {
 		if (encoding.column == column) {
 			return encoding;
@@ -300,18 +302,18 @@ ColumnEncodingOptions &FindOrAddColumnEncoding(vector<ColumnEncodingOptions> &en
 
 // Parses a struct option such as {'column': value}, applying each value to its column's encoding settings.
 template <class APPLY>
-void ParseColumnSettings(const string &option_name, const string &example, const string &value_name,
-                         const vector<Value> &values, const vector<string> &names, const ColumnIndexMap &column_indexes,
-                         vector<ColumnEncodingOptions> &encodings, APPLY apply) {
+void ParseColumnSettings(const Identifier &option_name, const string &example, const string &value_name,
+                         const vector<Value> &values, const vector<Identifier> &names,
+                         const ColumnIndexMap &column_indexes, vector<ColumnEncodingOptions> &encodings, APPLY apply) {
 	if (values.size() != 1 || values[0].type().id() != LogicalTypeId::STRUCT || values[0].IsNull()) {
 		throw BinderException("%s requires a struct such as %s", option_name, example);
 	}
 	auto &entries = StructType::GetChildTypes(values[0].type());
 	auto &children = StructValue::GetChildren(values[0]);
-	case_insensitive_set_t seen;
+	identifier_set_t seen;
 	for (idx_t i = 0; i < entries.size(); i++) {
 		const auto &requested = entries[i].first;
-		auto entry = column_indexes.find(requested);
+		auto entry = column_indexes.find(Identifier(requested));
 		if (entry == column_indexes.end()) {
 			throw BinderException("%s column not found: %s", option_name, requested);
 		}
@@ -330,7 +332,7 @@ string ParseStringSetting(ClientContext &context, const Value &value) {
 	return value.CastAs(context, LogicalType::VARCHAR).GetValue<string>();
 }
 
-string ParseCompression(ClientContext &context, const Value &value, const string &column) {
+string ParseCompression(ClientContext &context, const Value &value, const Identifier &column) {
 	auto compression = ParseStringSetting(context, value);
 	if (compression.empty()) {
 		throw BinderException("COLUMN_COMPRESSION algorithm cannot be empty: %s", column);
@@ -338,7 +340,7 @@ string ParseCompression(ClientContext &context, const Value &value, const string
 	return compression;
 }
 
-LanceStructuralEncoding ParseStructuralEncoding(ClientContext &context, const Value &value, const string &column) {
+LanceStructuralEncoding ParseStructuralEncoding(ClientContext &context, const Value &value, const Identifier &column) {
 	auto encoding = ParseStringSetting(context, value);
 	if (StringUtil::CIEquals(encoding, "miniblock")) {
 		return LANCE_STRUCTURAL_ENCODING_MINIBLOCK;
@@ -350,7 +352,7 @@ LanceStructuralEncoding ParseStructuralEncoding(ClientContext &context, const Va
 }
 
 // Lance silently ignores compression levels it cannot parse, so reject them here.
-int32_t ParseCompressionLevel(const Value &value, const string &column) {
+int32_t ParseCompressionLevel(const Value &value, const Identifier &column) {
 	Value level;
 	string error;
 	if (!value.type().IsIntegral() || !value.DefaultTryCastAs(LogicalType::INTEGER, level, &error)) {
@@ -360,8 +362,8 @@ int32_t ParseCompressionLevel(const Value &value, const string &column) {
 }
 
 void ValidateIndexColumns(const LanceBindData &data) {
-	case_insensitive_set_t blob_columns(data.blob_columns.begin(), data.blob_columns.end());
-	case_insensitive_set_t indexed;
+	identifier_set_t blob_columns(data.blob_columns.begin(), data.blob_columns.end());
+	identifier_set_t indexed;
 	for (const auto &column : data.index_columns) {
 		if (!indexed.insert(column).second) {
 			throw BinderException("Column cannot have multiple indexes in one COPY: %s", column);
@@ -372,8 +374,8 @@ void ValidateIndexColumns(const LanceBindData &data) {
 	}
 }
 
-unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput &input, const vector<string> &names,
-                                   const vector<LogicalType> &types) {
+unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput &input,
+                                   const vector<Identifier> &names, const vector<LogicalType> &types) {
 	auto result = make_uniq<LanceBindData>();
 	result->names = names;
 	result->types = types;
@@ -389,7 +391,7 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 	auto column_indexes = BuildColumnIndexMap(names);
 	bool has_write_mode = false;
 	for (auto &option : input.info.options) {
-		if (StringUtil::CIEquals(option.first, "overwrite") || StringUtil::CIEquals(option.first, "append")) {
+		if (option.first == "overwrite" || option.first == "append") {
 			if (has_write_mode) {
 				throw BinderException("Only one of OVERWRITE or APPEND can be specified");
 			}
@@ -400,51 +402,49 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			auto enabled =
 			    option.second.empty() || option.second[0].CastAs(context, LogicalType::BOOLEAN).GetValue<bool>();
 			if (enabled) {
-				result->mode = StringUtil::CIEquals(option.first, "overwrite") ? LANCE_WRITE_MODE_OVERWRITE
-				                                                               : LANCE_WRITE_MODE_APPEND;
+				result->mode = option.first == "overwrite" ? LANCE_WRITE_MODE_OVERWRITE : LANCE_WRITE_MODE_APPEND;
 			}
-		} else if (StringUtil::CIEquals(option.first, "blob_inline_size_threshold")) {
+		} else if (option.first == "blob_inline_size_threshold") {
 			result->blob_inline_size_threshold = ParseSizeOption(context, option.first, option.second);
-		} else if (StringUtil::CIEquals(option.first, "blob_dedicated_size_threshold")) {
+		} else if (option.first == "blob_dedicated_size_threshold") {
 			result->blob_dedicated_size_threshold = ParseSizeOption(context, option.first, option.second);
 			if (result->blob_dedicated_size_threshold == 0) {
 				throw BinderException("BLOB_DEDICATED_SIZE_THRESHOLD must be greater than zero");
 			}
-		} else if (StringUtil::CIEquals(option.first, "target_file_size")) {
+		} else if (option.first == "target_file_size") {
 			result->target_file_size = ParseSizeOption(context, option.first, option.second);
 			if (result->target_file_size == 0) {
 				throw BinderException("TARGET_FILE_SIZE must be greater than zero");
 			}
-		} else if (StringUtil::CIEquals(option.first, "storage_version")) {
+		} else if (option.first == "storage_version") {
 			if (option.second.size() != 1 || option.second[0].IsNull()) {
 				throw BinderException("STORAGE_VERSION requires one version string");
 			}
 			result->storage_version = option.second[0].CastAs(context, LogicalType::VARCHAR).GetValue<string>();
-		} else if (StringUtil::CIEquals(option.first, "column_compression")) {
+		} else if (option.first == "column_compression") {
 			ParseColumnSettings("COLUMN_COMPRESSION", /*example=*/"{'column': 'zstd'}", /*value_name=*/"algorithm",
 			                    option.second, names, column_indexes, result->column_encodings,
 			                    [&](ColumnEncodingOptions &encoding, const Value &value) {
 				                    encoding.compression = ParseCompression(context, value, encoding.column);
 			                    });
-		} else if (StringUtil::CIEquals(option.first, "column_compression_level")) {
+		} else if (option.first == "column_compression_level") {
 			ParseColumnSettings("COLUMN_COMPRESSION_LEVEL", /*example=*/"{'column': 3}", /*value_name=*/"level",
 			                    option.second, names, column_indexes, result->column_encodings,
 			                    [](ColumnEncodingOptions &encoding, const Value &value) {
 				                    encoding.has_compression_level = true;
 				                    encoding.compression_level = ParseCompressionLevel(value, encoding.column);
 			                    });
-		} else if (StringUtil::CIEquals(option.first, "column_structural_encoding")) {
+		} else if (option.first == "column_structural_encoding") {
 			ParseColumnSettings("COLUMN_STRUCTURAL_ENCODING", /*example=*/"{'column': 'miniblock'}",
 			                    /*value_name=*/"encoding", option.second, names, column_indexes,
 			                    result->column_encodings, [&](ColumnEncodingOptions &encoding, const Value &value) {
 				                    encoding.structural_encoding =
 				                        ParseStructuralEncoding(context, value, encoding.column);
 			                    });
-		} else if (StringUtil::CIEquals(option.first, "blob_columns")) {
+		} else if (option.first == "blob_columns") {
 			result->blob_columns = ParseBlobColumns(context, option.second, names, types, column_indexes);
 		} else if (auto index_option = FindIndexOption(option.first)) {
-			ParseIndexColumns(context, option.first, index_option->kind, option.second, names, column_indexes,
-			                  *result);
+			ParseIndexColumns(context, option.first, index_option->kind, option.second, names, column_indexes, *result);
 		} else {
 			throw BinderException("Unsupported option for FORMAT LANCE: %s", option.first);
 		}
@@ -456,19 +456,19 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			throw BinderException("FORMAT LANCE supports only local and s3:// destinations");
 		}
 		result->s3 = true;
-		return std::move(result);
+		return result;
 	}
 	if (result->mode == LANCE_WRITE_MODE_CREATE && (fs.FileExists(fs.ExpandPath(input.info.file_path)) ||
 	                                                fs.DirectoryExists(fs.ExpandPath(input.info.file_path)))) {
 		throw IOException("Lance destination must not exist: %s", input.info.file_path);
 	}
-	return std::move(result);
+	return result;
 }
 
 unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionData &bind_p, const string &path) {
 	auto &bind = bind_p.Cast<LanceBindData>();
 	ArrowSchemaWrapper schema;
-	ArrowConverter::ToArrowSchema(&schema.arrow_schema, bind.types, bind.names, bind.properties);
+	ArrowConverter::ToArrowSchema(&schema.arrow_schema, bind.types, IdentifiersToStrings(bind.names), bind.properties);
 	auto state = make_uniq<LanceGlobalState>();
 	auto write_config = lance_write_default_config();
 	write_config.mode = bind.mode;
@@ -476,7 +476,7 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	write_config.blob_dedicated_size_threshold = bind.blob_dedicated_size_threshold;
 	write_config.target_file_size = bind.target_file_size;
 	write_config.storage_version = bind.storage_version.empty() ? nullptr : bind.storage_version.c_str();
-	auto string_pointers = [](const vector<string> &columns) {
+	auto string_pointers = [](const vector<Identifier> &columns) {
 		vector<const char *> result;
 		for (const auto &column : columns) {
 			result.push_back(column.c_str());
@@ -508,7 +508,7 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	ThrowIfLanceError(lance_conversion_open(path.c_str(), &schema.arrow_schema, &write_config,
 	                                        s3 ? &s3->config : nullptr, &opendal_config, &state->dataset),
 	                  "Lance conversion");
-	return std::move(state);
+	return state;
 }
 
 unique_ptr<LocalFunctionData> LanceLocalInitialize(ExecutionContext &context, FunctionData &bind) {
@@ -537,7 +537,7 @@ unique_ptr<PreparedBatchData> LancePrepareBatch(ClientContext &context, Function
                                                 unique_ptr<ColumnDataCollection> collection) {
 	auto result = make_uniq<LancePreparedBatch>();
 	result->collection = std::move(collection);
-	return std::move(result);
+	return result;
 }
 
 // DuckDB calls this for one batch at a time, in batch index order.
@@ -563,8 +563,8 @@ void LanceFinalize(ClientContext &context, FunctionData &bind, GlobalFunctionDat
 	LanceWriteMetrics metrics;
 	lance_conversion_get_metrics(global.dataset, &metrics);
 	auto &profiler = QueryProfiler::Get(context);
-	profiler.AddToCounter(MetricType::TOTAL_BYTES_READ, metrics.bytes_read);
-	profiler.AddToCounter(MetricType::TOTAL_BYTES_WRITTEN, metrics.bytes_written);
+	profiler.TrackBytesRead(metrics.bytes_read);
+	profiler.TrackBytesWritten(metrics.bytes_written);
 }
 
 CopyFunctionExecutionMode LanceExecutionMode(bool preserve_insertion_order, bool supports_batch_index) {
@@ -595,7 +595,7 @@ CopyFunction MakeLanceCopyFunction() {
 enum class SampleKind : uint8_t { PERCENT, ROWS };
 
 struct SampleOptionSpec {
-	const char *name;
+	std::string_view name;
 	SampleKind kind;
 };
 
@@ -642,7 +642,7 @@ SampleMethod GetSampleMethod(SampleKind kind) {
 unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &info) {
 	unique_ptr<SampleOptions> sample;
 	for (const auto &spec : SAMPLE_OPTION_SPECS) {
-		auto entry = info.options.find(spec.name);
+		auto entry = info.options.find(Identifier(spec.name));
 		if (entry == info.options.end()) {
 			continue;
 		}
@@ -650,7 +650,7 @@ unique_ptr<SampleOptions> TakeSampleOptions(ClientContext &context, CopyInfo &in
 			throw BinderException("Only one of SAMPLE_PERCENT or SAMPLE_ROWS can be specified");
 		}
 		if (entry->second.size() != 1 || entry->second[0].IsNull()) {
-			throw BinderException("%s requires one value", StringUtil::Upper(spec.name));
+			throw BinderException("%s requires one value", StringUtil::Upper(string(spec.name)));
 		}
 		sample = make_uniq<SampleOptions>();
 		sample->sample_size = ParseSampleSize(context, spec.kind, entry->second);
@@ -668,7 +668,7 @@ unique_ptr<QueryNode> ApplySample(unique_ptr<QueryNode> query, unique_ptr<Sample
 	result->select_list.push_back(make_uniq<StarExpression>());
 	result->from_table = make_uniq<SubqueryRef>(std::move(subquery));
 	result->sample = std::move(sample);
-	return std::move(result);
+	return result;
 }
 
 // Own the plan so DuckDB file rotation/overwrite options cannot operate on a dataset directory.
@@ -684,7 +684,7 @@ BoundStatement LancePlan(Binder &binder, CopyStatement &statement) {
 	QueryResult::DeduplicateColumns(source.names);
 	CopyFunctionBindInput input(*info);
 	auto data = LanceBind(binder.context, input, source.names, source.types);
-	auto copy = make_uniq<LogicalCopyToFile>(function, std::move(data), std::move(info));
+	auto copy = make_uniq<LogicalCopyToFile>(function, std::move(data), std::move(info), binder.GenerateTableIndex());
 	copy->file_path = statement.info->file_path;
 	copy->file_extension = "lance";
 	copy->use_tmp_file = false;

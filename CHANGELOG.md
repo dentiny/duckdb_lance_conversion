@@ -1,3 +1,14 @@
+# 0.2.0
+
+## Changed
+
+- Upgrade DuckDB to `v2.0.0`, extension-ci-tools to current main, and the Lance reader used by round-trip SQL tests to its current DuckDB v2-compatible revision.
+- Use DuckDB's owned Arrow scan factory API and SQL identifiers for source and COPY column names, with string conversion only at Arrow and Rust FFI boundaries.
+- Register optional reader parameters through DuckDB v2 typed keyword options, preserving their existing defaults and NULL validation.
+- Migrate profiling counters and the profiling SQL test to DuckDB v2 metric APIs and names. Reuse DuckDB's Arrow partition callback instead of duplicating it.
+- Use C++17 string views for static setting and option names and preserve a newer C++ standard selected by the host build.
+- Align Cargo, extension metadata, and the fallback extension version at `0.2.0`.
+
 # 0.1.5
 
 ## Added

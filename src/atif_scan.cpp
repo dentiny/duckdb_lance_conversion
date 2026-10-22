@@ -16,7 +16,7 @@ namespace duckdb {
 namespace {
 
 unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput &input,
-                                  vector<LogicalType> &return_types, vector<string> &names) {
+                                  vector<LogicalType> &return_types, vector<Identifier> &names) {
 	RejectNullParameters("read_atif", "path", input);
 	// Trajectories must keep their file order, which DuckDB may otherwise reorder across threads.
 	if (!Settings::Get<PreserveInsertionOrderSetting>(context)) {
@@ -48,11 +48,13 @@ unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput
 
 void RegisterAtifScanFunction(ExtensionLoader &loader) {
 	auto function = SourceStreamTableFunction("read_atif", BindAtif);
-	function.named_parameters["format"] = LogicalType::VARCHAR;
+	function.GetSignature().WithTypedKwargs("options",
+	                                        [](TypedKwargs &options) { options.Add("format", LogicalType::VARCHAR); });
 	RegisterTableFunctionWithMetadata(
 	    loader, std::move(function),
 	    /*parameter_names=*/ {"path", "format"},
-	    /*description=*/"Reads ATIF agent trajectories from a local, S3, or HTTP(S) JSON or JSONL file, optionally gzipped.",
+	    /*description=*/
+	    "Reads ATIF agent trajectories from a local, S3, or HTTP(S) JSON or JSONL file, optionally gzipped.",
 	    /*examples=*/ {"SELECT * FROM read_atif('trajectories.jsonl');"},
 	    /*categories=*/ {"lance_conversion", "reader"});
 }
