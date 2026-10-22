@@ -353,12 +353,11 @@ LanceStructuralEncoding ParseStructuralEncoding(ClientContext &context, const Va
 
 // Lance silently ignores compression levels it cannot parse, so reject them here.
 int32_t ParseCompressionLevel(const Value &value, const Identifier &column) {
-	Value level;
-	string error;
-	if (!value.type().IsIntegral() || !value.DefaultTryCastAs(LogicalType::INTEGER, level, &error)) {
+	auto level = value.DefaultTryCastAs(LogicalType::INTEGER);
+	if (!value.type().IsIntegral() || !level) {
 		throw BinderException("COLUMN_COMPRESSION_LEVEL level must be an integer: %s", column);
 	}
-	return level.GetValue<int32_t>();
+	return level->GetValue<int32_t>();
 }
 
 void ValidateIndexColumns(const LanceBindData &data) {
