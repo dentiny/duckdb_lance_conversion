@@ -1,5 +1,9 @@
 # 0.2.0
 
+## Fixed
+
+- Remove the obsolete DONT_LINK option from the optional Lance test dependency so DuckDB v2 configuration succeeds with unit tests enabled.
+
 ## Changed
 
 - Upgrade DuckDB to `v2.0.0`, extension-ci-tools to current main, and the Lance reader used by round-trip SQL tests to its current DuckDB v2-compatible revision.
