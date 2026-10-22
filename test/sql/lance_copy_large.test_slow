@@ -24,9 +24,9 @@ statement ok
 SET preserve_insertion_order = false;
 
 query II
-EXPLAIN COPY (SELECT * FROM source) TO '__TEST_DIR__/large_explain.lance' (FORMAT LANCE);
+EXPLAIN (FORMAT JSON) COPY (SELECT * FROM source) TO '__TEST_DIR__/large_explain.lance' (FORMAT LANCE);
 ----
-physical_plan	<!REGEX>:.*BATCH_COPY_TO_FILE.*
+physical_plan	<!REGEX>:(?s).*"name":[[:space:]]*"BATCH_COPY_TO_FILE".*
 
 query I
 COPY (SELECT * FROM source) TO '__TEST_DIR__/large_parallel.lance' (FORMAT LANCE);
@@ -81,9 +81,9 @@ statement ok
 SET preserve_insertion_order = true;
 
 query II
-EXPLAIN COPY (SELECT * FROM source) TO '__TEST_DIR__/large_explain.lance' (FORMAT LANCE);
+EXPLAIN (FORMAT JSON) COPY (SELECT * FROM source) TO '__TEST_DIR__/large_explain.lance' (FORMAT LANCE);
 ----
-physical_plan	<REGEX>:.*BATCH_COPY_TO_FILE.*
+physical_plan	<REGEX>:(?s).*"name":[[:space:]]*"BATCH_COPY_TO_FILE".*
 
 query I
 COPY (SELECT * FROM source) TO '__TEST_DIR__/large_ordered.lance' (FORMAT LANCE);
