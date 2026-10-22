@@ -20,7 +20,8 @@ SourceReadOptions SourceReadOptions::From(const TableFunctionBindInput &input) {
 }
 
 void SourceReadOptions::Register(TableFunction &function) {
-	function.named_parameters["max_read_parallelism"] = LogicalType::UBIGINT;
+	function.GetSignature().ExtendTypedKwargs(
+	    [](TypedKwargs &options) { options.Add("max_read_parallelism", LogicalType::UBIGINT); });
 }
 
 void RejectNullParameters(const string &function_name, const string &argument_name,

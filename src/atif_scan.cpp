@@ -48,7 +48,8 @@ unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput
 
 void RegisterAtifScanFunction(ExtensionLoader &loader) {
 	auto function = SourceStreamTableFunction("read_atif", BindAtif);
-	function.named_parameters["format"] = LogicalType::VARCHAR;
+	function.GetSignature().WithTypedKwargs("options",
+	                                        [](TypedKwargs &options) { options.Add("format", LogicalType::VARCHAR); });
 	RegisterTableFunctionWithMetadata(
 	    loader, std::move(function),
 	    /*parameter_names=*/ {"path", "format"},

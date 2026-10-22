@@ -62,10 +62,12 @@ unique_ptr<FunctionData> BindHuggingFace(ClientContext &context, TableFunctionBi
 
 void RegisterHuggingFaceScanFunction(ExtensionLoader &loader) {
 	auto function = SourceStreamTableFunction("read_huggingface", BindHuggingFace);
-	function.named_parameters["config"] = LogicalType::VARCHAR;
-	function.named_parameters["split"] = LogicalType::VARCHAR;
-	function.named_parameters["preserve_insertion_order"] = LogicalType::BOOLEAN;
-	function.named_parameters["read_ahead_bytes"] = LogicalType::UBIGINT;
+	function.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("config", LogicalType::VARCHAR);
+		options.Add("split", LogicalType::VARCHAR);
+		options.Add("preserve_insertion_order", LogicalType::BOOLEAN);
+		options.Add("read_ahead_bytes", LogicalType::UBIGINT);
+	});
 	SourceReadOptions::Register(function);
 	RegisterTableFunctionWithMetadata(
 	    loader, std::move(function),

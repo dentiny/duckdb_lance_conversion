@@ -53,7 +53,8 @@ unique_ptr<FunctionData> BindWarc(ClientContext &context, TableFunctionBindInput
 
 void RegisterWarcScanFunction(ExtensionLoader &loader) {
 	auto function = SourceStreamTableFunction("read_warc", BindWarc);
-	function.named_parameters["index_path"] = LogicalType::VARCHAR;
+	function.GetSignature().WithTypedKwargs(
+	    "options", [](TypedKwargs &options) { options.Add("index_path", LogicalType::VARCHAR); });
 	SourceReadOptions::Register(function);
 	RegisterTableFunctionWithMetadata(
 	    loader, std::move(function),
