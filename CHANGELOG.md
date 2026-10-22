@@ -2,6 +2,7 @@
 
 ## Fixed
 
+- Use the optional-result cast API for compression levels and include the client context directly for Hugging Face secret lookup on DuckDB v2.
 - Remove the obsolete DONT_LINK option from the optional Lance test dependency so DuckDB v2 configuration succeeds with unit tests enabled.
 
 ## Changed
