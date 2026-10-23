@@ -7,10 +7,6 @@ require lance_conversion
 statement ok
 SET threads = 4;
 
-# Keep every executed operator visible regardless of profiling timings.
-statement ok
-SET profiling_renderer_settings = MAP {'expand_all': true};
-
 # Verify the executed COPY uses the batch-index path.
 query II
 EXPLAIN ANALYZE COPY (

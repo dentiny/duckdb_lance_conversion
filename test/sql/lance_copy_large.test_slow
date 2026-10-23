@@ -7,10 +7,6 @@ require lance_conversion
 statement ok
 SET threads = 8;
 
-# Keep every executed operator visible regardless of profiling timings.
-statement ok
-SET profiling_renderer_settings = MAP {'expand_all': true};
-
 # 10M rows span ~80 row groups, so the table scan feeds many threads and supports batch indexes.
 statement ok
 CREATE TABLE source AS
