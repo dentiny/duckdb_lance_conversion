@@ -21,10 +21,10 @@ bytes = "1"
 datafusion-physical-plan = "54"
 futures = "0.3"
 flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
-lance = { git = "https://github.com/lance-format/lance.git", rev = "b94b20c785caadc3c95239af0108eaed8b35a118", default-features = false }
-lance-index = { git = "https://github.com/lance-format/lance.git", rev = "b94b20c785caadc3c95239af0108eaed8b35a118" }
-lance-io = { git = "https://github.com/lance-format/lance.git", rev = "b94b20c785caadc3c95239af0108eaed8b35a118", default-features = false }
-lance-linalg = { git = "https://github.com/lance-format/lance.git", rev = "b94b20c785caadc3c95239af0108eaed8b35a118" }
+lance = { git = "https://github.com/lance-format/lance.git", rev = "fb70d38c916fc24f6d55e24d96dafbf86f916db7", default-features = false }
+lance-index = { git = "https://github.com/lance-format/lance.git", rev = "fb70d38c916fc24f6d55e24d96dafbf86f916db7" }
+lance-io = { git = "https://github.com/lance-format/lance.git", rev = "fb70d38c916fc24f6d55e24d96dafbf86f916db7", default-features = false }
+lance-linalg = { git = "https://github.com/lance-format/lance.git", rev = "fb70d38c916fc24f6d55e24d96dafbf86f916db7" }
 object_store = "0.14"
 object_store_opendal = "0.60"
 opendal = { version = "0.59.3", default-features = false, features = ["executors-tokio", "http-transport-reqwest", "layers-retry", "layers-timeout", "services-fs", "services-hf", "services-http", "services-s3"] }
@@ -41,6 +41,10 @@ warc-rs = { git = "https://github.com/dentiny/warc-rs", rev = "728fb6d8852c40feb
 tokio = { version = "1", features = ["io-util", "macros"] }
 arrow-select = "58"
 tempfile = "3"
+
+[patch.crates-io]
+# Match Lance's patch: its multipart writer uses an API not in the registry release.
+object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c10758c207c0103355f940f0c736fb8ecb157b04" }
 
 [profile.dev]
 debug = 0
