@@ -7,18 +7,13 @@ require lance_conversion
 statement ok
 SET threads = 4;
 
-# read_warc supports batch indexes, so an order-preserving COPY runs in parallel.
+# Verify the executed COPY uses the batch-index path.
 query II
-EXPLAIN COPY (SELECT * FROM read_warc('test/data/records.warc')) TO '__TEST_DIR__/warc_explain.lance' (FORMAT LANCE);
-----
-physical_plan	<REGEX>:.*BATCH_COPY_TO_FILE.*
-
-query I
-COPY (
+EXPLAIN ANALYZE COPY (
     SELECT * FROM read_warc('test/data/records.warc')
 ) TO '__TEST_DIR__/warc.lance' (FORMAT LANCE);
 ----
-2
+analyzed_plan	<REGEX>:.*Batch Copy To File.*
 
 query I
 COPY (
