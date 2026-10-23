@@ -21,10 +21,10 @@ bytes = "1"
 datafusion-physical-plan = "54"
 futures = "0.3"
 flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
-lance = { git = "https://github.com/lance-format/lance.git", rev = "fb70d38c916fc24f6d55e24d96dafbf86f916db7", default-features = false }
-lance-index = { git = "https://github.com/lance-format/lance.git", rev = "fb70d38c916fc24f6d55e24d96dafbf86f916db7" }
-lance-io = { git = "https://github.com/lance-format/lance.git", rev = "fb70d38c916fc24f6d55e24d96dafbf86f916db7", default-features = false }
-lance-linalg = { git = "https://github.com/lance-format/lance.git", rev = "fb70d38c916fc24f6d55e24d96dafbf86f916db7" }
+lance = { git = "https://github.com/lance-format/lance.git", rev = "8fb3be66e5bab97c86754010dbe817507a1d7279", default-features = false }
+lance-index = { git = "https://github.com/lance-format/lance.git", rev = "8fb3be66e5bab97c86754010dbe817507a1d7279" }
+lance-io = { git = "https://github.com/lance-format/lance.git", rev = "8fb3be66e5bab97c86754010dbe817507a1d7279", default-features = false }
+lance-linalg = { git = "https://github.com/lance-format/lance.git", rev = "8fb3be66e5bab97c86754010dbe817507a1d7279" }
 object_store = "0.14"
 object_store_opendal = "0.60"
 opendal = { version = "0.59.3", default-features = false, features = ["executors-tokio", "http-transport-reqwest", "layers-retry", "layers-timeout", "services-fs", "services-hf", "services-http", "services-s3"] }
