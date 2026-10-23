@@ -34,18 +34,14 @@ FROM read_json_auto('__TEST_DIR__/lance_profile.json');
 ----
 true	true
 
+# Operator metrics vary by node, so walk JSON without inferring a recursive STRUCT type.
 statement ok
 CREATE VIEW profiled_operators AS
-WITH RECURSIVE operators AS (
-    SELECT unnest(operator) AS scan_operator
-    FROM read_json_auto('__TEST_DIR__/lance_profile.json')
-    UNION ALL
-    SELECT unnest(scan_operator.children)
-    FROM operators
-    WHERE len(scan_operator.children) > 0
-)
-SELECT scan_operator.type AS operator_type, scan_operator.rows_scanned AS operator_rows_scanned
-FROM operators;
+SELECT node.value->>'type' AS operator_type,
+       (node.value->>'rows_scanned')::UBIGINT AS operator_rows_scanned
+FROM read_json_objects('__TEST_DIR__/lance_profile.json') AS profile,
+     json_tree(profile.json) AS node
+WHERE node.type = 'OBJECT';
 
 query I
 SELECT sum(operator_rows_scanned)
