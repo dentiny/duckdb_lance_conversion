@@ -7,18 +7,17 @@ require lance_conversion
 statement ok
 SET threads = 4;
 
-# read_huggingface supports batch indexes, so an order-preserving COPY runs in parallel.
-query II
-EXPLAIN (FORMAT JSON) COPY (SELECT * FROM read_huggingface('lhoestq/demo1')) TO '__TEST_DIR__/huggingface_explain.lance' (FORMAT LANCE);
-----
-physical_plan	<REGEX>:(?s).*"name":[[:space:]]*"BATCH_COPY_TO_FILE".*
+# Keep every executed operator visible regardless of profiling timings.
+statement ok
+SET profiling_renderer_settings = MAP {'expand_all': true};
 
-query I
-COPY (
+# Verify the executed COPY uses the batch-index path.
+query II
+EXPLAIN ANALYZE COPY (
     SELECT * FROM read_huggingface('lhoestq/demo1')
 ) TO '__TEST_DIR__/huggingface.lance' (FORMAT LANCE);
 ----
-5
+analyzed_plan	<REGEX>:.*Batch Copy To File.*
 
 query I
 SELECT count(*) > 0 FROM glob('__TEST_DIR__/huggingface.lance/_versions/*');
@@ -115,6 +114,11 @@ restart no_extension_load
 
 statement ok
 LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query I
+SELECT count(*) FROM '__TEST_DIR__/huggingface.lance';
+----
+5
 
 query I
 SELECT count(*) FROM '__TEST_DIR__/huggingface_sample_rows.lance';

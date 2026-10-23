@@ -7,6 +7,10 @@ require lance_conversion
 statement ok
 SET threads = 8;
 
+# Keep every executed operator visible regardless of profiling timings.
+statement ok
+SET profiling_renderer_settings = MAP {'expand_all': true};
+
 # 10M rows span ~80 row groups, so the table scan feeds many threads and supports batch indexes.
 statement ok
 CREATE TABLE source AS
@@ -24,14 +28,9 @@ statement ok
 SET preserve_insertion_order = false;
 
 query II
-EXPLAIN (FORMAT JSON) COPY (SELECT * FROM source) TO '__TEST_DIR__/large_explain.lance' (FORMAT LANCE);
+EXPLAIN ANALYZE COPY (SELECT * FROM source) TO '__TEST_DIR__/large_parallel.lance' (FORMAT LANCE);
 ----
-physical_plan	<!REGEX>:(?s).*"name":[[:space:]]*"BATCH_COPY_TO_FILE".*
-
-query I
-COPY (SELECT * FROM source) TO '__TEST_DIR__/large_parallel.lance' (FORMAT LANCE);
-----
-10000000
+analyzed_plan	<!REGEX>:.*Batch Copy To File.*
 
 query I
 COPY (SELECT * FROM source WHERE id < 5000000) TO '__TEST_DIR__/large_append.lance' (FORMAT LANCE);
@@ -81,14 +80,9 @@ statement ok
 SET preserve_insertion_order = true;
 
 query II
-EXPLAIN (FORMAT JSON) COPY (SELECT * FROM source) TO '__TEST_DIR__/large_explain.lance' (FORMAT LANCE);
+EXPLAIN ANALYZE COPY (SELECT * FROM source) TO '__TEST_DIR__/large_ordered.lance' (FORMAT LANCE);
 ----
-physical_plan	<REGEX>:(?s).*"name":[[:space:]]*"BATCH_COPY_TO_FILE".*
-
-query I
-COPY (SELECT * FROM source) TO '__TEST_DIR__/large_ordered.lance' (FORMAT LANCE);
-----
-10000000
+analyzed_plan	<REGEX>:.*Batch Copy To File.*
 
 # Each COPY is one dataset version, no matter how many writers produced fragments.
 
