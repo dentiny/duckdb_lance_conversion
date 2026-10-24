@@ -12,7 +12,15 @@ use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 // Each row holds a whole trajectory, including its raw JSON, so batches are
 // bounded by row count much more tightly than for flat sources.
 const BATCH_SIZE: usize = 256;
+mod media;
+pub use media::AtifMediaOptions;
+use media::MediaResolver;
+
 pub fn atif_schema() -> SchemaRef {
+    media::embedded_schema()
+}
+
+pub(crate) fn atif_reference_schema() -> SchemaRef {
     atif_arrow::trajectory_schema()
 }
 
@@ -45,6 +53,7 @@ pub struct AtifSource {
     opendal_config: OpendalConfig,
     projection: Option<Vec<usize>>,
     metrics: Arc<ReadMetrics>,
+    media_options: AtifMediaOptions,
 }
 
 impl AtifSource {
@@ -56,6 +65,7 @@ impl AtifSource {
             opendal_config: OpendalConfig::default(),
             projection: None,
             metrics: Arc::new(ReadMetrics::default()),
+            media_options: AtifMediaOptions::default(),
         }
     }
 
@@ -76,6 +86,11 @@ impl AtifSource {
         self
     }
 
+    pub fn with_media_options(mut self, options: AtifMediaOptions) -> Self {
+        self.media_options = options;
+        self
+    }
+
     /// Top-level column indices in output order; empty reads every column.
     pub fn with_projection(mut self, projection: Vec<usize>) -> Self {
         self.projection = Some(projection);
@@ -90,9 +105,14 @@ impl AtifSource {
 
 impl BatchSource for AtifSource {
     async fn open(self) -> Result<(SchemaRef, BatchStream)> {
+        let media_options = self.media_options.validate()?;
         let input = InputFile::open(&self.path, self.s3_config.as_ref(), &self.opendal_config)?;
         let format = input_format(&input.opendal_path, self.format.as_deref())?;
-        let full_schema = atif_schema();
+        let full_schema = if media_options.resolve_media {
+            atif_schema()
+        } else {
+            atif_reference_schema()
+        };
         let projection = self.projection.filter(|projection| !projection.is_empty());
         let schema = match &projection {
             Some(projection) => Arc::new(full_schema.project(projection)?),
@@ -104,18 +124,52 @@ impl BatchSource for AtifSource {
             .await?
             .content_length();
         self.metrics.set_total_bytes(size);
-        let reader = read_object(&input.operator, &input.opendal_path, size, self.metrics).await?;
+        let reader = read_object(
+            &input.operator,
+            &input.opendal_path,
+            size,
+            self.metrics.clone(),
+        )
+        .await?;
         let reader = decompressed_input(reader, is_gzipped(&input.opendal_path));
-        let reader = TrajectoryReader::new(reader, format, BATCH_SIZE, Some(input.uri))
+        let media_index = atif_schema().index_of("steps")?;
+        let needs_media = media_options.resolve_media
+            && projection
+                .as_ref()
+                .is_none_or(|columns| columns.contains(&media_index));
+        // One full document per batch when media is projected. Avoid buffering
+        // hundreds of MB-scale trajectories in the parser's parallel queue.
+        let batch_size = if needs_media { 1 } else { BATCH_SIZE };
+        let reader = TrajectoryReader::new(reader, format, batch_size, Some(input.uri.clone()))
             .map_err(|error| Error::message(format!("ATIF reader: {error}")))?;
-        // The ATIF converter always produces every column; projection only
-        // trims the batches DuckDB receives.
+        let resolver = MediaResolver {
+            document: input.uri,
+            options: media_options,
+            s3_config: self.s3_config,
+            opendal_config: self.opendal_config,
+            metrics: self.metrics,
+        };
+        let parallelism = if needs_media {
+            1
+        } else {
+            std::thread::available_parallelism().map_or(1, usize::from)
+        };
         let batches = reader
-            .into_parallel_stream(std::thread::available_parallelism().map_or(1, usize::from))
+            .into_parallel_stream(parallelism)
             .map_err(|error| Error::message(format!("ATIF read error: {error}")))
-            .map(move |batch| match &projection {
-                Some(projection) => Ok(batch?.project(projection)?),
-                None => batch,
+            .then(move |batch| {
+                let resolver = resolver.clone();
+                let projection = projection.clone();
+                async move {
+                    let mut batch = batch?;
+                    if needs_media {
+                        batch = resolver.resolve(batch, atif_schema()).await?;
+                    }
+                    match projection {
+                        Some(columns) => Ok(batch.project(&columns)?),
+                        None => Ok(batch),
+                    }
+                }
             });
         Ok((schema, Box::pin(batches)))
     }
@@ -225,8 +279,15 @@ mod tests {
             .await
             .unwrap();
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
-        let indices = column::<UInt64Array>(&batches[0], "source_record_index");
-        assert_eq!(indices.values(), &[1, 2]);
+        let indices = batches
+            .iter()
+            .flat_map(|batch| {
+                column::<UInt64Array>(batch, "source_record_index")
+                    .values()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(indices, vec![1, 2]);
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
     }

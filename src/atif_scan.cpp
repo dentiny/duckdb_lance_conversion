@@ -36,9 +36,25 @@ unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput
 		throw BinderException("read_atif supports only local, s3://, and http(s):// paths");
 	}
 
+	LanceAtifOptions media_options {1, 268435456, 2147483648};
+	auto resolve_entry = input.named_parameters.find("resolve_media");
+	if (resolve_entry != input.named_parameters.end()) {
+		media_options.resolve_media = resolve_entry->second.GetValue<bool>() ? 1 : 0;
+	}
+	auto max_media_entry = input.named_parameters.find("max_media_bytes");
+	if (max_media_entry != input.named_parameters.end()) {
+		media_options.max_media_bytes = max_media_entry->second.GetValue<uint64_t>();
+	}
+	auto max_total_entry = input.named_parameters.find("max_trajectory_media_bytes");
+	if (max_total_entry != input.named_parameters.end()) {
+		media_options.max_trajectory_media_bytes = max_total_entry->second.GetValue<uint64_t>();
+	}
+	if (media_options.max_media_bytes == 0 || media_options.max_trajectory_media_bytes == 0) {
+		throw BinderException("ATIF media byte limits must be positive");
+	}
 	auto opendal_config = ReadOpendalConfig(context);
 	SourceStreamFactory *factory = nullptr;
-	ThrowIfLanceError(lance_atif_open(path.c_str(), format.empty() ? nullptr : format.c_str(),
+	ThrowIfLanceError(lance_atif_open(path.c_str(), format.empty() ? nullptr : format.c_str(), &media_options,
 	                                  s3 ? &s3->config : nullptr, &opendal_config, &factory),
 	                  "ATIF reader");
 	return BindSourceStream(context, factory, return_types, names);
@@ -48,13 +64,18 @@ unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput
 
 void RegisterAtifScanFunction(ExtensionLoader &loader) {
 	auto function = SourceStreamTableFunction("read_atif", BindAtif);
-	function.GetSignature().WithTypedKwargs("options",
-	                                        [](TypedKwargs &options) { options.Add("format", LogicalType::VARCHAR); });
+	function.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("format", LogicalType::VARCHAR);
+		options.Add("resolve_media", LogicalType::BOOLEAN);
+		options.Add("max_media_bytes", LogicalType::UBIGINT);
+		options.Add("max_trajectory_media_bytes", LogicalType::UBIGINT);
+	});
 	RegisterTableFunctionWithMetadata(
 	    loader, std::move(function),
-	    /*parameter_names=*/ {"path", "format"},
+	    /*parameter_names=*/ {"path", "format", "resolve_media", "max_media_bytes", "max_trajectory_media_bytes"},
 	    /*description=*/
-	    "Reads ATIF agent trajectories from a local, S3, or HTTP(S) JSON or JSONL file, optionally gzipped.",
+	    "Reads ATIF agent trajectories from a local, S3, or HTTP(S) JSON or JSONL file, optionally gzipped, embedding "
+	    "referenced media by default.",
 	    /*examples=*/ {"SELECT * FROM read_atif('trajectories.jsonl');"},
 	    /*categories=*/ {"lance_conversion", "reader"});
 }

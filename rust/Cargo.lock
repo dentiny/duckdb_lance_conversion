@@ -404,10 +404,9 @@ checksum = "f2d85fd3d291fabcc40c7232c92c280ec1754fd7b5d7ea769f143222143e179a"
 [[package]]
 name = "atif-arrow"
 version = "0.1.0"
-source = "git+https://github.com/dentiny/atif-arrow?rev=df70cf11dffe4110b9c6dc85dcbadc70d406d426#df70cf11dffe4110b9c6dc85dcbadc70d406d426"
+source = "git+https://github.com/dentiny/atif-arrow?rev=2639b6b4ce6af3b93122d9990ae5efb66b2bfae8#2639b6b4ce6af3b93122d9990ae5efb66b2bfae8"
 dependencies = [
  "arrow-array",
- "arrow-json",
  "arrow-schema",
  "serde",
  "serde_json",
@@ -418,7 +417,7 @@ dependencies = [
 [[package]]
 name = "atif-io"
 version = "0.1.0"
-source = "git+https://github.com/dentiny/atif-arrow?rev=df70cf11dffe4110b9c6dc85dcbadc70d406d426#df70cf11dffe4110b9c6dc85dcbadc70d406d426"
+source = "git+https://github.com/dentiny/atif-arrow?rev=2639b6b4ce6af3b93122d9990ae5efb66b2bfae8#2639b6b4ce6af3b93122d9990ae5efb66b2bfae8"
 dependencies = [
  "arrow-array",
  "async-compression",
@@ -1877,6 +1876,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fdeflate"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
+dependencies = [
+ "simd-adler32",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1906,7 +1914,7 @@ checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
  "libz-ng-sys",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "zlib-rs",
 ]
 
@@ -2301,6 +2309,12 @@ checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest 0.11.3",
 ]
+
+[[package]]
+name = "hound"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
 name = "http"
@@ -2963,11 +2977,14 @@ dependencies = [
  "async-trait",
  "atif-arrow",
  "atif-io",
+ "base64 0.22.1",
  "bytes",
  "datafusion-physical-plan",
  "flate2",
  "futures",
+ "hound",
  "lance",
+ "lance-encoding",
  "lance-index",
  "lance-io",
  "lance-linalg",
@@ -2977,6 +2994,7 @@ dependencies = [
  "opendal-http-transport-reqwest",
  "parquet",
  "percent-encoding",
+ "png",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3659,6 +3677,16 @@ checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
 dependencies = [
  "mime",
  "unicase",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+ "simd-adler32",
 ]
 
 [[package]]
@@ -4377,6 +4405,19 @@ name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
+name = "png"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
+dependencies = [
+ "bitflags 2.13.2",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide 0.8.9",
+]
 
 [[package]]
 name = "portable-atomic"

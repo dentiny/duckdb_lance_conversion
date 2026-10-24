@@ -147,9 +147,17 @@ char *lance_huggingface_open(const char *dataset, const char *config, const char
 char *lance_warc_open(const char *path, const char *index_path, const struct LanceS3Config *s3,
                       const struct LanceOpendalConfig *opendal_config, uint64_t max_read_parallelism,
                       struct SourceStreamFactory **output);
+struct LanceAtifOptions {
+	int32_t resolve_media;
+	uint64_t max_media_bytes;
+	uint64_t max_trajectory_media_bytes;
+};
+
 // format is "json" or "jsonl"; NULL or empty infers it from the path extension.
-char *lance_atif_open(const char *path, const char *format, const struct LanceS3Config *s3,
-                      const struct LanceOpendalConfig *opendal_config, struct SourceStreamFactory **output);
+// options NULL uses default media embedding and limits.
+char *lance_atif_open(const char *path, const char *format, const struct LanceAtifOptions *options,
+                      const struct LanceS3Config *s3, const struct LanceOpendalConfig *opendal_config,
+                      struct SourceStreamFactory **output);
 char *lance_source_get_schema(const struct SourceStreamFactory *factory, struct ArrowSchema *output);
 // columns lists the projected column names in output order; column_count 0 reads every column.
 char *lance_source_get_stream(const struct SourceStreamFactory *factory, const char *const *columns,

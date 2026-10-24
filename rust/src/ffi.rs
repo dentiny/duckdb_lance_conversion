@@ -14,10 +14,10 @@ use futures::TryStreamExt;
 
 use crate::source::ReadMetrics;
 use crate::{
-    atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, ColumnEncoding, Error,
-    HuggingFaceSource, IndexKind, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
-    S3StorageConfig, StructuralEncoding, WarcSource, WriteMode, WriteOptions, WriteSummary,
-    DEFAULT_MAX_READ_PARALLELISM, DEFAULT_READ_AHEAD_BYTES,
+    atif_schema, warc_schema, AtifMediaOptions, AtifSource, BatchSource, BatchStream,
+    ColumnEncoding, Error, HuggingFaceSource, IndexKind, LanceDatasetWriter, LanceFragmentWriter,
+    OpendalConfig, Result, S3StorageConfig, StructuralEncoding, WarcSource, WriteMode,
+    WriteOptions, WriteSummary, DEFAULT_MAX_READ_PARALLELISM, DEFAULT_READ_AHEAD_BYTES,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -55,6 +55,13 @@ pub struct LanceS3Config {
     session_token: *const c_char,
     use_ssl: i32,
     virtual_host_style: i32,
+}
+
+#[repr(C)]
+pub struct LanceAtifOptions {
+    resolve_media: i32,
+    max_media_bytes: u64,
+    max_trajectory_media_bytes: u64,
 }
 
 #[repr(C)]
@@ -655,6 +662,7 @@ pub unsafe extern "C" fn lance_warc_open(
 pub unsafe extern "C" fn lance_atif_open(
     path: *const c_char,
     format: *const c_char,
+    options: *const LanceAtifOptions,
     s3: *const LanceS3Config,
     opendal_config: *const OpendalConfig,
     output: *mut *mut SourceStreamFactory,
@@ -666,21 +674,45 @@ pub unsafe extern "C" fn lance_atif_open(
         *output = ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?.to_owned();
         let format = optional_string(format)?;
+        let media_options = match options.as_ref() {
+            None => AtifMediaOptions::default(),
+            Some(options) => {
+                if !matches!(options.resolve_media, 0 | 1) {
+                    return Err(Error::message("invalid ATIF resolve_media value"));
+                }
+                AtifMediaOptions {
+                    resolve_media: options.resolve_media != 0,
+                    max_media_bytes: options.max_media_bytes,
+                    max_trajectory_media_bytes: options.max_trajectory_media_bytes,
+                }
+            }
+        };
+        if media_options.max_media_bytes == 0 || media_options.max_trajectory_media_bytes == 0 {
+            return Err(Error::message("ATIF media byte limits must be positive"));
+        }
         let s3_config = s3_config(s3)?;
         let opendal_config = parse_opendal_config(opendal_config)?;
-        let factory = SourceStreamFactory::new(atif_schema(), move |projection, metrics| {
-            let mut source = AtifSource::new(&path)
-                .with_projection(projection)
-                .with_opendal_config(opendal_config)
-                .with_metrics(metrics);
-            if let Some(format) = &format {
-                source = source.with_format(format);
-            }
-            if let Some(config) = &s3_config {
-                source = source.with_s3_config(config.clone());
-            }
-            source
-        });
+        let factory = SourceStreamFactory::new(
+            if media_options.resolve_media {
+                atif_schema()
+            } else {
+                crate::source::atif_reference_schema()
+            },
+            move |projection, metrics| {
+                let mut source = AtifSource::new(&path)
+                    .with_media_options(media_options)
+                    .with_projection(projection)
+                    .with_opendal_config(opendal_config)
+                    .with_metrics(metrics);
+                if let Some(format) = &format {
+                    source = source.with_format(format);
+                }
+                if let Some(config) = &s3_config {
+                    source = source.with_s3_config(config.clone());
+                }
+                source
+            },
+        );
         *output = Box::into_raw(Box::new(factory));
         Ok(())
     })

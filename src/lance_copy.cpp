@@ -300,10 +300,51 @@ ColumnEncodingOptions &FindOrAddColumnEncoding(vector<ColumnEncodingOptions> &en
 	return encodings.back();
 }
 
+// Resolve nested struct fields, traversing list elements implicitly. Exact
+// top-level names take precedence, including column names containing dots.
+Identifier ResolveEncodingColumn(const Identifier &option_name, const Identifier &requested,
+                                 const vector<Identifier> &names, const vector<LogicalType> &types,
+                                 const ColumnIndexMap &indexes) {
+	auto exact = indexes.find(Identifier(requested));
+	if (exact != indexes.end()) {
+		return names[exact->second];
+	}
+	auto parts = StringUtil::Split(requested.GetIdentifierName(), '.');
+	if (parts.empty() || parts[0].empty()) {
+		throw BinderException("%s column not found: %s", option_name, requested);
+	}
+	auto root = indexes.find(Identifier(parts[0]));
+	if (root == indexes.end()) {
+		throw BinderException("%s column not found: %s", option_name, requested);
+	}
+	string canonical = names[root->second].GetIdentifierName();
+	const LogicalType *type = &types[root->second];
+	for (idx_t index = 1; index < parts.size(); index++) {
+		while (type->id() == LogicalTypeId::LIST || type->id() == LogicalTypeId::ARRAY) {
+			type = type->id() == LogicalTypeId::LIST ? &ListType::GetChildType(*type) : &ArrayType::GetChildType(*type);
+		}
+		const LogicalType *child_type = nullptr;
+		if (type->id() == LogicalTypeId::STRUCT) {
+			for (const auto &child : StructType::GetChildTypes(*type)) {
+				if (Identifier(child.first) == Identifier(parts[index])) {
+					canonical += "." + child.first.GetIdentifierName();
+					child_type = &child.second;
+					break;
+				}
+			}
+		}
+		if (!child_type) {
+			throw BinderException("%s column not found: %s", option_name, requested);
+		}
+		type = child_type;
+	}
+	return Identifier(canonical);
+}
+
 // Parses a struct option such as {'column': value}, applying each value to its column's encoding settings.
 template <class APPLY>
 void ParseColumnSettings(const Identifier &option_name, const string &example, const string &value_name,
-                         const vector<Value> &values, const vector<Identifier> &names,
+                         const vector<Value> &values, const vector<Identifier> &names, const vector<LogicalType> &types,
                          const ColumnIndexMap &column_indexes, vector<ColumnEncodingOptions> &encodings, APPLY apply) {
 	if (values.size() != 1 || values[0].type().id() != LogicalTypeId::STRUCT || values[0].IsNull()) {
 		throw BinderException("%s requires a struct such as %s", option_name, example);
@@ -313,18 +354,17 @@ void ParseColumnSettings(const Identifier &option_name, const string &example, c
 	identifier_set_t seen;
 	for (idx_t i = 0; i < entries.size(); i++) {
 		const auto &requested = entries[i].first;
-		auto entry = column_indexes.find(Identifier(requested));
-		if (entry == column_indexes.end()) {
-			throw BinderException("%s column not found: %s", option_name, requested);
+		auto column = ResolveEncodingColumn(option_name, requested, names, types, column_indexes);
+		if (option_name == "COLUMN_STRUCTURAL_ENCODING" && column_indexes.find(column) == column_indexes.end()) {
+			throw BinderException("COLUMN_STRUCTURAL_ENCODING applies to top-level columns, not nested fields");
 		}
-		auto index = entry->second;
-		if (!seen.insert(names[index]).second) {
-			throw BinderException("Duplicate %s column: %s", option_name, names[index]);
+		if (!seen.insert(column).second) {
+			throw BinderException("Duplicate %s column: %s", option_name, column);
 		}
 		if (children[i].IsNull()) {
-			throw BinderException("%s %s cannot be NULL: %s", option_name, value_name, names[index]);
+			throw BinderException("%s %s cannot be NULL: %s", option_name, value_name, column);
 		}
-		apply(FindOrAddColumnEncoding(encodings, names[index]), children[i]);
+		apply(FindOrAddColumnEncoding(encodings, column), children[i]);
 	}
 }
 
@@ -422,20 +462,20 @@ unique_ptr<FunctionData> LanceBind(ClientContext &context, CopyFunctionBindInput
 			result->storage_version = option.second[0].CastAs(context, LogicalType::VARCHAR).GetValue<string>();
 		} else if (option.first == "column_compression") {
 			ParseColumnSettings("COLUMN_COMPRESSION", /*example=*/"{'column': 'zstd'}", /*value_name=*/"algorithm",
-			                    option.second, names, column_indexes, result->column_encodings,
+			                    option.second, names, types, column_indexes, result->column_encodings,
 			                    [&](ColumnEncodingOptions &encoding, const Value &value) {
 				                    encoding.compression = ParseCompression(context, value, encoding.column);
 			                    });
 		} else if (option.first == "column_compression_level") {
 			ParseColumnSettings("COLUMN_COMPRESSION_LEVEL", /*example=*/"{'column': 3}", /*value_name=*/"level",
-			                    option.second, names, column_indexes, result->column_encodings,
+			                    option.second, names, types, column_indexes, result->column_encodings,
 			                    [](ColumnEncodingOptions &encoding, const Value &value) {
 				                    encoding.has_compression_level = true;
 				                    encoding.compression_level = ParseCompressionLevel(value, encoding.column);
 			                    });
 		} else if (option.first == "column_structural_encoding") {
 			ParseColumnSettings("COLUMN_STRUCTURAL_ENCODING", /*example=*/"{'column': 'miniblock'}",
-			                    /*value_name=*/"encoding", option.second, names, column_indexes,
+			                    /*value_name=*/"encoding", option.second, names, types, column_indexes,
 			                    result->column_encodings, [&](ColumnEncodingOptions &encoding, const Value &value) {
 				                    encoding.structural_encoding =
 				                        ParseStructuralEncoding(context, value, encoding.column);
