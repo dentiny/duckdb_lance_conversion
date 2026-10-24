@@ -5,11 +5,7 @@ production Harbor export. It contains Unicode text, image/audio user messages,
 a tool call with image/audio observations, and a final response.
 
 `atif-image.png` is a compressed 1024 × 768 RGB pattern; `atif-audio.wav` is a
-0.1-second, 440 Hz, mono 16-bit PCM tone at 8 kHz. Regenerate them with:
-
-```sh
-python3 test/data/generate_atif_media.py
-```
+0.1-second, 440 Hz, mono 16-bit PCM tone at 8 kHz. Both files are checked in.
 
 The SQL test compares message/observation bytes with these files and writes Lance.
 The Rust round-trip test re-encodes the same pixels without compression to exceed
