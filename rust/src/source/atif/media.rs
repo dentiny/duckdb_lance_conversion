@@ -21,6 +21,9 @@ use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 pub(super) fn embedded_schema() -> SchemaRef {
     fn embedded_field(field: &FieldRef) -> FieldRef {
         let data_type = match field.data_type() {
+            // In atif-arrow's fixed schema, MediaSource has these three fields in
+            // this order. Match the full shape to replace only its path reference
+            // with payload bytes, preserving the MIME type and duration fields.
             DataType::Struct(fields)
                 if fields.len() == 3
                     && fields[0].name() == "media_type"
