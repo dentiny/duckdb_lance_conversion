@@ -34,6 +34,14 @@ impl ReadMetrics {
             .fetch_add(u64::try_from(bytes).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
+    pub(crate) fn add_total_bytes(&self, bytes: u64) {
+        let _ = self
+            .total_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+                Some(total.saturating_add(bytes))
+            });
+    }
+
     pub(crate) fn set_total_bytes(&self, bytes: u64) {
         self.total_bytes.store(bytes, Ordering::Relaxed);
     }

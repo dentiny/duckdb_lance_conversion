@@ -22,7 +22,7 @@ pub use index::IndexKind;
 const DEFAULT_BLOB_INLINE_SIZE_THRESHOLD: usize = 2 * 1024 * 1024;
 const DEFAULT_BLOB_DEDICATED_SIZE_THRESHOLD: usize = 16 * 1024 * 1024;
 const DEFAULT_TARGET_FILE_SIZE: usize = 512 * 1024 * 1024;
-const DEFAULT_STORAGE_VERSION: &str = "stable";
+const DEFAULT_STORAGE_VERSION: &str = "2.2";
 
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
@@ -33,7 +33,7 @@ pub struct WriteOptions {
     pub blob_dedicated_size_threshold: Option<usize>,
     pub target_file_size: usize,
     pub storage_version: String,
-    /// Per-column Lance encoding settings, keyed by column name.
+    /// Per-field Lance encoding settings, keyed by a column name or dotted nested path.
     pub column_encoding: BTreeMap<String, ColumnEncoding>,
     pub blob_columns: Vec<String>,
     /// Indexes built after the write, at most one per column.

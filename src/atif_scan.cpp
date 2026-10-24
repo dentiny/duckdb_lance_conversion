@@ -54,7 +54,8 @@ void RegisterAtifScanFunction(ExtensionLoader &loader) {
 	    loader, std::move(function),
 	    /*parameter_names=*/ {"path", "format"},
 	    /*description=*/
-	    "Reads ATIF agent trajectories from a local, S3, or HTTP(S) JSON or JSONL file, optionally gzipped.",
+	    "Reads ATIF agent trajectories from a local, S3, or HTTP(S) JSON or JSONL file, optionally gzipped, embedding "
+	    "referenced media.",
 	    /*examples=*/ {"SELECT * FROM read_atif('trajectories.jsonl');"},
 	    /*categories=*/ {"lance_conversion", "reader"});
 }

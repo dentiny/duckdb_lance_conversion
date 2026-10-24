@@ -12,8 +12,11 @@ use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 // Each row holds a whole trajectory, including its raw JSON, so batches are
 // bounded by row count much more tightly than for flat sources.
 const BATCH_SIZE: usize = 256;
+mod media;
+use media::MediaResolver;
+
 pub fn atif_schema() -> SchemaRef {
-    atif_arrow::trajectory_schema()
+    media::embedded_schema()
 }
 
 /// `json` holds one trajectory and `jsonl` or `ndjson` one per line. Without
@@ -96,7 +99,7 @@ impl BatchSource for AtifSource {
         let projection = self.projection.filter(|projection| !projection.is_empty());
         let schema = match &projection {
             Some(projection) => Arc::new(full_schema.project(projection)?),
-            None => full_schema,
+            None => full_schema.clone(),
         };
         let size = input
             .operator
@@ -104,18 +107,50 @@ impl BatchSource for AtifSource {
             .await?
             .content_length();
         self.metrics.set_total_bytes(size);
-        let reader = read_object(&input.operator, &input.opendal_path, size, self.metrics).await?;
+        let reader = read_object(
+            &input.operator,
+            &input.opendal_path,
+            size,
+            self.metrics.clone(),
+        )
+        .await?;
         let reader = decompressed_input(reader, is_gzipped(&input.opendal_path));
-        let reader = TrajectoryReader::new(reader, format, BATCH_SIZE, Some(input.uri))
+        let media_index = full_schema.index_of("steps")?;
+        let needs_media = projection
+            .as_ref()
+            .is_none_or(|columns| columns.contains(&media_index));
+        // One full document per batch when media is projected. Avoid buffering
+        // hundreds of MB-scale trajectories in the parser's parallel queue.
+        let batch_size = if needs_media { 1 } else { BATCH_SIZE };
+        let reader = TrajectoryReader::new(reader, format, batch_size, Some(input.uri.clone()))
             .map_err(|error| Error::message(format!("ATIF reader: {error}")))?;
-        // The ATIF converter always produces every column; projection only
-        // trims the batches DuckDB receives.
+        let resolver = Arc::new(MediaResolver {
+            document: input.uri,
+            s3_config: self.s3_config,
+            opendal_config: self.opendal_config,
+            metrics: self.metrics,
+        });
+        let parallelism = if needs_media {
+            1
+        } else {
+            std::thread::available_parallelism().map_or(1, usize::from)
+        };
+        let output_schema = schema.clone();
         let batches = reader
-            .into_parallel_stream(std::thread::available_parallelism().map_or(1, usize::from))
+            .into_parallel_stream(parallelism)
             .map_err(|error| Error::message(format!("ATIF read error: {error}")))
-            .map(move |batch| match &projection {
-                Some(projection) => Ok(batch?.project(projection)?),
-                None => batch,
+            .then(move |batch| {
+                let resolver = resolver.clone();
+                let projection = projection.clone();
+                let schema = output_schema.clone();
+                async move {
+                    let batch = batch?;
+                    let batch = match projection {
+                        Some(columns) => batch.project(&columns)?,
+                        None => batch,
+                    };
+                    resolver.resolve(batch, schema).await
+                }
             });
         Ok((schema, Box::pin(batches)))
     }
@@ -225,8 +260,15 @@ mod tests {
             .await
             .unwrap();
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
-        let indices = column::<UInt64Array>(&batches[0], "source_record_index");
-        assert_eq!(indices.values(), &[1, 2]);
+        let indices = batches
+            .iter()
+            .flat_map(|batch| {
+                column::<UInt64Array>(batch, "source_record_index")
+                    .values()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(indices, vec![1, 2]);
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.bytes_read, snapshot.total_bytes);
     }

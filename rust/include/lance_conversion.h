@@ -148,6 +148,7 @@ char *lance_warc_open(const char *path, const char *index_path, const struct Lan
                       const struct LanceOpendalConfig *opendal_config, uint64_t max_read_parallelism,
                       struct SourceStreamFactory **output);
 // format is "json" or "jsonl"; NULL or empty infers it from the path extension.
+// Projected media references are always loaded into source.path as binary bytes.
 char *lance_atif_open(const char *path, const char *format, const struct LanceS3Config *s3,
                       const struct LanceOpendalConfig *opendal_config, struct SourceStreamFactory **output);
 char *lance_source_get_schema(const struct SourceStreamFactory *factory, struct ArrowSchema *output);

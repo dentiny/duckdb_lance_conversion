@@ -340,7 +340,8 @@ impl OpendalStorage {
         let operator = opendal_config
             .apply(Operator::new(builder).context("initializing OpenDAL S3 storage")?)?;
         let object_store = Arc::new(OpendalStore::new(operator.clone()));
-        let object_path = object_store::path::Path::from(location.path().trim_start_matches('/'));
+        let object_path = object_store::path::Path::from_url_path(location.path())
+            .map_err(|error| Error::message(format!("invalid S3 object path: {error}")))?;
         Ok(Self {
             operator,
             object_store,

@@ -248,6 +248,36 @@ TO 'trajectories.lance' (FORMAT LANCE);
 
 Invalid trajectories fail the scan with the source and one-based record index.
 
+`read_atif` always embeds image/audio bytes at `ContentPart.source.path`;
+`COPY ... FORMAT LANCE` stores them as Blob V2. All 13 columns, content order,
+MIME types and durations are retained. `raw_json` preserves the input references;
+embedded subagent trajectories remain opaque JSON.
+
+Source/storage metadata preserves ATIF policies across direct projections,
+aliases and persistent DuckDB tables. Unmarked fields retain their ordinary
+storage policy; computed expressions may lose the markers.
+
+Text uses `LargeBinary`, requesting LZ4 by default. Explicit nested settings override it:
+
+```sql
+COPY (SELECT * FROM read_atif('trajectory.json'))
+TO 'trajectory.lance' (FORMAT LANCE, COLUMN_COMPRESSION {
+    'steps.message.text': 'zstd',
+    'steps.observation.results.content.text': 'none'
+});
+```
+
+Media paths resolve relative to the document, including JSONL/gzip inputs.
+Local documents support local files, `file://`, HTTP(S) and data URIs; remote
+media stays within the document's storage origin and uses its credentials.
+Missing projected media fails the scan; metadata-only projections skip media I/O.
+
+Format 2.2 is the default; its SDK codec policy may fall back to Zstd for wide
+FullZip text. Use `STORAGE_VERSION '2.3'` for the upstream per-value LZ4 fix.
+The pinned SQL-test reader (`lance-duckdb`, SDK 12) has a nested Blob schema
+mismatch when selecting `steps`; full media round trips use the current SDK's
+`BlobHandling::AllBinary` scanner.
+
 ### Profiling
 
 `COPY` returns the number of rows written. DuckDB's JSON profiler also reports
@@ -355,7 +385,7 @@ TO 'output.lance' (
 ```
 
 `STORAGE_VERSION` selects the Lance file format version, such as `2.1`, `2.2`,
-`stable`, or `next`, and is passed to Lance as-is. It defaults to `stable`.
+`stable`, or `next`, and is passed to Lance as-is. It defaults to `2.2`.
 
 ```sql
 COPY (SELECT * FROM source)
@@ -363,7 +393,10 @@ TO 'output.lance' (FORMAT LANCE, STORAGE_VERSION '2.1');
 ```
 
 `COLUMN_COMPRESSION` selects a general compression algorithm for individual
-top-level columns, such as `zstd`, `lz4`, or `none`. Each value is passed to
+columns or nested fields, such as `zstd`, `lz4`, or `none`. Dot paths
+(such as `steps.message.text`) traverse list elements implicitly. Compression
+levels support the same paths; structural layout settings apply to top-level
+columns because the SDK inherits layout from the root. Each value is passed to
 Lance as-is through the `lance-encoding:compression` field metadata. Columns
 not listed use Lance's default encoding, which does not apply general
 compression. See Lance's
@@ -491,9 +524,12 @@ Explicitly cast unsupported columns to a supported type before exporting,
 for example `interval_column::VARCHAR` or `NULL::INTEGER`. NULL values within
 supported typed columns are allowed.
 
-Top-level `BLOB` columns use Lance Blob v2 storage. Depending on the reader,
-they may be exposed as a logical struct containing `data` and `uri`. Nested
-binary fields remain ordinary binary columns. Conversion does not preserve
+Top-level `BLOB` fields and ATIF media use Lance Blob v2 storage. ATIF
+ContentPart text stays `LargeBinary` with default LZ4 compression. Depending on the reader,
+they may be exposed as a logical struct containing `data` and `uri`. Binary
+fields inside fixed-size lists, maps or dictionaries keep their existing binary
+storage, matching the pinned Lance blob preprocessor's container support.
+Conversion does not preserve
 original Parquet encodings, field IDs, key/value metadata, or Hugging Face
 feature metadata. The extension reserves bounded memory budgets for its Rust
 readers and Lance writer against DuckDB's `memory_limit`; the writer also

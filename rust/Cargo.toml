@@ -12,12 +12,13 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-atif-arrow = { git = "https://github.com/dentiny/atif-arrow", rev = "df70cf11dffe4110b9c6dc85dcbadc70d406d426" }
-atif-io = { git = "https://github.com/dentiny/atif-arrow", rev = "df70cf11dffe4110b9c6dc85dcbadc70d406d426" }
+atif-arrow = { git = "https://github.com/dentiny/atif-arrow", rev = "2639b6b4ce6af3b93122d9990ae5efb66b2bfae8" }
+atif-io = { git = "https://github.com/dentiny/atif-arrow", rev = "2639b6b4ce6af3b93122d9990ae5efb66b2bfae8" }
 arrow-array = { version = "58", features = ["ffi"] }
 arrow-cast = "58"
 arrow-schema = { version = "58", features = ["ffi"] }
 bytes = "1"
+base64 = "0.22"
 datafusion-physical-plan = "54"
 futures = "0.3"
 flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
@@ -38,6 +39,8 @@ url = "2"
 warc-rs = { git = "https://github.com/dentiny/warc-rs", rev = "728fb6d8852c40febf490424528d9e937545e45d" }
 
 [dev-dependencies]
+png = "0.18"
+hound = "3.5"
 tokio = { version = "1", features = ["io-util", "macros"] }
 arrow-select = "58"
 tempfile = "3"

@@ -3,7 +3,8 @@ mod common;
 use std::sync::Arc;
 
 use arrow_array::{
-    ArrayRef, BinaryArray, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, StringArray,
+    cast::AsArray, ArrayRef, BinaryArray, FixedSizeListArray, Float32Array, Int64Array,
+    RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
@@ -14,7 +15,7 @@ use lance_conversion::{
 use tempfile::tempdir;
 use tokio::{
     fs,
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpListener,
     task::spawn_blocking,
 };
@@ -205,7 +206,7 @@ async fn string_uri_column_is_ingested_as_a_blob() {
     let output = temp.path().join("uris.lance");
     fs::write(&first, b"first").await.unwrap();
     fs::write(&empty, b"").await.unwrap();
-    let server = serve_http(b"second").await;
+    let server = serve_http(|_| b"second").await;
 
     let uri_batch = |uris: Vec<Option<String>>| {
         RecordBatch::try_new(
@@ -274,23 +275,30 @@ async fn string_uri_column_is_ingested_as_a_blob() {
 
 #[tokio::test]
 async fn atif_reads_http_urls() {
-    const DOCUMENT: &str = r#"{"schema_version":"ATIF-v1.8","agent":{"name":"test","version":"1"},"steps":[{"step_id":1,"source":"user","message":"hello"}]}"#;
+    const DOCUMENT: &str = r#"{"schema_version":"ATIF-v1.8","agent":{"name":"test","version":"1"},"steps":[{"step_id":1,"source":"user","message":[{"type":"text","text":"hello"},{"type":"image","source":{"media_type":"image/png","path":"images/a.png"}}]}]}"#;
     static BODY: std::sync::LazyLock<String> =
         std::sync::LazyLock::new(|| format!("{DOCUMENT}\n{DOCUMENT}\n"));
-    let server = serve_http(BODY.as_bytes()).await;
+    let server = serve_http(|path| match path {
+        "/runs/my%20trajectories.jsonl" => BODY.as_bytes(),
+        "/runs/images/a.png" => &[0, 255, 42],
+        other => panic!("unexpected HTTP request: {other}"),
+    })
+    .await;
     let url = format!("{server}/runs/my%20trajectories.jsonl");
 
     let (_, stream) = AtifSource::new(url.as_str()).open().await.unwrap();
     let batches = stream.try_collect::<Vec<_>>().await.unwrap();
     let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
     assert_eq!(batch.num_rows(), 2);
-    let source_uri = batch
-        .column_by_name("source_uri")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
-    assert_eq!(source_uri.value(0), url);
+    assert_eq!(batch["source_uri"].as_string::<i32>().value(0), url);
+    let steps = batch["steps"].as_list::<i32>().value(0);
+    let parts = steps.as_struct()["message"].as_list::<i32>().value(0);
+    assert_eq!(
+        parts.as_struct()["source"].as_struct()["path"]
+            .as_binary::<i64>()
+            .value(1),
+        &[0, 255, 42]
+    );
 
     let error = AtifSource::new(format!("{url}?signature=x"))
         .open()
@@ -305,24 +313,29 @@ async fn atif_reads_http_urls() {
     );
 }
 
-/// Serves `body` at every path, one request per connection, honoring a single
-/// byte range.
-async fn serve_http(body: &'static [u8]) -> String {
+/// Serve routed test objects, supporting HEAD and a single byte range.
+async fn serve_http(route: impl Fn(&str) -> &'static [u8] + Send + 'static) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0; 4096];
-            let read = socket.read(&mut request).await.unwrap();
-            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
-            let range = request
-                .lines()
-                .find_map(|line| line.strip_prefix("range: bytes="))
-                .and_then(|range| range.split_once('-'))
-                .map(|(start, end)| {
-                    start.parse().unwrap()..end.parse().map_or(body.len(), |end: usize| end + 1)
-                });
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = BufReader::new(socket);
+            let mut request = String::new();
+            while !request.ends_with("\r\n\r\n") {
+                if socket.read_line(&mut request).await.unwrap() == 0 {
+                    break;
+                }
+            }
+            if request.is_empty() {
+                continue;
+            }
+            let body = route(request.split_whitespace().nth(1).unwrap());
+            let range = request.lines().find_map(|line| {
+                let line = line.to_ascii_lowercase();
+                let (start, end) = line.strip_prefix("range: bytes=")?.split_once('-')?;
+                Some(start.parse().unwrap()..end.parse().map_or(body.len(), |end: usize| end + 1))
+            });
             let mut response = match &range {
                 Some(range) => format!(
                     "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\n",
@@ -337,11 +350,11 @@ async fn serve_http(body: &'static [u8]) -> String {
                 "Content-Length: {}\r\nConnection: close\r\n\r\n",
                 content.len()
             );
-            let mut response = response.into_bytes();
-            if !request.starts_with("head") {
-                response.extend_from_slice(content);
+            let socket = socket.get_mut();
+            socket.write_all(response.as_bytes()).await.unwrap();
+            if !request.starts_with("HEAD ") {
+                socket.write_all(content).await.unwrap();
             }
-            socket.write_all(&response).await.unwrap();
         }
     });
     format!("http://{address}")

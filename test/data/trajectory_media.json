@@ -1,0 +1,81 @@
+{
+  "schema_version": "ATIF-v1.8",
+  "trajectory_id": "media",
+  "agent": {
+    "name": "test",
+    "version": "1"
+  },
+  "notes": "Generated conformance fixture with decodable PNG/WAV; not a production agent capture.",
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": [
+        {
+          "type": "text",
+          "text": "hello 你好🙂"
+        },
+        {
+          "type": "image",
+          "source": {
+            "media_type": "image/png",
+            "path": "atif-image.png"
+          }
+        },
+        {
+          "type": "audio",
+          "source": {
+            "media_type": "audio/wav",
+            "path": "atif-audio.wav",
+            "duration_sec": 0.1
+          }
+        }
+      ]
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Inspecting the supplied media.",
+      "tool_calls": [
+        {
+          "tool_call_id": "inspect-1",
+          "function_name": "inspect_media",
+          "arguments": {}
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "inspect-1",
+            "content": [
+              {
+                "type": "text",
+                "text": "RGB pattern and a 440 Hz tone."
+              },
+              {
+                "type": "image",
+                "source": {
+                  "media_type": "image/png",
+                  "path": "atif-image.png"
+                }
+              },
+              {
+                "type": "audio",
+                "source": {
+                  "media_type": "audio/wav",
+                  "path": "atif-audio.wav",
+                  "duration_sec": 0.1
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "The image is an RGB pattern; the audio is a short tone."
+    }
+  ]
+}
