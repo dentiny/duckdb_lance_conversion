@@ -13,15 +13,10 @@ use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 // bounded by row count much more tightly than for flat sources.
 const BATCH_SIZE: usize = 256;
 mod media;
-pub use media::AtifMediaOptions;
 use media::MediaResolver;
 
 pub fn atif_schema() -> SchemaRef {
     media::embedded_schema()
-}
-
-pub(crate) fn atif_reference_schema() -> SchemaRef {
-    atif_arrow::trajectory_schema()
 }
 
 /// `json` holds one trajectory and `jsonl` or `ndjson` one per line. Without
@@ -53,7 +48,6 @@ pub struct AtifSource {
     opendal_config: OpendalConfig,
     projection: Option<Vec<usize>>,
     metrics: Arc<ReadMetrics>,
-    media_options: AtifMediaOptions,
 }
 
 impl AtifSource {
@@ -65,7 +59,6 @@ impl AtifSource {
             opendal_config: OpendalConfig::default(),
             projection: None,
             metrics: Arc::new(ReadMetrics::default()),
-            media_options: AtifMediaOptions::default(),
         }
     }
 
@@ -86,11 +79,6 @@ impl AtifSource {
         self
     }
 
-    pub fn with_media_options(mut self, options: AtifMediaOptions) -> Self {
-        self.media_options = options;
-        self
-    }
-
     /// Top-level column indices in output order; empty reads every column.
     pub fn with_projection(mut self, projection: Vec<usize>) -> Self {
         self.projection = Some(projection);
@@ -105,14 +93,9 @@ impl AtifSource {
 
 impl BatchSource for AtifSource {
     async fn open(self) -> Result<(SchemaRef, BatchStream)> {
-        let media_options = self.media_options.validate()?;
         let input = InputFile::open(&self.path, self.s3_config.as_ref(), &self.opendal_config)?;
         let format = input_format(&input.opendal_path, self.format.as_deref())?;
-        let full_schema = if media_options.resolve_media {
-            atif_schema()
-        } else {
-            atif_reference_schema()
-        };
+        let full_schema = atif_schema();
         let projection = self.projection.filter(|projection| !projection.is_empty());
         let schema = match &projection {
             Some(projection) => Arc::new(full_schema.project(projection)?),
@@ -133,10 +116,9 @@ impl BatchSource for AtifSource {
         .await?;
         let reader = decompressed_input(reader, is_gzipped(&input.opendal_path));
         let media_index = full_schema.index_of("steps")?;
-        let needs_media = media_options.resolve_media
-            && projection
-                .as_ref()
-                .is_none_or(|columns| columns.contains(&media_index));
+        let needs_media = projection
+            .as_ref()
+            .is_none_or(|columns| columns.contains(&media_index));
         // One full document per batch when media is projected. Avoid buffering
         // hundreds of MB-scale trajectories in the parser's parallel queue.
         let batch_size = if needs_media { 1 } else { BATCH_SIZE };
@@ -144,7 +126,6 @@ impl BatchSource for AtifSource {
             .map_err(|error| Error::message(format!("ATIF reader: {error}")))?;
         let resolver = MediaResolver {
             document: input.uri,
-            options: media_options,
             s3_config: self.s3_config,
             opendal_config: self.opendal_config,
             metrics: self.metrics,

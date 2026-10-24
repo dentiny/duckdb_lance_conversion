@@ -8,9 +8,7 @@ use arrow_schema::{DataType, Field, Schema};
 use arrow_select::concat::concat_batches;
 use futures::TryStreamExt;
 use lance::{datatypes::BlobHandling, Dataset};
-use lance_conversion::{
-    AtifMediaOptions, AtifSource, BatchSource, ColumnEncoding, LanceWriter, WriteOptions,
-};
+use lance_conversion::{AtifSource, BatchSource, ColumnEncoding, LanceWriter, WriteOptions};
 use serde_json::json;
 
 fn document(path: &str) -> serde_json::Value {
@@ -62,7 +60,7 @@ async fn materialized(dataset: &Dataset) -> RecordBatch {
 }
 
 #[tokio::test]
-async fn missing_media_can_be_inspected_as_references_or_skipped_by_projection() {
+async fn metadata_projection_skips_missing_media() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("trajectory.json");
     tokio::fs::write(&path, document("missing.png").to_string())
@@ -74,43 +72,11 @@ async fn missing_media_can_be_inspected_as_references_or_skipped_by_projection()
         .unwrap_err()
         .to_string()
         .contains("ATIF media"));
-    let batch = read(source().with_media_options(AtifMediaOptions {
-        resolve_media: false,
-        ..Default::default()
-    }))
-    .await
-    .unwrap();
-    let parts = message(&batch, 0, 0);
-    assert_eq!(
-        parts["source"].as_struct()["path"]
-            .as_string::<i32>()
-            .value(1),
-        "missing.png"
-    );
     let schema = lance_conversion::atif_schema();
     let batch = read(source().with_projection(vec![schema.index_of("trajectory_id").unwrap()]))
         .await
         .unwrap();
     assert_eq!(batch.num_columns(), 1);
-    tokio::fs::write(temp.path().join("missing.png"), [0, 255, 42])
-        .await
-        .unwrap();
-    for options in [
-        AtifMediaOptions {
-            max_media_bytes: 2,
-            ..Default::default()
-        },
-        AtifMediaOptions {
-            max_trajectory_media_bytes: 2,
-            ..Default::default()
-        },
-    ] {
-        assert!(read(source().with_media_options(options))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("max_media_bytes"));
-    }
 }
 
 #[tokio::test]

@@ -248,8 +248,8 @@ TO 'trajectories.lance' (FORMAT LANCE);
 
 Invalid trajectories fail the scan with the source and one-based record index.
 
-`read_atif` embeds image/audio bytes in the native `ContentPart.source.path`
-field by default; `COPY ... FORMAT LANCE` stores them as Blob V2. Content order,
+`read_atif` always embeds image/audio bytes in the native `ContentPart.source.path`
+field; `COPY ... FORMAT LANCE` stores them as Blob V2. Content order,
 MIME type, duration and all 13 top-level columns are retained. Original references
 remain in `raw_json`; embedded subagents stay opaque JSON and are not fetched.
 Content text is `LargeBinary` with LZ4 requested by default. Explicit settings win:
@@ -268,16 +268,12 @@ TO 'trajectory-custom.lance' (
 );
 
 SELECT trajectory_id, agent FROM read_atif('trajectory.json'); -- skips media I/O
-SELECT steps FROM read_atif('trajectory.json', resolve_media = false); -- paths only
 ```
 
 Media references resolve relative to the document, including JSONL/gzip inputs.
 Local documents can reference local files, `file://`, HTTP(S), and data URIs;
 remote documents keep media within their storage origin and use its credentials.
-Missing selected media fails the scan. `max_media_bytes` defaults to 256 MiB per
-object and `max_trajectory_media_bytes` to 2 GiB per trajectory (counting repeated
-references). One trajectory is resolved per batch; these limits do not cap total
-process memory.
+Missing selected media fails the scan. A media scan resolves one trajectory per batch.
 
 File format **2.2** remains the default. Compression follows the SDK's format
 policy: wide FullZip text may fall back to Zstd in 2.2; use `STORAGE_VERSION '2.3'`

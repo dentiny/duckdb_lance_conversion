@@ -147,26 +147,10 @@ char *lance_huggingface_open(const char *dataset, const char *config, const char
 char *lance_warc_open(const char *path, const char *index_path, const struct LanceS3Config *s3,
                       const struct LanceOpendalConfig *opendal_config, uint64_t max_read_parallelism,
                       struct SourceStreamFactory **output);
-// A non-NULL options struct must initialize all fields explicitly.
-struct LanceAtifOptions {
-	// 1 (default): load image/audio references into source.path as binary bytes.
-	// 0: retain the original string paths without media I/O. Only 0 and 1 are valid.
-	// Media is fetched only when the scan projects steps.
-	int32_t resolve_media;
-	// Maximum payload bytes per image/audio reference, after data-URI decoding.
-	// Must be positive; default: 256 MiB. Image/audio codecs are not decoded.
-	uint64_t max_media_bytes;
-	// Maximum sum of media payload bytes in one trajectory's messages/observations.
-	// Each repeated reference counts again. Must be positive; default: 2 GiB.
-	// Excludes text/JSON bytes and does not bound total process memory usage.
-	uint64_t max_trajectory_media_bytes;
-};
-
 // format is "json" or "jsonl"; NULL or empty infers it from the path extension.
-// options NULL uses default media embedding and limits.
-char *lance_atif_open(const char *path, const char *format, const struct LanceAtifOptions *options,
-                      const struct LanceS3Config *s3, const struct LanceOpendalConfig *opendal_config,
-                      struct SourceStreamFactory **output);
+// Projected media references are always loaded into source.path as binary bytes.
+char *lance_atif_open(const char *path, const char *format, const struct LanceS3Config *s3,
+                      const struct LanceOpendalConfig *opendal_config, struct SourceStreamFactory **output);
 char *lance_source_get_schema(const struct SourceStreamFactory *factory, struct ArrowSchema *output);
 // columns lists the projected column names in output order; column_count 0 reads every column.
 char *lance_source_get_stream(const struct SourceStreamFactory *factory, const char *const *columns,

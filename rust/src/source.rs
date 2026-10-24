@@ -12,7 +12,6 @@ use crate::Result;
 pub const DEFAULT_MAX_READ_PARALLELISM: usize = 8;
 
 mod atif;
-pub(crate) use atif::atif_reference_schema;
 mod huggingface;
 mod metrics;
 mod parquet;
@@ -22,7 +21,7 @@ mod test_util;
 mod warc;
 mod warc_index;
 mod warc_segment;
-pub use atif::{atif_schema, AtifMediaOptions, AtifSource};
+pub use atif::{atif_schema, AtifSource};
 pub use huggingface::{HuggingFaceSource, DEFAULT_READ_AHEAD_BYTES};
 pub(crate) use metrics::{read_object, ReadMetrics};
 pub use warc::{warc_schema, WarcSource};

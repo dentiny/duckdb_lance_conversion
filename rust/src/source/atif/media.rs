@@ -16,33 +16,6 @@ use crate::source::{read_object, ReadMetrics};
 use crate::storage::InputFile;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
-#[derive(Clone, Copy, Debug)]
-pub struct AtifMediaOptions {
-    /// Resolve media by default. False keeps the native string reference schema.
-    pub resolve_media: bool,
-    pub max_media_bytes: u64,
-    pub max_trajectory_media_bytes: u64,
-}
-
-impl Default for AtifMediaOptions {
-    fn default() -> Self {
-        Self {
-            resolve_media: true,
-            max_media_bytes: 256 * 1024 * 1024,
-            max_trajectory_media_bytes: 2 * 1024 * 1024 * 1024,
-        }
-    }
-}
-
-impl AtifMediaOptions {
-    pub(crate) fn validate(self) -> Result<Self> {
-        if self.max_media_bytes == 0 || self.max_trajectory_media_bytes == 0 {
-            return Err(Error::message("ATIF media byte limits must be positive"));
-        }
-        Ok(self)
-    }
-}
-
 /// The extension materializes MediaSource.path in-place; ContentPart.text and
 /// every other native ATIF field keep their types and positions.
 pub(super) fn embedded_schema() -> SchemaRef {
@@ -130,54 +103,32 @@ fn resolve_uri(document: &str, reference: &str) -> Result<String> {
         .into_owned())
 }
 
-fn limit_error() -> Error {
-    Error::message("ATIF media exceeds max_media_bytes or max_trajectory_media_bytes")
-}
-
-fn decode_data_uri(uri: &str, limit: u64) -> Result<Vec<u8>> {
+fn decode_data_uri(uri: &str) -> Result<Vec<u8>> {
     let (header, encoded) = uri
         .split_once(',')
         .ok_or_else(|| Error::message("invalid ATIF media data URI"))?;
-    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-    let base64 = header.ends_with(";base64");
-    let encoded_limit = if base64 {
-        limit.div_ceil(3).saturating_mul(4)
-    } else {
-        limit
-    };
-    let encoded = percent_encoding::percent_decode_str(encoded)
-        .take(encoded_limit.saturating_add(1))
-        .collect::<Vec<_>>();
-    if encoded.len() > encoded_limit {
-        return Err(limit_error());
-    }
-    let bytes = if base64 {
+    let encoded = percent_encoding::percent_decode_str(encoded).collect::<Vec<_>>();
+    if header.ends_with(";base64") {
         STANDARD
             .decode(encoded)
-            .map_err(|error| Error::message(format!("invalid ATIF media base64: {error}")))?
+            .map_err(|error| Error::message(format!("invalid ATIF media base64: {error}")))
     } else {
-        encoded
-    };
-    if bytes.len() > limit {
-        return Err(limit_error());
+        Ok(encoded)
     }
-    Ok(bytes)
 }
 
 #[derive(Clone)]
 pub(super) struct MediaResolver {
     pub document: String,
-    pub options: AtifMediaOptions,
     pub s3_config: Option<S3StorageConfig>,
     pub opendal_config: OpendalConfig,
     pub metrics: Arc<ReadMetrics>,
 }
 
 impl MediaResolver {
-    async fn read(&self, uri: &str, remaining: u64) -> Result<Vec<u8>> {
-        let limit = self.options.max_media_bytes.min(remaining);
+    async fn read(&self, uri: &str) -> Result<Vec<u8>> {
         if uri.starts_with("data:") {
-            return decode_data_uri(uri, limit);
+            return decode_data_uri(uri);
         }
         let input = InputFile::open(
             uri,
@@ -189,11 +140,8 @@ impl MediaResolver {
             .stat(&input.opendal_path)
             .await?
             .content_length();
-        if size > limit || usize::try_from(size).is_err() {
-            return Err(limit_error());
-        }
         self.metrics.add_total_bytes(size);
-        let reader = read_object(
+        let mut reader = read_object(
             &input.operator,
             &input.opendal_path,
             size,
@@ -201,26 +149,18 @@ impl MediaResolver {
         )
         .await?;
         let mut bytes = Vec::new();
-        reader
-            .take(limit.saturating_add(1))
-            .read_to_end(&mut bytes)
-            .await?;
-        if bytes.len() as u64 > limit {
-            return Err(limit_error());
-        }
+        reader.read_to_end(&mut bytes).await?;
         if bytes.len() as u64 != size {
             return Err(Error::message("ATIF media size changed during read"));
         }
         Ok(bytes)
     }
 
-    /// Media batches contain one trajectory, so one budget covers all its messages
-    /// and observations. Projection that excludes steps never calls this resolver.
+    /// Materialize message/observation media. Projections excluding steps skip this resolver.
     pub async fn resolve(&self, batch: RecordBatch, schema: SchemaRef) -> Result<RecordBatch> {
-        let mut remaining = self.options.max_trajectory_media_bytes;
         let mut columns = Vec::with_capacity(batch.num_columns());
         for (array, field) in batch.columns().iter().zip(schema.fields()) {
-            columns.push(self.resolve_array(array, field, &mut remaining).await?);
+            columns.push(self.resolve_array(array, field).await?);
         }
         Ok(RecordBatch::try_new(schema, columns)?)
     }
@@ -229,7 +169,6 @@ impl MediaResolver {
         &'a self,
         array: &'a ArrayRef,
         target: &'a FieldRef,
-        remaining: &'a mut u64,
     ) -> BoxFuture<'a, Result<ArrayRef>> {
         Box::pin(async move {
             if array.data_type() == target.data_type() {
@@ -243,10 +182,9 @@ impl MediaResolver {
                     if let Some(path) = path {
                         let uri = resolve_uri(&self.document, path).context("ATIF media URI")?;
                         let bytes = self
-                            .read(&uri, *remaining)
+                            .read(&uri)
                             .await
                             .context(format!("ATIF media {path}"))?;
-                        *remaining -= bytes.len() as u64;
                         builder.append_value(bytes);
                     } else {
                         builder.append_null();
@@ -263,11 +201,7 @@ impl MediaResolver {
             let mut transformed = Vec::with_capacity(children.len());
             for (child, field) in data.child_data().iter().zip(&children) {
                 let child = make_array(child.clone());
-                transformed.push(
-                    self.resolve_array(&child, field, remaining)
-                        .await?
-                        .to_data(),
-                );
+                transformed.push(self.resolve_array(&child, field).await?.to_data());
             }
             Ok(make_array(
                 data.into_builder()
@@ -319,21 +253,17 @@ mod tests {
     }
 
     #[test]
-    fn decodes_data_uris_with_byte_limits() {
+    fn decodes_data_uris() {
         assert_eq!(
-            decode_data_uri("data:image/png;base64,AP8=", 2).unwrap(),
+            decode_data_uri("data:image/png;base64,AP8=").unwrap(),
             [0, 255]
         );
+        assert_eq!(decode_data_uri("data:image/png,%00%ff").unwrap(), [0, 255]);
         assert_eq!(
-            decode_data_uri("data:image/png,%00%ff", 2).unwrap(),
+            decode_data_uri("data:image/png;base64,AP8%3D").unwrap(),
             [0, 255]
         );
-        assert_eq!(
-            decode_data_uri("data:image/png;base64,AP8%3D", 2).unwrap(),
-            [0, 255]
-        );
-        assert!(decode_data_uri("data:image/png;base64,AP8=", 1).is_err());
-        assert!(decode_data_uri("data:image/png,%00%ff", 1).is_err());
-        assert!(decode_data_uri("data:image/png;base64,????", 3).is_err());
+        assert!(decode_data_uri("data:image/png").is_err());
+        assert!(decode_data_uri("data:image/png;base64,????").is_err());
     }
 }
