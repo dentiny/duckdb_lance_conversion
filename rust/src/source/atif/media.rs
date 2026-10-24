@@ -139,18 +139,24 @@ fn decode_data_uri(uri: &str, limit: u64) -> Result<Vec<u8>> {
         .split_once(',')
         .ok_or_else(|| Error::message("invalid ATIF media data URI"))?;
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-    let bytes = if header.ends_with(";base64") {
-        // Validate the encoded bound before allocating the decoded output.
-        if encoded.len() > limit.saturating_add(2).saturating_div(3).saturating_mul(4) {
-            return Err(limit_error());
-        }
+    let base64 = header.ends_with(";base64");
+    let encoded_limit = if base64 {
+        limit.div_ceil(3).saturating_mul(4)
+    } else {
+        limit
+    };
+    let encoded = percent_encoding::percent_decode_str(encoded)
+        .take(encoded_limit.saturating_add(1))
+        .collect::<Vec<_>>();
+    if encoded.len() > encoded_limit {
+        return Err(limit_error());
+    }
+    let bytes = if base64 {
         STANDARD
             .decode(encoded)
             .map_err(|error| Error::message(format!("invalid ATIF media base64: {error}")))?
     } else {
-        percent_encoding::percent_decode_str(encoded)
-            .take(limit.saturating_add(1))
-            .collect()
+        encoded
     };
     if bytes.len() > limit {
         return Err(limit_error());
@@ -281,7 +287,7 @@ mod tests {
     fn resolves_media_relative_to_the_document() {
         assert_eq!(
             resolve_uri("/runs/a/trajectory.json", "images/a.png").unwrap(),
-            "/runs/a/images/a.png"
+            Path::new("/runs/a").join("images/a.png").to_string_lossy()
         );
         assert_eq!(
             resolve_uri("https://example.com/run/t.json", "../image.png").unwrap(),
@@ -301,6 +307,18 @@ mod tests {
     }
 
     #[test]
+    fn s3_relative_media_keeps_the_decoded_object_key() {
+        let uri = resolve_uri("s3://bucket/run/t.json", "image 1.png").unwrap();
+        let input = InputFile::open(
+            &uri,
+            Some(&S3StorageConfig::default()),
+            &OpendalConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(input.opendal_path, "run/image 1.png");
+    }
+
+    #[test]
     fn decodes_data_uris_with_byte_limits() {
         assert_eq!(
             decode_data_uri("data:image/png;base64,AP8=", 2).unwrap(),
@@ -308,6 +326,10 @@ mod tests {
         );
         assert_eq!(
             decode_data_uri("data:image/png,%00%ff", 2).unwrap(),
+            [0, 255]
+        );
+        assert_eq!(
+            decode_data_uri("data:image/png;base64,AP8%3D", 2).unwrap(),
             [0, 255]
         );
         assert!(decode_data_uri("data:image/png;base64,AP8=", 1).is_err());
