@@ -11,7 +11,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::{future::BoxFuture, AsyncReadExt};
 use url::Url;
 
-use crate::atif::{CONTENT_TYPE, SOURCE_TYPE};
+use crate::atif::{ContentType, CONTENT_TYPES, SOURCE_TYPE};
 use crate::error::ResultExt;
 use crate::source::{read_object, ReadMetrics};
 use crate::storage::InputFile;
@@ -21,15 +21,20 @@ use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 /// every other native ATIF field keep their types and positions.
 pub(super) fn embedded_schema() -> SchemaRef {
     fn embedded_field(field: &FieldRef, path: &str) -> FieldRef {
-        let role = match path {
-            "steps.message.text" | "steps.observation.results.content.text" => Some("text"),
+        let content_types: &[ContentType] = match path {
+            "steps.message.text" | "steps.observation.results.content.text" => &[ContentType::Text],
             "steps.message.source.path" | "steps.observation.results.content.source.path" => {
-                Some("media")
+                &[ContentType::Image, ContentType::Audio]
             }
-            _ => None,
+            _ => &[],
         };
         let data_type = match field.data_type() {
-            _ if role == Some("media") => DataType::LargeBinary,
+            _ if content_types
+                .iter()
+                .any(|kind| matches!(kind, ContentType::Image | ContentType::Audio)) =>
+            {
+                DataType::LargeBinary
+            }
             DataType::Struct(fields) => DataType::Struct(
                 fields
                     .iter()
@@ -40,10 +45,13 @@ pub(super) fn embedded_schema() -> SchemaRef {
             other => other.clone(),
         };
         let mut field = field.as_ref().clone().with_data_type(data_type);
-        if let Some(role) = role {
+        if !content_types.is_empty() {
             let mut metadata = field.metadata().clone();
             metadata.insert(SOURCE_TYPE.into(), "atif".into());
-            metadata.insert(CONTENT_TYPE.into(), role.into());
+            metadata.insert(
+                CONTENT_TYPES.into(),
+                serde_json::json!(content_types).to_string(),
+            );
             field = field.with_metadata(metadata);
         }
         Arc::new(field)

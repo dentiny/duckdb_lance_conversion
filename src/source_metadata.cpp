@@ -8,7 +8,7 @@ namespace duckdb {
 namespace {
 
 constexpr const char *SOURCE_TYPE = "lance_conversion:source_type";
-constexpr const char *CONTENT_TYPE = "lance_conversion:content_type";
+constexpr const char *CONTENT_TYPES = "lance_conversion:content_types";
 
 LogicalType ImportField(const LogicalType &type, const ArrowSchema &schema, const string &inherited_source) {
 	auto metadata = schema.metadata ? ArrowSchemaMetadata(schema.metadata) : ArrowSchemaMetadata();
@@ -34,9 +34,9 @@ LogicalType ImportField(const LogicalType &type, const ArrowSchema &schema, cons
 	auto info = type.HasExtensionInfo() ? make_uniq<ExtensionTypeInfo>(*type.GetExtensionInfo())
 	                                    : make_uniq<ExtensionTypeInfo>();
 	info->properties[SOURCE_TYPE] = Value(source);
-	auto content = metadata.GetOption(CONTENT_TYPE);
+	auto content = metadata.GetOption(CONTENT_TYPES);
 	if (!content.empty()) {
-		info->properties[CONTENT_TYPE] = Value(content);
+		info->properties[CONTENT_TYPES] = Value(content);
 	}
 	return result.WithExtensionInfo(std::move(info));
 }
@@ -58,7 +58,7 @@ void StoreMetadata(ArrowSchema &schema, ArrowSchemaMetadata &metadata, DuckDBArr
 void ExportField(const LogicalType &type, ArrowSchema &schema, DuckDBArrowSchemaHolder &holder) {
 	auto metadata = schema.metadata ? ArrowSchemaMetadata(schema.metadata) : ArrowSchemaMetadata();
 	bool tagged = false;
-	for (auto key : {SOURCE_TYPE, CONTENT_TYPE}) {
+	for (auto key : {SOURCE_TYPE, CONTENT_TYPES}) {
 		auto value = Property(type, key);
 		if (!value.empty()) {
 			metadata.AddOption(key, value);

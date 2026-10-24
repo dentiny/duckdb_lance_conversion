@@ -2995,6 +2995,7 @@ dependencies = [
  "parquet",
  "percent-encoding",
  "png",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

@@ -32,6 +32,7 @@ opendal = { version = "0.59.3", default-features = false, features = ["executors
 opendal-http-transport-reqwest = "0.59"
 parquet = { version = "58", features = ["arrow", "arrow_canonical_extension_types", "async"] }
 percent-encoding = "2"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "fs", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
