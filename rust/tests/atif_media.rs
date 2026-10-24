@@ -132,7 +132,7 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
     let batch = read(AtifSource::new(path.to_string_lossy())).await.unwrap();
     assert_eq!(batch.num_columns(), 13);
     assert_eq!(batch["raw_json"].as_string::<i32>().value(0), raw);
-    // Match COPY's wide Arrow offsets and loss of field metadata.
+    // Match COPY's wide Arrow offsets and preserved source metadata.
     let batch = duckdb_export(&batch);
     // A nonzero row offset checks recursive rewriting of sliced list/struct data.
     let batch = concat_batches(&batch.schema(), [&batch, &batch])
@@ -154,11 +154,17 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
         dataset.manifest().data_storage_format.version.to_string(),
         "2.2"
     );
+    assert_eq!(
+        dataset.schema().metadata["lance_conversion:source_type"],
+        "atif"
+    );
     let text = dataset
         .schema()
         .field("steps.item.message.item.text")
         .unwrap();
     assert_eq!(text.data_type(), DataType::LargeBinary);
+    assert_eq!(text.metadata["lance_conversion:source_type"], "atif");
+    assert_eq!(text.metadata["lance_conversion:content_type"], "text");
     assert_eq!(
         text.metadata.get("lance-encoding:compression").unwrap(),
         "lz4"
@@ -169,6 +175,8 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
         "steps.item.observation.results.item.content.item.source.path",
     ] {
         let media = dataset.schema().field(path).unwrap();
+        assert_eq!(media.metadata["lance_conversion:source_type"], "atif");
+        assert_eq!(media.metadata["lance_conversion:content_type"], "media");
         assert_eq!(
             media.metadata.get("ARROW:extension:name").unwrap(),
             "lance.blob.v2"
@@ -287,8 +295,7 @@ async fn text_page_codec(dataset: &Dataset) -> Option<i32> {
     }
 }
 
-// COPY exports wide offsets and drops input Arrow metadata. The ATIF defaults
-// must follow ContentPart structure, not native Utf8/List widths or annotations.
+// COPY exports wide offsets; the source metadata bridge preserves ATIF semantics.
 fn duckdb_export(batch: &RecordBatch) -> RecordBatch {
     fn wide(field: &Field) -> Arc<Field> {
         let data_type = match field.data_type() {
@@ -299,7 +306,10 @@ fn duckdb_export(batch: &RecordBatch) -> RecordBatch {
             DataType::List(item) => DataType::LargeList(wide(item)),
             other => other.clone(),
         };
-        Arc::new(Field::new(field.name(), data_type, field.is_nullable()))
+        Arc::new(
+            Field::new(field.name(), data_type, field.is_nullable())
+                .with_metadata(field.metadata().clone()),
+        )
     }
     let fields = batch
         .schema()
@@ -313,7 +323,14 @@ fn duckdb_export(batch: &RecordBatch) -> RecordBatch {
         .zip(&fields)
         .map(|(array, field)| arrow_cast::cast(array, field.data_type()).unwrap())
         .collect();
-    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+    RecordBatch::try_new(
+        Arc::new(Schema::new_with_metadata(
+            fields,
+            batch.schema().metadata().clone(),
+        )),
+        columns,
+    )
+    .unwrap()
 }
 
 #[tokio::test]

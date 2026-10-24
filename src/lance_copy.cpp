@@ -1,4 +1,5 @@
 #include "lance_copy.hpp"
+#include "source_metadata.hpp"
 #include "lance_ffi.hpp"
 #include "storage_options.hpp"
 #include "lance_conversion.h"
@@ -508,6 +509,7 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	auto &bind = bind_p.Cast<LanceBindData>();
 	ArrowSchemaWrapper schema;
 	ArrowConverter::ToArrowSchema(&schema.arrow_schema, bind.types, IdentifiersToStrings(bind.names), bind.properties);
+	ExportSourceMetadata(bind.types, schema.arrow_schema);
 	auto state = make_uniq<LanceGlobalState>();
 	auto write_config = lance_write_default_config();
 	write_config.mode = bind.mode;

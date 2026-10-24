@@ -252,6 +252,13 @@ Invalid trajectories fail the scan with the source and one-based record index.
 field; `COPY ... FORMAT LANCE` stores them as Blob V2. Content order,
 MIME type, duration and all 13 top-level columns are retained. Original references
 remain in `raw_json`; embedded subagents stay opaque JSON and are not fetched.
+The schema carries `lance_conversion:source_type = atif`; text/media fields also
+carry `lance_conversion:content_type = text` or `media`. The scan imports these
+markers into DuckDB's `ExtensionTypeInfo.properties`, and `COPY` restores them
+to Arrow metadata. Direct projections, aliases, and persistent DuckDB tables
+retain the markers. The writer uses them instead of recognizing field shapes.
+Schema-level source metadata is emitted when all output columns share a source.
+
 Content text is `LargeBinary` with LZ4 requested by default. Explicit settings win:
 
 ```sql

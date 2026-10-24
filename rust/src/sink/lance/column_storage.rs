@@ -169,7 +169,7 @@ fn blob_schema(input_schema: &SchemaRef, options: &WriteOptions) -> Result<Schem
         .enumerate()
         .map(|(index, field)| {
             if uri_blob_columns.binary_search(&index).is_ok()
-                || (promote_binary && is_binary(field.data_type()))
+                || (promote_binary && is_binary(field.data_type()) && !atif::is_text(field))
             {
                 blob_field(field, &blob_options)
             } else {

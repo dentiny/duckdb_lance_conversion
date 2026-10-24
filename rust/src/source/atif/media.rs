@@ -11,6 +11,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::{future::BoxFuture, AsyncReadExt};
 use url::Url;
 
+use crate::atif::{CONTENT_TYPE, SOURCE_TYPE};
 use crate::error::ResultExt;
 use crate::source::{read_object, ReadMetrics};
 use crate::storage::InputFile;
@@ -19,42 +20,44 @@ use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 /// The extension materializes MediaSource.path in-place; ContentPart.text and
 /// every other native ATIF field keep their types and positions.
 pub(super) fn embedded_schema() -> SchemaRef {
-    fn embedded_field(field: &FieldRef) -> FieldRef {
-        let data_type = match field.data_type() {
-            // In atif-arrow's fixed schema, MediaSource has these three fields in
-            // this order. Match the full shape to replace only its path reference
-            // with payload bytes, preserving the MIME type and duration fields.
-            DataType::Struct(fields)
-                if fields.len() == 3
-                    && fields[0].name() == "media_type"
-                    && fields[1].name() == "path"
-                    && fields[2].name() == "duration_sec" =>
-            {
-                let mut fields = fields.to_vec();
-                fields[1] = Arc::new(
-                    fields[1]
-                        .as_ref()
-                        .clone()
-                        .with_data_type(DataType::LargeBinary),
-                );
-                DataType::Struct(fields.into())
+    fn embedded_field(field: &FieldRef, path: &str) -> FieldRef {
+        let role = match path {
+            "steps.message.text" | "steps.observation.results.content.text" => Some("text"),
+            "steps.message.source.path" | "steps.observation.results.content.source.path" => {
+                Some("media")
             }
-            DataType::Struct(fields) => {
-                DataType::Struct(fields.iter().map(embedded_field).collect())
-            }
-            DataType::List(item) => DataType::List(embedded_field(item)),
-            _ => return field.clone(),
+            _ => None,
         };
-        Arc::new(field.as_ref().clone().with_data_type(data_type))
+        let data_type = match field.data_type() {
+            _ if role == Some("media") => DataType::LargeBinary,
+            DataType::Struct(fields) => DataType::Struct(
+                fields
+                    .iter()
+                    .map(|child| embedded_field(child, &format!("{path}.{}", child.name())))
+                    .collect(),
+            ),
+            DataType::List(item) => DataType::List(embedded_field(item, path)),
+            other => other.clone(),
+        };
+        let mut field = field.as_ref().clone().with_data_type(data_type);
+        if let Some(role) = role {
+            let mut metadata = field.metadata().clone();
+            metadata.insert(SOURCE_TYPE.into(), "atif".into());
+            metadata.insert(CONTENT_TYPE.into(), role.into());
+            field = field.with_metadata(metadata);
+        }
+        Arc::new(field)
     }
     let native = atif_arrow::trajectory_schema();
+    let mut metadata = native.metadata().clone();
+    metadata.insert(SOURCE_TYPE.into(), "atif".into());
     Arc::new(Schema::new_with_metadata(
         native
             .fields()
             .iter()
-            .map(embedded_field)
+            .map(|field| embedded_field(field, field.name()))
             .collect::<Vec<_>>(),
-        native.metadata().clone(),
+        metadata,
     ))
 }
 

@@ -146,6 +146,10 @@ impl BatchSource for AtifSource {
                     let mut batch = batch?;
                     if needs_media {
                         batch = resolver.resolve(batch, media_schema).await?;
+                    } else {
+                        batch
+                            .schema_metadata_mut()
+                            .extend(media_schema.metadata().clone());
                     }
                     match projection {
                         Some(columns) => Ok(batch.project(&columns)?),

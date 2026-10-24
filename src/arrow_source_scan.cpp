@@ -1,6 +1,7 @@
 #include "arrow_source_scan.hpp"
 
 #include "lance_ffi.hpp"
+#include "source_metadata.hpp"
 
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/exception.hpp"
@@ -105,6 +106,7 @@ unique_ptr<FunctionData> BindSourceStream(ClientContext &context, SourceStreamFa
 	result->factory->GetSchema(result->schema_root.arrow_schema);
 	ArrowTableFunction::PopulateArrowTableSchema(context, result->arrow_table, result->schema_root.arrow_schema);
 	names = StringsToIdentifiers(result->arrow_table.GetNames());
+	ImportSourceMetadata(result->arrow_table.GetTypes(), result->schema_root.arrow_schema);
 	return_types = result->arrow_table.GetTypes();
 	result->all_types = return_types;
 	return result;

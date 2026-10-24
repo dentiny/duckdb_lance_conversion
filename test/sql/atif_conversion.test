@@ -2,6 +2,8 @@
 # description: ATIF trajectory JSON and JSONL, plain or gzipped, to Lance datasets
 # group: [sql]
 
+load {TEST_DIR}/atif_metadata.duckdb
+
 require lance_conversion
 
 query TIT
@@ -134,6 +136,34 @@ TO '__TEST_DIR__/invalid_atif_layout.lance'
 ----
 COLUMN_STRUCTURAL_ENCODING applies to top-level columns
 
+# Source metadata must survive materialization, database reopen, nested extraction,
+# and aliases. Text extracted as a top-level column must not become a media Blob.
+statement ok
+CREATE TABLE atif_staged AS SELECT * FROM read_atif('test/data/trajectory_media.json');
+
+restart
+
+query I
+COPY (SELECT steps AS renamed_steps FROM atif_staged)
+TO '__TEST_DIR__/atif_staged.lance' (FORMAT LANCE);
+----
+1
+
+query I
+COPY (SELECT steps[1].message[1].text AS body FROM atif_staged)
+TO '__TEST_DIR__/atif_text.lance' (FORMAT LANCE);
+----
+1
+
+# An identical struct shape without ATIF metadata must retain ordinary storage.
+query I
+COPY (SELECT {'type': 'text', 'text': 'plain'::BLOB,
+              'source': {'media_type': 'image/png', 'path': 'bytes'::BLOB,
+                         'duration_sec': 1.0::DOUBLE}} AS content)
+TO '__TEST_DIR__/not_atif.lance' (FORMAT LANCE);
+----
+1
+
 restart no_extension_load
 
 statement ok
@@ -155,3 +185,14 @@ query TI
 SELECT trajectory_id, source_record_index FROM '__TEST_DIR__/atif_media.lance';
 ----
 media	1
+
+query T
+SELECT decode(body) FROM '__TEST_DIR__/atif_text.lance';
+----
+hello 你好🙂
+
+query TTT
+SELECT decode(content.text), typeof(content.source.path), decode(content.source.path)
+FROM '__TEST_DIR__/not_atif.lance';
+----
+plain	BLOB	bytes

@@ -1,5 +1,6 @@
 //! Async Arrow sources and Lance writers for the DuckDB extension, which
 //! drives them through FFI.
+mod atif;
 mod error;
 mod ffi;
 mod schema;
