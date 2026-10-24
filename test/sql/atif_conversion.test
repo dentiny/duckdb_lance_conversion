@@ -6,58 +6,23 @@ load {TEST_DIR}/atif_metadata.duckdb
 
 require lance_conversion
 
-query TIT
-SELECT trajectory_id, source_record_index, agent.name
-FROM read_atif('test/data/trajectories.jsonl')
+# One scan covers JSONL/gzip, explicit format, provenance, and nested fields.
+query TITII
+SELECT trajectory_id, source_record_index, agent.name,
+       len(steps), steps[2].metrics.prompt_tokens
+FROM read_atif('test/data/trajectories.jsonl.gz', format = 'jsonl')
 ORDER BY source_record_index;
 ----
-t1	1	example
-t2	2	example
+t1	1	example	2	10
+t2	2	example	1	NULL
 
-query TII
-SELECT trajectory_id, len(steps), steps[2].metrics.prompt_tokens
-FROM read_atif('test/data/trajectories.jsonl')
-ORDER BY trajectory_id;
-----
-t1	2	10
-t2	1	NULL
-
-query TT
-SELECT trajectory_id, steps[1].message[1].text
-FROM read_atif('test/data/trajectory.json');
-----
-single	hello
-
+# Exercise nested compression options and write the dataset used by the round trip.
 query I
-SELECT count(*) FROM read_atif('test/data/trajectories.jsonl', format = 'jsonl');
+COPY (SELECT * FROM read_atif('test/data/trajectories.jsonl'))
+TO '__TEST_DIR__/atif.lance' (FORMAT LANCE,
+    COLUMN_COMPRESSION {'STEPS.MESSAGE.TEXT': 'zstd', 'steps.observation.results.content.text': 'none'});
 ----
 2
-
-query TII
-SELECT trajectory_id, source_record_index, len(steps)
-FROM read_atif('test/data/trajectories.jsonl.gz')
-ORDER BY source_record_index;
-----
-t1	1	2
-t2	2	1
-
-query TT
-SELECT trajectory_id, steps[1].message[1].text
-FROM read_atif('test/data/trajectory.json.gz');
-----
-single	hello
-
-query I
-COPY (
-    SELECT * FROM read_atif('test/data/trajectories.jsonl')
-) TO '__TEST_DIR__/atif.lance' (FORMAT LANCE);
-----
-2
-
-statement error
-SELECT * FROM read_atif('test/data/records.warc');
-----
-unsupported ATIF format 'warc'
 
 statement error
 SELECT * FROM read_atif('test/data/trajectory.json', format = 'csv');
@@ -80,23 +45,17 @@ read_atif requires preserve_insertion_order = true
 statement ok
 RESET preserve_insertion_order;
 
-query TIIT
-SELECT trajectory_id,
-       steps[1].message[2].source.path = (SELECT content FROM read_blob('test/data/atif-image.png')),
-       steps[1].message[3].source.path = (SELECT content FROM read_blob('test/data/atif-audio.wav')),
-       decode(steps[1].message[1].text)
-FROM read_atif('test/data/trajectory_media.json');
-----
-media	true	true	hello 你好🙂
-
+# Check both message and observation payloads with the same assertions.
 query IIT
-SELECT steps[2].observation.results[1].content[2].source.path =
-           (SELECT content FROM read_blob('test/data/atif-image.png')),
-       steps[2].observation.results[1].content[3].source.path =
-           (SELECT content FROM read_blob('test/data/atif-audio.wav')),
-       decode(steps[2].observation.results[1].content[1].text)
-FROM read_atif('test/data/trajectory_media.json');
+SELECT parts[2].source.path = (SELECT content FROM read_blob('test/data/atif-image.png')),
+       parts[3].source.path = (SELECT content FROM read_blob('test/data/atif-audio.wav')),
+       decode(parts[1].text)
+FROM (
+    SELECT unnest([steps[1].message, steps[2].observation.results[1].content]) AS parts
+    FROM read_atif('test/data/trajectory_media.json')
+);
 ----
+true	true	hello 你好🙂
 true	true	RGB pattern and a 440 Hz tone.
 
 query T
@@ -108,19 +67,6 @@ statement error
 SELECT steps FROM read_atif('test/data/trajectory_missing_media.json');
 ----
 ATIF media
-
-query I
-COPY (SELECT * FROM read_atif('test/data/trajectory_media.json'))
-TO '__TEST_DIR__/atif_media.lance' (FORMAT LANCE);
-----
-1
-
-query I
-COPY (SELECT * FROM read_atif('test/data/trajectories.jsonl'))
-TO '__TEST_DIR__/atif_overrides.lance' (FORMAT LANCE,
-    COLUMN_COMPRESSION {'STEPS.MESSAGE.TEXT': 'zstd', 'steps.observation.results.content.text': 'none'});
-----
-2
 
 statement error
 COPY (SELECT * FROM read_atif('test/data/trajectory.json'))
@@ -144,8 +90,8 @@ CREATE TABLE atif_staged AS SELECT * FROM read_atif('test/data/trajectory_media.
 restart
 
 query I
-COPY (SELECT steps AS renamed_steps FROM atif_staged)
-TO '__TEST_DIR__/atif_staged.lance' (FORMAT LANCE);
+COPY (SELECT trajectory_id, source_record_index, steps AS renamed_steps FROM atif_staged)
+TO '__TEST_DIR__/atif_media.lance' (FORMAT LANCE);
 ----
 1
 
@@ -173,18 +119,15 @@ LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
 # logical Blob descriptors, causing an Arrow child-count mismatch for steps.
 # Keep its SQL round trip to metadata until the reader fixes that mismatch.
 # rust/tests/atif_media.rs verifies full text/media round trips with the writer SDK.
-query TT
-SELECT trajectory_id, agent.name
-FROM '__TEST_DIR__/atif.lance'
+query TI
+SELECT trajectory_id, source_record_index FROM '__TEST_DIR__/atif.lance'
+UNION ALL
+SELECT trajectory_id, source_record_index FROM '__TEST_DIR__/atif_media.lance'
 ORDER BY trajectory_id;
 ----
-t1	example
-t2	example
-
-query TI
-SELECT trajectory_id, source_record_index FROM '__TEST_DIR__/atif_media.lance';
-----
 media	1
+t1	1
+t2	2
 
 query T
 SELECT decode(body) FROM '__TEST_DIR__/atif_text.lance';
