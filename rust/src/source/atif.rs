@@ -124,37 +124,32 @@ impl BatchSource for AtifSource {
         let batch_size = if needs_media { 1 } else { BATCH_SIZE };
         let reader = TrajectoryReader::new(reader, format, batch_size, Some(input.uri.clone()))
             .map_err(|error| Error::message(format!("ATIF reader: {error}")))?;
-        let resolver = MediaResolver {
+        let resolver = Arc::new(MediaResolver {
             document: input.uri,
             s3_config: self.s3_config,
             opendal_config: self.opendal_config,
             metrics: self.metrics,
-        };
+        });
         let parallelism = if needs_media {
             1
         } else {
             std::thread::available_parallelism().map_or(1, usize::from)
         };
+        let output_schema = schema.clone();
         let batches = reader
             .into_parallel_stream(parallelism)
             .map_err(|error| Error::message(format!("ATIF read error: {error}")))
             .then(move |batch| {
                 let resolver = resolver.clone();
                 let projection = projection.clone();
-                let media_schema = full_schema.clone();
+                let schema = output_schema.clone();
                 async move {
-                    let mut batch = batch?;
-                    if needs_media {
-                        batch = resolver.resolve(batch, media_schema).await?;
-                    } else {
-                        batch
-                            .schema_metadata_mut()
-                            .extend(media_schema.metadata().clone());
-                    }
-                    match projection {
-                        Some(columns) => Ok(batch.project(&columns)?),
-                        None => Ok(batch),
-                    }
+                    let batch = batch?;
+                    let batch = match projection {
+                        Some(columns) => batch.project(&columns)?,
+                        None => batch,
+                    };
+                    resolver.resolve(batch, schema).await
                 }
             });
         Ok((schema, Box::pin(batches)))

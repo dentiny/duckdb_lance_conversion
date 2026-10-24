@@ -253,12 +253,9 @@ Invalid trajectories fail the scan with the source and one-based record index.
 MIME types and durations are retained. `raw_json` preserves the input references;
 embedded subagent trajectories remain opaque JSON.
 
-The reader classifies each ContentPart as `Text`, `Image` or `Audio`. Metadata
-separately records `lance_conversion:source_type = atif` and
-`lance_conversion:storage_policy = text | blob`. DuckDB type properties preserve
-these markers across projections, aliases and persistent tables, and `COPY`
-restores them to Arrow. Unrelated fields retain their storage policy.
-Schema-level source metadata is emitted when all output columns share a source.
+Source/storage metadata preserves ATIF policies across direct projections,
+aliases and persistent DuckDB tables. Unmarked fields retain their ordinary
+storage policy; computed expressions may lose the markers.
 
 Text uses `LargeBinary`, requesting LZ4 by default. Explicit nested settings override it:
 
@@ -273,8 +270,7 @@ TO 'trajectory.lance' (FORMAT LANCE, COLUMN_COMPRESSION {
 Media paths resolve relative to the document, including JSONL/gzip inputs.
 Local documents support local files, `file://`, HTTP(S) and data URIs; remote
 media stays within the document's storage origin and uses its credentials.
-Missing projected media fails the scan. Metadata-only projections skip media I/O;
-media scans resolve one trajectory per batch.
+Missing projected media fails the scan; metadata-only projections skip media I/O.
 
 Format 2.2 is the default; its SDK codec policy may fall back to Zstd for wide
 FullZip text. Use `STORAGE_VERSION '2.3'` for the upstream per-value LZ4 fix.

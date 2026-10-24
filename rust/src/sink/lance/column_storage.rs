@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -47,13 +48,6 @@ fn is_binary(data_type: &DataType) -> bool {
     )
 }
 
-fn is_string(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-    )
-}
-
 fn is_blob(field: &Field) -> bool {
     field
         .metadata()
@@ -96,10 +90,10 @@ fn transform_array(array: &ArrayRef, target: &Field) -> std::result::Result<Arra
             array.nulls().cloned(),
         )?));
     }
-    let children: Vec<FieldRef> = match target.data_type() {
-        DataType::Struct(fields) => fields.to_vec(),
+    let children: &[FieldRef] = match target.data_type() {
+        DataType::Struct(fields) => fields,
         DataType::List(field) | DataType::LargeList(field) | DataType::FixedSizeList(field, _) => {
-            vec![field.clone()]
+            std::slice::from_ref(field)
         }
         _ => {
             return Err(ArrowError::SchemaError(format!(
@@ -144,32 +138,24 @@ fn blob_schema(input_schema: &SchemaRef, options: &WriteOptions) -> Result<Schem
         })?;
         blob_options = blob_options.with_dedicated_size_threshold(threshold);
     }
-    let mut uri_blob_columns = options
-        .blob_columns
-        .iter()
-        .map(|name| {
-            let index = input_schema
-                .index_of(name)
-                .map_err(|_| Error::message(format!("BLOB_COLUMNS column not found: {name}")))?;
-            ensure_uri_column(input_schema.field(index).data_type(), name)?;
-            Ok(index)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    uri_blob_columns.sort_unstable();
-    if uri_blob_columns
-        .windows(2)
-        .any(|indices| indices[0] == indices[1])
-    {
-        return Err(Error::message(
-            "BLOB_COLUMNS cannot contain duplicate columns",
-        ));
+    let mut uri_blob_columns = HashSet::new();
+    for name in &options.blob_columns {
+        let index = input_schema
+            .index_of(name)
+            .map_err(|_| Error::message(format!("BLOB_COLUMNS column not found: {name}")))?;
+        ensure_uri_column(input_schema.field(index).data_type(), name)?;
+        if !uri_blob_columns.insert(index) {
+            return Err(Error::message(
+                "BLOB_COLUMNS cannot contain duplicate columns",
+            ));
+        }
     }
     let fields = input_schema
         .fields()
         .iter()
         .enumerate()
         .map(|(index, field)| {
-            if uri_blob_columns.binary_search(&index).is_ok()
+            if uri_blob_columns.contains(&index)
                 || (promote_binary
                     && is_binary(field.data_type())
                     && atif::storage_policy(field)? != Some(StoragePolicy::Text))
@@ -187,7 +173,10 @@ fn blob_schema(input_schema: &SchemaRef, options: &WriteOptions) -> Result<Schem
 }
 
 fn ensure_uri_column(data_type: &DataType, name: &str) -> Result<()> {
-    if is_string(data_type) {
+    if matches!(
+        data_type,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+    ) {
         Ok(())
     } else {
         Err(Error::message(format!(

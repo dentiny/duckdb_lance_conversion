@@ -18,10 +18,6 @@ use crate::source::{read_object, ReadMetrics};
 use crate::storage::InputFile;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
-fn is_content_part(path: &str) -> bool {
-    matches!(path, "steps.message" | "steps.observation.results.content")
-}
-
 /// Each Arrow struct row is one ContentPart with its own concrete type.
 fn content_type(part: &StructArray, index: usize) -> Result<ContentType> {
     match part["type"].as_string::<i32>().value(index) {
@@ -38,15 +34,14 @@ fn content_type(part: &StructArray, index: usize) -> Result<ContentType> {
 /// each ContentPart.type retains the actual text/image/audio variant.
 pub(super) fn embedded_schema() -> SchemaRef {
     fn embedded_field(field: &FieldRef, path: &str) -> FieldRef {
-        let policy = if path.strip_suffix(".text").is_some_and(is_content_part) {
-            Some(StoragePolicy::Text)
-        } else if path
-            .strip_suffix(".source.path")
-            .is_some_and(is_content_part)
-        {
-            Some(StoragePolicy::Blob)
-        } else {
-            None
+        let policy = match path {
+            "steps.message.text" | "steps.observation.results.content.text" => {
+                Some(StoragePolicy::Text)
+            }
+            "steps.message.source.path" | "steps.observation.results.content.source.path" => {
+                Some(StoragePolicy::Blob)
+            }
+            _ => None,
         };
         let data_type = match field.data_type() {
             _ if policy == Some(StoragePolicy::Blob) => DataType::LargeBinary,
@@ -142,7 +137,6 @@ fn decode_data_uri(uri: &str) -> Result<Vec<u8>> {
     }
 }
 
-#[derive(Clone)]
 pub(super) struct MediaResolver {
     pub document: String,
     pub s3_config: Option<S3StorageConfig>,
@@ -244,14 +238,14 @@ impl MediaResolver {
                 }
                 return Ok(Arc::new(bytes.finish()) as ArrayRef);
             }
-            let children: Vec<FieldRef> = match target.data_type() {
-                DataType::Struct(fields) => fields.to_vec(),
-                DataType::List(item) => vec![item.clone()],
+            let children: &[FieldRef] = match target.data_type() {
+                DataType::Struct(fields) => fields,
+                DataType::List(item) => std::slice::from_ref(item),
                 _ => return Err(Error::message("unexpected ATIF media field type")),
             };
             let data = array.to_data();
             let mut transformed = Vec::with_capacity(children.len());
-            for (child, field) in data.child_data().iter().zip(&children) {
+            for (child, field) in data.child_data().iter().zip(children) {
                 let child = make_array(child.clone());
                 transformed.push(self.resolve_array(&child, field, part).await?.to_data());
             }

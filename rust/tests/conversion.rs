@@ -3,7 +3,8 @@ mod common;
 use std::sync::Arc;
 
 use arrow_array::{
-    ArrayRef, BinaryArray, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, StringArray,
+    cast::AsArray, ArrayRef, BinaryArray, FixedSizeListArray, Float32Array, Int64Array,
+    RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
@@ -205,7 +206,7 @@ async fn string_uri_column_is_ingested_as_a_blob() {
     let output = temp.path().join("uris.lance");
     fs::write(&first, b"first").await.unwrap();
     fs::write(&empty, b"").await.unwrap();
-    let server = serve_http(|_| b"second".to_vec()).await;
+    let server = serve_http(|_| b"second").await;
 
     let uri_batch = |uris: Vec<Option<String>>| {
         RecordBatch::try_new(
@@ -278,8 +279,8 @@ async fn atif_reads_http_urls() {
     static BODY: std::sync::LazyLock<String> =
         std::sync::LazyLock::new(|| format!("{DOCUMENT}\n{DOCUMENT}\n"));
     let server = serve_http(|path| match path {
-        "/runs/my%20trajectories.jsonl" => BODY.as_bytes().to_vec(),
-        "/runs/images/a.png" => vec![0, 255, 42],
+        "/runs/my%20trajectories.jsonl" => BODY.as_bytes(),
+        "/runs/images/a.png" => &[0, 255, 42],
         other => panic!("unexpected HTTP request: {other}"),
     })
     .await;
@@ -289,14 +290,7 @@ async fn atif_reads_http_urls() {
     let batches = stream.try_collect::<Vec<_>>().await.unwrap();
     let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
     assert_eq!(batch.num_rows(), 2);
-    let source_uri = batch
-        .column_by_name("source_uri")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
-    assert_eq!(source_uri.value(0), url);
-    use arrow_array::cast::AsArray;
+    assert_eq!(batch["source_uri"].as_string::<i32>().value(0), url);
     let steps = batch["steps"].as_list::<i32>().value(0);
     let parts = steps.as_struct()["message"].as_list::<i32>().value(0);
     assert_eq!(
@@ -320,7 +314,7 @@ async fn atif_reads_http_urls() {
 }
 
 /// Serve routed test objects, supporting HEAD and a single byte range.
-async fn serve_http(route: impl Fn(&str) -> Vec<u8> + Send + 'static) -> String {
+async fn serve_http(route: impl Fn(&str) -> &'static [u8] + Send + 'static) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move {
