@@ -22,6 +22,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <tuple>
 #include <string_view>
@@ -324,20 +325,18 @@ Identifier ResolveEncodingColumn(const Identifier &option_name, const Identifier
 		while (type->id() == LogicalTypeId::LIST || type->id() == LogicalTypeId::ARRAY) {
 			type = type->id() == LogicalTypeId::LIST ? &ListType::GetChildType(*type) : &ArrayType::GetChildType(*type);
 		}
-		const LogicalType *child_type = nullptr;
-		if (type->id() == LogicalTypeId::STRUCT) {
-			for (const auto &child : StructType::GetChildTypes(*type)) {
-				if (Identifier(child.first) == Identifier(parts[index])) {
-					canonical += "." + child.first.GetIdentifierName();
-					child_type = &child.second;
-					break;
-				}
-			}
-		}
-		if (!child_type) {
+		if (type->id() != LogicalTypeId::STRUCT) {
 			throw BinderException("%s column not found: %s", option_name, requested);
 		}
-		type = child_type;
+		const auto &children = StructType::GetChildTypes(*type);
+		auto child = std::find_if(children.begin(), children.end(), [&](const auto &entry) {
+			return entry.first == Identifier(parts[index]);
+		});
+		if (child == children.end()) {
+			throw BinderException("%s column not found: %s", option_name, requested);
+		}
+		canonical += "." + child->first.GetIdentifierName();
+		type = &child->second;
 	}
 	return Identifier(canonical);
 }

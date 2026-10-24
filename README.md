@@ -248,49 +248,39 @@ TO 'trajectories.lance' (FORMAT LANCE);
 
 Invalid trajectories fail the scan with the source and one-based record index.
 
-`read_atif` always embeds image/audio bytes in the native `ContentPart.source.path`
-field; `COPY ... FORMAT LANCE` stores them as Blob V2. Content order,
-MIME type, duration and all 13 top-level columns are retained. Original references
-remain in `raw_json`; embedded subagents stay opaque JSON and are not fetched.
-The schema carries `lance_conversion:source_type = atif`. Field metadata uses
-`lance_conversion:storage_policy = text` or `blob` only to describe storage.
-The reader identifies each ContentPart from its own `type`, returning a single
-`ContentType::{Text, Image, Audio}`; image/audio payloads share `source.path`.
-The scan imports storage metadata into DuckDB's `ExtensionTypeInfo.properties`,
-and `COPY` restores it to Arrow metadata. Direct projections, aliases, and
-persistent DuckDB tables retain the markers. The writer uses storage metadata
-instead of recognizing field shapes. Schema-level source metadata is emitted
-when all output columns share a source.
+`read_atif` always embeds image/audio bytes at `ContentPart.source.path`;
+`COPY ... FORMAT LANCE` stores them as Blob V2. All 13 columns, content order,
+MIME types and durations are retained. `raw_json` preserves the input references;
+embedded subagent trajectories remain opaque JSON.
 
-Content text is `LargeBinary` with LZ4 requested by default. Explicit settings win:
+The reader classifies each ContentPart as `Text`, `Image` or `Audio`. Metadata
+separately records `lance_conversion:source_type = atif` and
+`lance_conversion:storage_policy = text | blob`. DuckDB type properties preserve
+these markers across projections, aliases and persistent tables, and `COPY`
+restores them to Arrow. Unrelated fields retain their storage policy.
+Schema-level source metadata is emitted when all output columns share a source.
+
+Text uses `LargeBinary`, requesting LZ4 by default. Explicit nested settings override it:
 
 ```sql
 COPY (SELECT * FROM read_atif('trajectory.json'))
-TO 'trajectory.lance' (FORMAT LANCE);
-
-COPY (SELECT * FROM read_atif('trajectory.json'))
-TO 'trajectory-custom.lance' (
-    FORMAT LANCE,
-    COLUMN_COMPRESSION {
-        'steps.message.text': 'zstd',
-        'steps.observation.results.content.text': 'none'
-    }
-);
-
-SELECT trajectory_id, agent FROM read_atif('trajectory.json'); -- skips media I/O
+TO 'trajectory.lance' (FORMAT LANCE, COLUMN_COMPRESSION {
+    'steps.message.text': 'zstd',
+    'steps.observation.results.content.text': 'none'
+});
 ```
 
-Media references resolve relative to the document, including JSONL/gzip inputs.
-Local documents can reference local files, `file://`, HTTP(S), and data URIs;
-remote documents keep media within their storage origin and use its credentials.
-Missing selected media fails the scan. A media scan resolves one trajectory per batch.
+Media paths resolve relative to the document, including JSONL/gzip inputs.
+Local documents support local files, `file://`, HTTP(S) and data URIs; remote
+media stays within the document's storage origin and uses its credentials.
+Missing projected media fails the scan. Metadata-only projections skip media I/O;
+media scans resolve one trajectory per batch.
 
-File format **2.2** remains the default. Compression follows the SDK's format
-policy: wide FullZip text may fall back to Zstd in 2.2; use `STORAGE_VERSION '2.3'`
-for the upstream per-value LZ4 fix. No layout workaround is applied.
+Format 2.2 is the default; its SDK codec policy may fall back to Zstd for wide
+FullZip text. Use `STORAGE_VERSION '2.3'` for the upstream per-value LZ4 fix.
 The pinned SQL-test reader (`lance-duckdb`, SDK 12) has a nested Blob schema
-mismatch and can fail when selecting `steps`; full media round trips use the
-current SDK's `BlobHandling::AllBinary` scanner.
+mismatch when selecting `steps`; full media round trips use the current SDK's
+`BlobHandling::AllBinary` scanner.
 
 ### Profiling
 

@@ -29,17 +29,12 @@ pub(super) fn storage_policy(field: &Field) -> Result<Option<StoragePolicy>> {
 }
 
 fn atif_text(field: &FieldRef) -> FieldRef {
-    let mut metadata = field.metadata().clone();
-    metadata
+    let mut field = field.as_ref().clone().with_data_type(DataType::LargeBinary);
+    field
+        .metadata_mut()
         .entry("lance-encoding:compression".into())
         .or_insert_with(|| "lz4".into());
-    Arc::new(
-        field
-            .as_ref()
-            .clone()
-            .with_data_type(DataType::LargeBinary)
-            .with_metadata(metadata),
-    )
+    Arc::new(field)
 }
 
 /// Apply ATIF defaults inside structs/lists. Other nested binary fields retain

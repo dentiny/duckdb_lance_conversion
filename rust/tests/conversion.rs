@@ -1,6 +1,4 @@
 mod common;
-#[path = "common/http.rs"]
-mod http;
 
 use std::sync::Arc;
 
@@ -14,7 +12,12 @@ use lance_conversion::{
     AtifSource, BatchSource, ColumnEncoding, IndexKind, LanceWriter, WriteMode, WriteOptions,
 };
 use tempfile::tempdir;
-use tokio::{fs, task::spawn_blocking};
+use tokio::{
+    fs,
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::TcpListener,
+    task::spawn_blocking,
+};
 
 use common::{assert_values, fixture, read_lance};
 
@@ -202,7 +205,7 @@ async fn string_uri_column_is_ingested_as_a_blob() {
     let output = temp.path().join("uris.lance");
     fs::write(&first, b"first").await.unwrap();
     fs::write(&empty, b"").await.unwrap();
-    let server = http::serve_http(|_| b"second".to_vec()).await;
+    let server = serve_http(|_| b"second".to_vec()).await;
 
     let uri_batch = |uris: Vec<Option<String>>| {
         RecordBatch::try_new(
@@ -271,10 +274,15 @@ async fn string_uri_column_is_ingested_as_a_blob() {
 
 #[tokio::test]
 async fn atif_reads_http_urls() {
-    const DOCUMENT: &str = r#"{"schema_version":"ATIF-v1.8","agent":{"name":"test","version":"1"},"steps":[{"step_id":1,"source":"user","message":"hello"}]}"#;
+    const DOCUMENT: &str = r#"{"schema_version":"ATIF-v1.8","agent":{"name":"test","version":"1"},"steps":[{"step_id":1,"source":"user","message":[{"type":"text","text":"hello"},{"type":"image","source":{"media_type":"image/png","path":"images/a.png"}}]}]}"#;
     static BODY: std::sync::LazyLock<String> =
         std::sync::LazyLock::new(|| format!("{DOCUMENT}\n{DOCUMENT}\n"));
-    let server = http::serve_http(|_| BODY.as_bytes().to_vec()).await;
+    let server = serve_http(|path| match path {
+        "/runs/my%20trajectories.jsonl" => BODY.as_bytes().to_vec(),
+        "/runs/images/a.png" => vec![0, 255, 42],
+        other => panic!("unexpected HTTP request: {other}"),
+    })
+    .await;
     let url = format!("{server}/runs/my%20trajectories.jsonl");
 
     let (_, stream) = AtifSource::new(url.as_str()).open().await.unwrap();
@@ -288,6 +296,15 @@ async fn atif_reads_http_urls() {
         .downcast_ref::<StringArray>()
         .unwrap();
     assert_eq!(source_uri.value(0), url);
+    use arrow_array::cast::AsArray;
+    let steps = batch["steps"].as_list::<i32>().value(0);
+    let parts = steps.as_struct()["message"].as_list::<i32>().value(0);
+    assert_eq!(
+        parts.as_struct()["source"].as_struct()["path"]
+            .as_binary::<i64>()
+            .value(1),
+        &[0, 255, 42]
+    );
 
     let error = AtifSource::new(format!("{url}?signature=x"))
         .open()
@@ -300,6 +317,53 @@ async fn atif_reads_http_urls() {
             .contains("HTTP(S) URL must not include a query"),
         "{error}"
     );
+}
+
+/// Serve routed test objects, supporting HEAD and a single byte range.
+async fn serve_http(route: impl Fn(&str) -> Vec<u8> + Send + 'static) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = BufReader::new(socket);
+            let mut request = String::new();
+            while !request.ends_with("\r\n\r\n") {
+                if socket.read_line(&mut request).await.unwrap() == 0 {
+                    break;
+                }
+            }
+            if request.is_empty() {
+                continue;
+            }
+            let body = route(request.split_whitespace().nth(1).unwrap());
+            let range = request.lines().find_map(|line| {
+                let line = line.to_ascii_lowercase();
+                let (start, end) = line.strip_prefix("range: bytes=")?.split_once('-')?;
+                Some(start.parse().unwrap()..end.parse().map_or(body.len(), |end: usize| end + 1))
+            });
+            let mut response = match &range {
+                Some(range) => format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\n",
+                    range.start,
+                    range.end - 1,
+                    body.len()
+                ),
+                None => "HTTP/1.1 200 OK\r\n".to_owned(),
+            };
+            let content = &body[range.unwrap_or(0..body.len())];
+            response += &format!(
+                "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                content.len()
+            );
+            let socket = socket.get_mut();
+            socket.write_all(response.as_bytes()).await.unwrap();
+            if !request.starts_with("HEAD ") {
+                socket.write_all(content).await.unwrap();
+            }
+        }
+    });
+    format!("http://{address}")
 }
 
 #[tokio::test]

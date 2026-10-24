@@ -7,7 +7,7 @@ use arrow_array::{
     builder::LargeBinaryBuilder, cast::AsArray, make_array, Array, ArrayRef, RecordBatch,
     StructArray,
 };
-use arrow_schema::{DataType, FieldRef, Schema, SchemaRef};
+use arrow_schema::{DataType, FieldRef, SchemaRef};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::{future::BoxFuture, AsyncReadExt};
 use url::Url;
@@ -61,24 +61,23 @@ pub(super) fn embedded_schema() -> SchemaRef {
         };
         let mut field = field.as_ref().clone().with_data_type(data_type);
         if let Some(policy) = policy {
-            let mut metadata = field.metadata().clone();
-            metadata.insert(SOURCE_TYPE.into(), "atif".into());
-            metadata.insert(STORAGE_POLICY.into(), policy.as_str().into());
-            field = field.with_metadata(metadata);
+            field
+                .metadata_mut()
+                .insert(SOURCE_TYPE.into(), "atif".into());
+            field
+                .metadata_mut()
+                .insert(STORAGE_POLICY.into(), policy.as_str().into());
         }
         Arc::new(field)
     }
-    let native = atif_arrow::trajectory_schema();
-    let mut metadata = native.metadata().clone();
-    metadata.insert(SOURCE_TYPE.into(), "atif".into());
-    Arc::new(Schema::new_with_metadata(
-        native
-            .fields()
-            .iter()
-            .map(|field| embedded_field(field, field.name()))
-            .collect::<Vec<_>>(),
-        metadata,
-    ))
+    let mut schema = atif_arrow::trajectory_schema().as_ref().clone();
+    schema.fields = schema
+        .fields
+        .iter()
+        .map(|field| embedded_field(field, field.name()))
+        .collect();
+    schema.metadata.insert(SOURCE_TYPE.into(), "atif".into());
+    Arc::new(schema)
 }
 
 /// Remote documents cannot cause local-file reads or forward S3 credentials to
@@ -186,10 +185,7 @@ impl MediaResolver {
     pub async fn resolve(&self, batch: RecordBatch, schema: SchemaRef) -> Result<RecordBatch> {
         let mut columns = Vec::with_capacity(batch.num_columns());
         for (array, field) in batch.columns().iter().zip(schema.fields()) {
-            columns.push(
-                self.resolve_array(array, field, field.name().clone(), None)
-                    .await?,
-            );
+            columns.push(self.resolve_array(array, field, None).await?);
         }
         Ok(RecordBatch::try_new(schema, columns)?)
     }
@@ -198,19 +194,26 @@ impl MediaResolver {
         &'a self,
         array: &'a ArrayRef,
         target: &'a FieldRef,
-        path: String,
         part: Option<&'a StructArray>,
     ) -> BoxFuture<'a, Result<ArrayRef>> {
         Box::pin(async move {
             if array.data_type() == target.data_type() {
                 return Ok(array.clone());
             }
-            let part =
-                if is_content_part(&path) && matches!(target.data_type(), DataType::Struct(_)) {
+            // The native schema marks ContentPart.text explicitly; no shape inference.
+            let part = match target.data_type() {
+                DataType::Struct(fields)
+                    if fields.iter().any(|field| {
+                        field
+                            .metadata()
+                            .get(STORAGE_POLICY)
+                            .is_some_and(|policy| policy == "text")
+                    }) =>
+                {
                     Some(array.as_struct())
-                } else {
-                    part
-                };
+                }
+                _ => part,
+            };
             if array.data_type() == &DataType::Utf8 && target.data_type() == &DataType::LargeBinary
             {
                 let part =
@@ -250,16 +253,7 @@ impl MediaResolver {
             let mut transformed = Vec::with_capacity(children.len());
             for (child, field) in data.child_data().iter().zip(&children) {
                 let child = make_array(child.clone());
-                let child_path = if matches!(target.data_type(), DataType::Struct(_)) {
-                    format!("{path}.{}", field.name())
-                } else {
-                    path.clone()
-                };
-                transformed.push(
-                    self.resolve_array(&child, field, child_path, part)
-                        .await?
-                        .to_data(),
-                );
+                transformed.push(self.resolve_array(&child, field, part).await?.to_data());
             }
             Ok(make_array(
                 data.into_builder()

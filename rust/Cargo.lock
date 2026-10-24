@@ -2984,7 +2984,6 @@ dependencies = [
  "futures",
  "hound",
  "lance",
- "lance-encoding",
  "lance-index",
  "lance-io",
  "lance-linalg",

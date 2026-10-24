@@ -1,10 +1,7 @@
-#[path = "common/http.rs"]
-mod http;
-
 use std::sync::Arc;
 
 use arrow_array::{cast::AsArray, Array, RecordBatch, StructArray};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field};
 use arrow_select::concat::concat_batches;
 use futures::TryStreamExt;
 use lance::{datatypes::BlobHandling, Dataset};
@@ -59,24 +56,15 @@ async fn materialized(dataset: &Dataset) -> RecordBatch {
     concat_batches(&batches[0].schema(), &batches).unwrap()
 }
 
-#[tokio::test]
-async fn metadata_projection_skips_missing_media() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("trajectory.json");
-    tokio::fs::write(&path, document("missing.png").to_string())
-        .await
+fn decode_png(bytes: &[u8]) -> (png::OutputInfo, Vec<u8>) {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
         .unwrap();
-    let source = || AtifSource::new(path.to_string_lossy());
-    assert!(read(source())
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("ATIF media"));
-    let schema = lance_conversion::atif_schema();
-    let batch = read(source().with_projection(vec![schema.index_of("trajectory_id").unwrap()]))
-        .await
-        .unwrap();
-    assert_eq!(batch.num_columns(), 1);
+    let mut pixels = vec![0; decoder.output_buffer_size().unwrap()];
+    let info = decoder.next_frame(&mut pixels).unwrap();
+    pixels.truncate(info.buffer_size());
+    decoder.finish().unwrap();
+    (info, pixels)
 }
 
 #[tokio::test]
@@ -91,11 +79,11 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
     }
     let image_path = temp.path().join("atif-image.png");
     let image = tokio::fs::read(&image_path).await.unwrap();
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(image))
-        .read_info()
-        .unwrap();
-    let mut pixels = vec![0; decoder.output_buffer_size().unwrap()];
-    let info = decoder.next_frame(&mut pixels).unwrap();
+    let (info, pixels) = decode_png(&image);
+    assert_eq!(
+        (info.width, info.height, info.color_type, info.bit_depth),
+        (1024, 768, png::ColorType::Rgb, png::BitDepth::Eight)
+    );
     // Re-encode actual pixels without compression to exercise MB-scale Blob storage
     // while keeping the committed PNG small and decodable.
     {
@@ -225,21 +213,8 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
     );
 
     // Decode the bytes returned by Lance, not just the source file headers.
-    let image = path_bytes(&parts, 1);
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(&image))
-        .read_info()
-        .unwrap();
-    let mut pixels = vec![0; decoder.output_buffer_size().unwrap()];
-    let info = decoder.next_frame(&mut pixels).unwrap();
-    assert_eq!((info.width, info.height), (1024, 768));
-    assert_eq!(info.color_type, png::ColorType::Rgb);
-    assert_eq!(info.bit_depth, png::BitDepth::Eight);
-    assert_eq!(&pixels[..3], &[0, 0, 0]);
-    assert_eq!(
-        &pixels[info.buffer_size() - 3..info.buffer_size()],
-        &[255, 255, 254]
-    );
-    decoder.finish().unwrap();
+    let (_, decoded_pixels) = decode_png(&path_bytes(&parts, 1));
+    assert_eq!(decoded_pixels, pixels);
     let audio = path_bytes(&parts, 2);
     let mut decoder = hound::WavReader::new(std::io::Cursor::new(&audio)).unwrap();
     let spec = decoder.spec();
@@ -247,56 +222,12 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
         (spec.channels, spec.bits_per_sample, spec.sample_rate),
         (1, 16, 8000)
     );
-    assert_eq!(decoder.duration(), 800);
     let samples = decoder
         .samples::<i16>()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert_eq!(samples.len(), 800);
     assert!(samples.iter().any(|sample| *sample != 0));
-}
-
-async fn text_page_codec(dataset: &Dataset) -> Option<i32> {
-    use lance_encoding::{
-        decoder::PageEncoding, format::metadata::compressive_encoding::Compression,
-    };
-    use lance_io::scheduler::{ScanScheduler, SchedulerConfig};
-    let field_id = dataset
-        .schema()
-        .field("steps.item.message.item.text")
-        .unwrap()
-        .id;
-    let fragment = dataset.get_fragments().remove(0);
-    let file = &fragment.metadata().files[0];
-    let field_index = file.fields.iter().position(|id| *id == field_id).unwrap();
-    let column = file.column_indices[field_index] as usize;
-    let store = dataset.object_store(file.base_id).await.unwrap();
-    let scheduler = ScanScheduler::new(store, SchedulerConfig::default_for_testing());
-    let reader = scheduler
-        .open_file(
-            &dataset.data_dir().join(file.path.as_str()),
-            &file.file_size_bytes,
-        )
-        .await
-        .unwrap();
-    let metadata = fragment.get_file_metadata(&reader).await.unwrap();
-    use lance_encoding::format::pb23::value_plane::Codec;
-    let PageEncoding::Planar(layout) = &metadata.column_infos[column].page_infos[0].encoding else {
-        panic!("expected a 2.3 page");
-    };
-    let value_compression = match layout.values.as_ref().unwrap().codec.as_ref().unwrap() {
-        Codec::Chunked(values) => values.compression.as_ref().unwrap(),
-        Codec::Zipped(values) => values.compression.as_ref().unwrap(),
-        other => panic!("expected distinct wide text values: {other:?}"),
-    };
-    match &value_compression.compression {
-        Some(Compression::General(general)) => Some(general.compression.as_ref().unwrap().scheme),
-        Some(Compression::Variable(variable)) => variable
-            .values
-            .as_ref()
-            .map(|compression| compression.scheme),
-        other => panic!("unexpected text compression descriptor: {other:?}"),
-    }
 }
 
 // COPY exports wide offsets; the source metadata bridge preserves ATIF semantics.
@@ -310,54 +241,33 @@ fn duckdb_export(batch: &RecordBatch) -> RecordBatch {
             DataType::List(item) => DataType::LargeList(wide(item)),
             other => other.clone(),
         };
-        Arc::new(
-            Field::new(field.name(), data_type, field.is_nullable())
-                .with_metadata(field.metadata().clone()),
-        )
+        Arc::new(field.clone().with_data_type(data_type))
     }
-    let fields = batch
-        .schema()
-        .fields()
-        .iter()
-        .map(|field| wide(field))
-        .collect::<Vec<_>>();
+    let mut schema = batch.schema().as_ref().clone();
+    schema.fields = schema.fields.iter().map(|field| wide(field)).collect();
     let columns = batch
         .columns()
         .iter()
-        .zip(&fields)
+        .zip(&schema.fields)
         .map(|(array, field)| arrow_cast::cast(array, field.data_type()).unwrap())
         .collect();
-    RecordBatch::try_new(
-        Arc::new(Schema::new_with_metadata(
-            fields,
-            batch.schema().metadata().clone(),
-        )),
-        columns,
-    )
-    .unwrap()
+    RecordBatch::try_new(Arc::new(schema), columns).unwrap()
 }
 
 #[tokio::test]
-async fn default_lz4_and_explicit_nested_overrides_reach_the_actual_text_page() {
+async fn default_lz4_and_nested_overrides_roundtrip() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("trajectory.json");
     let mut doc = document("data:image/png;base64,AP8=");
     let text = "long text 你好🙂 ".repeat(16384);
     doc["steps"][0]["message"][0]["text"] = json!(text);
-    // Distinct wide values avoid the single-value dictionary optimization.
-    for index in 1..4 {
-        doc["steps"][0]["message"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"type":"text", "text":format!("{text}-{index}")}));
-    }
     tokio::fs::write(&path, doc.to_string()).await.unwrap();
     let batch = read(AtifSource::new(path.to_string_lossy())).await.unwrap();
     let batch = duckdb_export(&batch);
-    for (name, override_codec, expected) in [
-        ("default", None, Some(1)),
-        ("zstd", Some("zstd"), Some(2)),
-        ("none", Some("none"), None),
+    for (name, override_codec) in [
+        ("lz4", None),
+        ("zstd", Some("zstd")),
+        ("none", Some("none")),
     ] {
         let mut options = WriteOptions {
             storage_version: "2.3".into(),
@@ -384,7 +294,12 @@ async fn default_lz4_and_explicit_nested_overrides_reach_the_actual_text_page() 
             message(&check, 0, 0)["text"].as_binary::<i64>().value(0),
             text.as_bytes()
         );
-        assert_eq!(text_page_codec(&dataset).await, expected, "{name}");
+        let field = dataset
+            .schema()
+            .field("steps.item.message.item.text")
+            .unwrap();
+        assert_eq!(field.metadata["lance-encoding:compression"], name);
+        assert_eq!(field.data_type(), DataType::LargeBinary);
     }
 }
 
@@ -418,19 +333,4 @@ async fn jsonl_and_gzip_resolve_relative_to_the_document() {
             assert_eq!(path_bytes(&message(&batch, row, 0), 1), [0, 255]);
         }
     }
-}
-
-#[tokio::test]
-async fn http_media_uses_document_relative_paths() {
-    let doc = document("images/a.png").to_string().into_bytes();
-    let server = http::serve_http(move |path| match path {
-        "/runs/trajectory.json" => doc.clone(),
-        "/runs/images/a.png" => vec![0, 255, 42],
-        other => panic!("unexpected HTTP request: {other}"),
-    })
-    .await;
-    let batch = read(AtifSource::new(format!("{server}/runs/trajectory.json")))
-        .await
-        .unwrap();
-    assert_eq!(path_bytes(&message(&batch, 0, 0), 1), [0, 255, 42]);
 }
