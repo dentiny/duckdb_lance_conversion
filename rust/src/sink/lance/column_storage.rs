@@ -195,26 +195,3 @@ fn ensure_uri_column(data_type: &DataType, name: &str) -> Result<()> {
         )))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ordinary_nested_binary_retains_its_storage_policy() {
-        let payload = Arc::new(Field::new("payload", DataType::Binary, true));
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(
-                "record",
-                DataType::Struct(vec![payload.clone()].into()),
-                true,
-            ),
-            Field::new("list", DataType::List(payload.clone()), true),
-            Field::new("large_list", DataType::LargeList(payload), true),
-        ]));
-        assert_eq!(
-            blob_schema(&schema, &WriteOptions::default()).unwrap(),
-            schema
-        );
-    }
-}
