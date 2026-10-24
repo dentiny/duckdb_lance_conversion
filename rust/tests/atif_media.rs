@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fs, path::Path, sync::Arc};
 
 use arrow_array::{cast::AsArray, Array, RecordBatch, StructArray};
 use arrow_schema::{DataType, Field};
@@ -43,6 +43,14 @@ fn path_bytes(parts: &StructArray, index: usize) -> Vec<u8> {
     binary.as_binary::<i64>().value(index).to_vec()
 }
 
+async fn write_lance(path: &Path, batch: RecordBatch, options: WriteOptions) {
+    let mut writer = LanceWriter::create(path, batch.schema(), options)
+        .await
+        .unwrap();
+    writer.write_batch(batch).await.unwrap();
+    writer.finish().await.unwrap();
+}
+
 async fn materialized(dataset: &Dataset) -> RecordBatch {
     let mut scanner = dataset.scan();
     scanner.blob_handling(BlobHandling::AllBinary);
@@ -70,15 +78,13 @@ fn decode_png(bytes: &[u8]) -> (png::OutputInfo, Vec<u8>) {
 #[tokio::test]
 async fn real_atif_media_survives_conversion_and_source_deletion() {
     let temp = tempfile::tempdir().unwrap();
-    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/data");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/data");
     let inputs = ["trajectory_media.json", "atif-image.png", "atif-audio.wav"];
     for name in inputs {
-        tokio::fs::copy(fixtures.join(name), temp.path().join(name))
-            .await
-            .unwrap();
+        fs::copy(fixtures.join(name), temp.path().join(name)).unwrap();
     }
     let image_path = temp.path().join("atif-image.png");
-    let image = tokio::fs::read(&image_path).await.unwrap();
+    let image = fs::read(&image_path).unwrap();
     let (info, pixels) = decode_png(&image);
     assert_eq!(
         (info.width, info.height, info.color_type, info.bit_depth),
@@ -88,7 +94,7 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
     // while keeping the committed PNG small and decodable.
     {
         let mut encoder = png::Encoder::new(
-            std::fs::File::create(&image_path).unwrap(),
+            fs::File::create(&image_path).unwrap(),
             info.width,
             info.height,
         );
@@ -96,27 +102,20 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
         encoder.set_depth(info.bit_depth);
         encoder.set_compression(png::Compression::NoCompression);
         let mut writer = encoder.write_header().unwrap();
-        writer
-            .write_image_data(&pixels[..info.buffer_size()])
-            .unwrap();
+        writer.write_image_data(&pixels).unwrap();
         writer.finish().unwrap();
     }
-    let image = tokio::fs::read(temp.path().join("atif-image.png"))
-        .await
-        .unwrap();
-    let audio = tokio::fs::read(temp.path().join("atif-audio.wav"))
-        .await
-        .unwrap();
+    let image = fs::read(&image_path).unwrap();
+    let audio = fs::read(temp.path().join("atif-audio.wav")).unwrap();
     // Exercise the default out-of-line Blob path with actual image data.
     assert!(image.len() > 2 * 1024 * 1024);
     let path = temp.path().join("trajectory_media.json");
-    let mut doc: serde_json::Value =
-        serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+    let mut doc: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let mut child = document("not-fetched.png");
     child["trajectory_id"] = json!("child");
     doc["subagent_trajectories"] = json!([child]);
     let raw = doc.to_string();
-    tokio::fs::write(&path, &raw).await.unwrap();
+    fs::write(&path, &raw).unwrap();
     let batch = read(AtifSource::new(path.to_string_lossy())).await.unwrap();
     assert_eq!(batch.num_columns(), 13);
     assert_eq!(batch["raw_json"].as_string::<i32>().value(0), raw);
@@ -127,15 +126,9 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
         .unwrap()
         .slice(1, 1);
     let output = temp.path().join("trajectory.lance");
-    let mut writer = LanceWriter::create(&output, batch.schema(), WriteOptions::default())
-        .await
-        .unwrap();
-    writer.write_batch(batch).await.unwrap();
-    writer.finish().await.unwrap();
+    write_lance(&output, batch, WriteOptions::default()).await;
     for name in inputs {
-        tokio::fs::remove_file(temp.path().join(name))
-            .await
-            .unwrap();
+        fs::remove_file(temp.path().join(name)).unwrap();
     }
     let dataset = Dataset::open(output.to_str().unwrap()).await.unwrap();
     assert_eq!(
@@ -146,45 +139,40 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
         dataset.schema().metadata["lance_conversion:source_type"],
         "atif"
     );
-    let text = dataset
-        .schema()
-        .field("steps.item.message.item.text")
-        .unwrap();
-    assert_eq!(text.data_type(), DataType::LargeBinary);
-    assert_eq!(text.metadata["lance_conversion:source_type"], "atif");
-    assert_eq!(text.metadata["lance_conversion:storage_policy"], "text");
-    assert_eq!(
-        text.metadata.get("lance-encoding:compression").unwrap(),
-        "lz4"
-    );
-    assert!(!text.metadata.contains_key("ARROW:extension:name"));
-    for path in [
-        "steps.item.message.item.source.path",
-        "steps.item.observation.results.item.content.item.source.path",
+    for (path, policy) in [
+        ("steps.item.message.item.text", "text"),
+        ("steps.item.message.item.source.path", "blob"),
+        (
+            "steps.item.observation.results.item.content.item.source.path",
+            "blob",
+        ),
     ] {
-        let media = dataset.schema().field(path).unwrap();
-        assert_eq!(media.metadata["lance_conversion:source_type"], "atif");
-        assert_eq!(media.metadata["lance_conversion:storage_policy"], "blob");
-        assert_eq!(
-            media.metadata.get("ARROW:extension:name").unwrap(),
-            "lance.blob.v2"
-        );
+        let field = dataset.schema().field(path).unwrap();
+        assert_eq!(field.metadata["lance_conversion:source_type"], "atif");
+        assert_eq!(field.metadata["lance_conversion:storage_policy"], policy);
+        if policy == "text" {
+            assert_eq!(field.data_type(), DataType::LargeBinary);
+            assert_eq!(field.metadata["lance-encoding:compression"], "lz4");
+            assert!(!field.metadata.contains_key("ARROW:extension:name"));
+        } else {
+            assert_eq!(field.metadata["ARROW:extension:name"], "lance.blob.v2");
+        }
     }
     let batch = materialized(&dataset).await;
     let parts = message(&batch, 0, 0);
-    assert_eq!(
-        parts["text"].as_binary::<i64>().value(0),
-        "hello 你好🙂".as_bytes()
-    );
-    assert!(parts["text"].is_null(1));
-    assert!(parts["source"].is_null(0));
     let steps = list_value(batch["steps"].as_ref(), 0);
     let results = list_value(
         steps.as_struct()["observation"].as_struct()["results"].as_ref(),
         1,
     );
     let content = list_value(results.as_struct()["content"].as_ref(), 0);
-    for parts in [&parts, content.as_struct()] {
+    for (parts, text) in [
+        (&parts, "hello 你好🙂"),
+        (content.as_struct(), "RGB pattern and a 440 Hz tone."),
+    ] {
+        assert_eq!(parts["text"].as_binary::<i64>().value(0), text.as_bytes());
+        assert!(parts["text"].is_null(1));
+        assert!(parts["source"].is_null(0));
         // The shared media column retains each item's concrete ATIF variant.
         for (index, kind) in ["text", "image", "audio"].iter().enumerate() {
             assert_eq!(parts["type"].as_string::<i64>().value(index), *kind);
@@ -207,10 +195,6 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
             0.1
         );
     }
-    assert_eq!(
-        content.as_struct()["text"].as_binary::<i64>().value(0),
-        b"RGB pattern and a 440 Hz tone."
-    );
 
     // Decode the bytes returned by Lance, not just the source file headers.
     let (_, decoded_pixels) = decode_png(&path_bytes(&parts, 1));
@@ -261,7 +245,7 @@ async fn default_lz4_and_nested_overrides_roundtrip() {
     let mut doc = document("data:image/png;base64,AP8=");
     let text = "long text 你好🙂 ".repeat(16384);
     doc["steps"][0]["message"][0]["text"] = json!(text);
-    tokio::fs::write(&path, doc.to_string()).await.unwrap();
+    fs::write(&path, doc.to_string()).unwrap();
     let batch = read(AtifSource::new(path.to_string_lossy())).await.unwrap();
     let batch = duckdb_export(&batch);
     for (name, override_codec) in [
@@ -283,11 +267,7 @@ async fn default_lz4_and_nested_overrides_roundtrip() {
             );
         }
         let output = temp.path().join(format!("{name}.lance"));
-        let mut writer = LanceWriter::create(&output, batch.schema(), options)
-            .await
-            .unwrap();
-        writer.write_batch(batch.clone()).await.unwrap();
-        writer.finish().await.unwrap();
+        write_lance(&output, batch.clone(), options).await;
         let dataset = Dataset::open(output.to_str().unwrap()).await.unwrap();
         let check = materialized(&dataset).await;
         assert_eq!(
@@ -307,9 +287,7 @@ async fn default_lz4_and_nested_overrides_roundtrip() {
 async fn jsonl_and_gzip_resolve_relative_to_the_document() {
     use std::io::Write;
     let temp = tempfile::tempdir().unwrap();
-    tokio::fs::write(temp.path().join("a.png"), [0, 255])
-        .await
-        .unwrap();
+    fs::write(temp.path().join("a.png"), [0, 255]).unwrap();
     for name in ["t.jsonl", "t.json.gz", "t.jsonl.gz"] {
         let one = document("a.png").to_string();
         let text = if name.contains("jsonl") {
@@ -326,7 +304,7 @@ async fn jsonl_and_gzip_resolve_relative_to_the_document() {
             text.into_bytes()
         };
         let path = temp.path().join(name);
-        tokio::fs::write(&path, bytes).await.unwrap();
+        fs::write(&path, bytes).unwrap();
         let batch = read(AtifSource::new(path.to_string_lossy())).await.unwrap();
         assert_eq!(batch.num_rows(), if name.contains("jsonl") { 2 } else { 1 });
         for row in 0..batch.num_rows() {
