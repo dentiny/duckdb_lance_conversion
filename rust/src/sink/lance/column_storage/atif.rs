@@ -6,23 +6,25 @@ use arrow_schema::{DataType, Field, FieldRef};
 use lance::BlobFieldOptions;
 
 use super::{blob_field, is_binary, is_blob};
-use crate::atif::{ContentType, CONTENT_TYPES, SOURCE_TYPE};
+use crate::atif::{StoragePolicy, SOURCE_TYPE, STORAGE_POLICY};
 use crate::{Error, Result};
 
-/// A field describes allowed variants; image/audio share ATIF's source.path.
-/// Individual ContentPart.type values retain the concrete variant per content item.
-pub(super) fn content_types(field: &Field) -> Result<Vec<ContentType>> {
+/// Field metadata describes storage, never the content type of an individual item.
+pub(super) fn storage_policy(field: &Field) -> Result<Option<StoragePolicy>> {
     if !field
         .metadata()
         .get(SOURCE_TYPE)
         .is_some_and(|source| source == "atif")
     {
-        return Ok(Vec::new());
+        return Ok(None);
     }
-    match field.metadata().get(CONTENT_TYPES) {
-        Some(types) => serde_json::from_str(types)
-            .map_err(|error| Error::message(format!("invalid ATIF content types: {error}"))),
-        None => Ok(Vec::new()),
+    match field.metadata().get(STORAGE_POLICY).map(String::as_str) {
+        Some("text") => Ok(Some(StoragePolicy::Text)),
+        Some("blob") => Ok(Some(StoragePolicy::Blob)),
+        None => Ok(None),
+        Some(policy) => Err(Error::message(format!(
+            "invalid ATIF storage policy: {policy}"
+        ))),
     }
 }
 
@@ -50,15 +52,14 @@ pub(super) fn configure_field(
         return Ok(field.clone());
     }
     if is_binary(field.data_type()) {
-        let types = content_types(field)?;
-        if types.contains(&ContentType::Text) {
-            return Ok(atif_text(field));
-        }
-        if types
-            .iter()
-            .any(|kind| matches!(kind, ContentType::Image | ContentType::Audio))
-        {
-            return Ok(options.map_or_else(|| field.clone(), |options| blob_field(field, options)));
+        match storage_policy(field)? {
+            Some(StoragePolicy::Text) => return Ok(atif_text(field)),
+            Some(StoragePolicy::Blob) => {
+                return Ok(
+                    options.map_or_else(|| field.clone(), |options| blob_field(field, options))
+                );
+            }
+            None => {}
         }
     }
     let data_type = match field.data_type() {

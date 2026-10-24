@@ -164,10 +164,7 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
         .unwrap();
     assert_eq!(text.data_type(), DataType::LargeBinary);
     assert_eq!(text.metadata["lance_conversion:source_type"], "atif");
-    assert_eq!(
-        text.metadata["lance_conversion:content_types"],
-        r#"["text"]"#
-    );
+    assert_eq!(text.metadata["lance_conversion:storage_policy"], "text");
     assert_eq!(
         text.metadata.get("lance-encoding:compression").unwrap(),
         "lz4"
@@ -179,10 +176,7 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
     ] {
         let media = dataset.schema().field(path).unwrap();
         assert_eq!(media.metadata["lance_conversion:source_type"], "atif");
-        assert_eq!(
-            media.metadata["lance_conversion:content_types"],
-            r#"["image","audio"]"#
-        );
+        assert_eq!(media.metadata["lance_conversion:storage_policy"], "blob");
         assert_eq!(
             media.metadata.get("ARROW:extension:name").unwrap(),
             "lance.blob.v2"

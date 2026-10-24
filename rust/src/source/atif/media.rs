@@ -4,37 +4,52 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{
-    builder::LargeBinaryBuilder, make_array, Array, ArrayRef, RecordBatch, StringArray,
+    builder::LargeBinaryBuilder, cast::AsArray, make_array, Array, ArrayRef, RecordBatch,
+    StructArray,
 };
 use arrow_schema::{DataType, FieldRef, Schema, SchemaRef};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::{future::BoxFuture, AsyncReadExt};
 use url::Url;
 
-use crate::atif::{ContentType, CONTENT_TYPES, SOURCE_TYPE};
+use crate::atif::{ContentType, StoragePolicy, SOURCE_TYPE, STORAGE_POLICY};
 use crate::error::ResultExt;
 use crate::source::{read_object, ReadMetrics};
 use crate::storage::InputFile;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
-/// The extension materializes MediaSource.path in-place; ContentPart.text and
-/// every other native ATIF field keep their types and positions.
+fn is_content_part(path: &str) -> bool {
+    matches!(path, "steps.message" | "steps.observation.results.content")
+}
+
+/// Each Arrow struct row is one ContentPart with its own concrete type.
+fn content_type(part: &StructArray, index: usize) -> Result<ContentType> {
+    match part["type"].as_string::<i32>().value(index) {
+        "text" => Ok(ContentType::Text),
+        "image" => Ok(ContentType::Image),
+        "audio" => Ok(ContentType::Audio),
+        kind => Err(Error::message(format!(
+            "unsupported ATIF content type: {kind}"
+        ))),
+    }
+}
+
+/// Materialize MediaSource.path in-place. Field metadata describes only storage;
+/// each ContentPart.type retains the actual text/image/audio variant.
 pub(super) fn embedded_schema() -> SchemaRef {
     fn embedded_field(field: &FieldRef, path: &str) -> FieldRef {
-        let content_types: &[ContentType] = match path {
-            "steps.message.text" | "steps.observation.results.content.text" => &[ContentType::Text],
-            "steps.message.source.path" | "steps.observation.results.content.source.path" => {
-                &[ContentType::Image, ContentType::Audio]
-            }
-            _ => &[],
+        let policy = if path.strip_suffix(".text").is_some_and(is_content_part) {
+            Some(StoragePolicy::Text)
+        } else if path
+            .strip_suffix(".source.path")
+            .is_some_and(is_content_part)
+        {
+            Some(StoragePolicy::Blob)
+        } else {
+            None
         };
         let data_type = match field.data_type() {
-            _ if content_types
-                .iter()
-                .any(|kind| matches!(kind, ContentType::Image | ContentType::Audio)) =>
-            {
-                DataType::LargeBinary
-            }
+            _ if policy == Some(StoragePolicy::Blob) => DataType::LargeBinary,
             DataType::Struct(fields) => DataType::Struct(
                 fields
                     .iter()
@@ -45,13 +60,10 @@ pub(super) fn embedded_schema() -> SchemaRef {
             other => other.clone(),
         };
         let mut field = field.as_ref().clone().with_data_type(data_type);
-        if !content_types.is_empty() {
+        if let Some(policy) = policy {
             let mut metadata = field.metadata().clone();
             metadata.insert(SOURCE_TYPE.into(), "atif".into());
-            metadata.insert(
-                CONTENT_TYPES.into(),
-                serde_json::json!(content_types).to_string(),
-            );
+            metadata.insert(STORAGE_POLICY.into(), policy.as_str().into());
             field = field.with_metadata(metadata);
         }
         Arc::new(field)
@@ -174,7 +186,10 @@ impl MediaResolver {
     pub async fn resolve(&self, batch: RecordBatch, schema: SchemaRef) -> Result<RecordBatch> {
         let mut columns = Vec::with_capacity(batch.num_columns());
         for (array, field) in batch.columns().iter().zip(schema.fields()) {
-            columns.push(self.resolve_array(array, field).await?);
+            columns.push(
+                self.resolve_array(array, field, field.name().clone(), None)
+                    .await?,
+            );
         }
         Ok(RecordBatch::try_new(schema, columns)?)
     }
@@ -183,28 +198,48 @@ impl MediaResolver {
         &'a self,
         array: &'a ArrayRef,
         target: &'a FieldRef,
+        path: String,
+        part: Option<&'a StructArray>,
     ) -> BoxFuture<'a, Result<ArrayRef>> {
         Box::pin(async move {
             if array.data_type() == target.data_type() {
                 return Ok(array.clone());
             }
+            let part =
+                if is_content_part(&path) && matches!(target.data_type(), DataType::Struct(_)) {
+                    Some(array.as_struct())
+                } else {
+                    part
+                };
             if array.data_type() == &DataType::Utf8 && target.data_type() == &DataType::LargeBinary
             {
-                let paths = array.as_any().downcast_ref::<StringArray>().unwrap();
-                let mut builder = LargeBinaryBuilder::new();
-                for path in paths.iter() {
-                    if let Some(path) = path {
-                        let uri = resolve_uri(&self.document, path).context("ATIF media URI")?;
-                        let bytes = self
-                            .read(&uri)
-                            .await
-                            .context(format!("ATIF media {path}"))?;
-                        builder.append_value(bytes);
-                    } else {
-                        builder.append_null();
+                let part =
+                    part.ok_or_else(|| Error::message("media path outside an ATIF ContentPart"))?;
+                let paths = array.as_string::<i32>();
+                let mut bytes = LargeBinaryBuilder::new();
+                for index in 0..part.len() {
+                    if part.is_null(index) {
+                        bytes.append_null();
+                        continue;
+                    }
+                    match content_type(part, index)? {
+                        ContentType::Text => bytes.append_null(),
+                        ContentType::Image | ContentType::Audio => {
+                            if part["source"].is_null(index) || paths.is_null(index) {
+                                return Err(Error::message("missing ATIF media source path"));
+                            }
+                            let path = paths.value(index);
+                            let uri =
+                                resolve_uri(&self.document, path).context("ATIF media URI")?;
+                            let payload = self
+                                .read(&uri)
+                                .await
+                                .context(format!("ATIF media {path}"))?;
+                            bytes.append_value(payload);
+                        }
                     }
                 }
-                return Ok(Arc::new(builder.finish()) as ArrayRef);
+                return Ok(Arc::new(bytes.finish()) as ArrayRef);
             }
             let children: Vec<FieldRef> = match target.data_type() {
                 DataType::Struct(fields) => fields.to_vec(),
@@ -215,7 +250,16 @@ impl MediaResolver {
             let mut transformed = Vec::with_capacity(children.len());
             for (child, field) in data.child_data().iter().zip(&children) {
                 let child = make_array(child.clone());
-                transformed.push(self.resolve_array(&child, field).await?.to_data());
+                let child_path = if matches!(target.data_type(), DataType::Struct(_)) {
+                    format!("{path}.{}", field.name())
+                } else {
+                    path.clone()
+                };
+                transformed.push(
+                    self.resolve_array(&child, field, child_path, part)
+                        .await?
+                        .to_data(),
+                );
             }
             Ok(make_array(
                 data.into_builder()
@@ -230,6 +274,23 @@ impl MediaResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_type_is_per_content_part() {
+        let parts = StructArray::from(vec![(
+            Arc::new(arrow_schema::Field::new("type", DataType::Utf8, false)),
+            Arc::new(arrow_array::StringArray::from(vec![
+                "text", "image", "audio", "video",
+            ])) as ArrayRef,
+        )]);
+        assert_eq!(content_type(&parts, 0).unwrap(), ContentType::Text);
+        assert_eq!(content_type(&parts, 1).unwrap(), ContentType::Image);
+        assert_eq!(content_type(&parts, 2).unwrap(), ContentType::Audio);
+        assert!(content_type(&parts, 3)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported ATIF content type: video"));
+    }
 
     #[test]
     fn resolves_media_relative_to_the_document() {

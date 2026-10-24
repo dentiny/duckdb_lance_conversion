@@ -9,7 +9,7 @@ use futures::StreamExt;
 use lance::{blob_field_with_options, BlobFieldOptions};
 
 use super::{column_encoding::configure_column_encoding, WriteOptions};
-use crate::atif::ContentType;
+use crate::atif::StoragePolicy;
 use crate::{Error, Result};
 
 mod atif;
@@ -172,7 +172,7 @@ fn blob_schema(input_schema: &SchemaRef, options: &WriteOptions) -> Result<Schem
             if uri_blob_columns.binary_search(&index).is_ok()
                 || (promote_binary
                     && is_binary(field.data_type())
-                    && !atif::content_types(field)?.contains(&ContentType::Text))
+                    && atif::storage_policy(field)? != Some(StoragePolicy::Text))
             {
                 Ok(blob_field(field, &blob_options))
             } else {
