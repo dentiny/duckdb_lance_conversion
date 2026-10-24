@@ -78,15 +78,14 @@ read_atif requires preserve_insertion_order = true
 statement ok
 RESET preserve_insertion_order;
 
-query TIIIT
+query TIIT
 SELECT trajectory_id,
        steps[1].message[2].source.path = (SELECT content FROM read_blob('test/data/atif-image.png')),
        steps[1].message[3].source.path = (SELECT content FROM read_blob('test/data/atif-audio.wav')),
-       octet_length(steps[1].message[2].source.path) > 2097152,
        decode(steps[1].message[1].text)
 FROM read_atif('test/data/trajectory_media.json');
 ----
-media	true	true	true	hello 你好🙂
+media	true	true	hello 你好🙂
 
 query IIT
 SELECT steps[2].observation.results[1].content[2].source.path =

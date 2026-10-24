@@ -1,12 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
-use arrow_schema::{DataType, FieldRef, Schema};
-
-use super::column_storage::transform_array;
-use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream};
-use futures::StreamExt;
+use arrow_schema::{DataType, FieldRef, Schema, SchemaRef};
 
 use crate::{Error, Result};
 
@@ -98,13 +93,12 @@ fn encode_field(field: &FieldRef, path: &[&str], encoding: &ColumnEncoding) -> R
 /// Explicit settings override source metadata and ATIF defaults. Dot paths name
 /// nested fields; existing exact top-level column names keep precedence.
 pub(super) fn configure_column_encoding(
-    stream: SendableRecordBatchStream,
+    input_schema: SchemaRef,
     column_encoding: &BTreeMap<String, ColumnEncoding>,
-) -> Result<SendableRecordBatchStream> {
+) -> Result<SchemaRef> {
     if column_encoding.is_empty() {
-        return Ok(stream);
+        return Ok(input_schema);
     }
-    let input_schema = stream.schema();
     let mut fields = input_schema.fields().to_vec();
     for (name, encoding) in column_encoding {
         let (index, path) = if let Ok(index) = input_schema.index_of(name) {
@@ -123,23 +117,8 @@ pub(super) fn configure_column_encoding(
         }
         fields[index] = encode_field(&fields[index], &path, encoding)?;
     }
-    let output_schema = Arc::new(Schema::new_with_metadata(
+    Ok(Arc::new(Schema::new_with_metadata(
         fields,
         input_schema.metadata().clone(),
-    ));
-    let batch_schema = output_schema.clone();
-    let batches = stream.map(move |batch| {
-        let batch = batch?;
-        let columns = batch
-            .columns()
-            .iter()
-            .zip(batch_schema.fields())
-            .map(|(array, field)| transform_array(array, field))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(RecordBatch::try_new(batch_schema.clone(), columns)?)
-    });
-    Ok(Box::pin(RecordBatchStreamAdapter::new(
-        output_schema,
-        batches,
     )))
 }

@@ -116,7 +116,7 @@ impl BatchSource for AtifSource {
         let projection = self.projection.filter(|projection| !projection.is_empty());
         let schema = match &projection {
             Some(projection) => Arc::new(full_schema.project(projection)?),
-            None => full_schema,
+            None => full_schema.clone(),
         };
         let size = input
             .operator
@@ -132,7 +132,7 @@ impl BatchSource for AtifSource {
         )
         .await?;
         let reader = decompressed_input(reader, is_gzipped(&input.opendal_path));
-        let media_index = atif_schema().index_of("steps")?;
+        let media_index = full_schema.index_of("steps")?;
         let needs_media = media_options.resolve_media
             && projection
                 .as_ref()
@@ -160,10 +160,11 @@ impl BatchSource for AtifSource {
             .then(move |batch| {
                 let resolver = resolver.clone();
                 let projection = projection.clone();
+                let media_schema = full_schema.clone();
                 async move {
                     let mut batch = batch?;
                     if needs_media {
-                        batch = resolver.resolve(batch, atif_schema()).await?;
+                        batch = resolver.resolve(batch, media_schema).await?;
                     }
                     match projection {
                         Some(columns) => Ok(batch.project(&columns)?),

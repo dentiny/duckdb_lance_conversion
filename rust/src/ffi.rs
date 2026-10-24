@@ -687,9 +687,7 @@ pub unsafe extern "C" fn lance_atif_open(
                 }
             }
         };
-        if media_options.max_media_bytes == 0 || media_options.max_trajectory_media_bytes == 0 {
-            return Err(Error::message("ATIF media byte limits must be positive"));
-        }
+        let media_options = media_options.validate()?;
         let s3_config = s3_config(s3)?;
         let opendal_config = parse_opendal_config(opendal_config)?;
         let factory = SourceStreamFactory::new(

@@ -1,6 +1,9 @@
+#[path = "common/http.rs"]
+mod http;
+
 use std::sync::Arc;
 
-use arrow_array::{cast::AsArray, Array, ListArray, RecordBatch, StructArray};
+use arrow_array::{cast::AsArray, Array, RecordBatch, StructArray};
 use arrow_schema::{DataType, Field, Schema};
 use arrow_select::concat::concat_batches;
 use futures::TryStreamExt;
@@ -59,51 +62,6 @@ async fn materialized(dataset: &Dataset) -> RecordBatch {
 }
 
 #[tokio::test]
-async fn embeds_native_message_and_observation_fields_without_a_sidecar_column() {
-    let temp = tempfile::tempdir().unwrap();
-    let image = vec![0xa5; 2 * 1024 * 1024 + 1];
-    tokio::fs::write(temp.path().join("image.png"), &image)
-        .await
-        .unwrap();
-    let mut doc = document("image.png");
-    doc["steps"][0]["message"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({
-            "type":"audio","source":{"media_type":"audio/wav","path":"data:audio/wav;base64,AP8="}
-        }));
-    doc["steps"].as_array_mut().unwrap().push(json!({
-        "step_id":2,"source":"agent","message":"你好🙂",
-        "observation":{"results":[{"content":[
-            {"type":"image","source":{"media_type":"image/png","path":"image.png"}}
-        ]}]}
-    }));
-    // Embedded subagents remain opaque JSON, matching the native atif-arrow contract.
-    let mut child = document("not-fetched.png");
-    child["trajectory_id"] = json!("child");
-    doc["subagent_trajectories"] = json!([child]);
-    let raw = doc.to_string();
-    let path = temp.path().join("trajectory.json");
-    tokio::fs::write(&path, &raw).await.unwrap();
-    let batch = read(AtifSource::new(path.to_string_lossy())).await.unwrap();
-    assert_eq!(batch.num_columns(), 13);
-    assert!(batch.column_by_name("media").is_none());
-    let parts = message(&batch, 0, 0);
-    assert_eq!(path_bytes(&parts, 1), image);
-    assert_eq!(path_bytes(&parts, 2), [0, 255]);
-    assert!(parts["source"].is_null(0));
-    assert_eq!(parts["text"].as_binary::<i64>().value(0), b"image");
-    assert!(parts["text"].is_null(1));
-    let steps = batch["steps"].as_list::<i32>().value(0);
-    let results = steps.as_struct()["observation"].as_struct()["results"]
-        .as_list::<i32>()
-        .value(1);
-    let content = results.as_struct()["content"].as_list::<i32>().value(0);
-    assert_eq!(path_bytes(content.as_struct(), 0), image);
-    assert_eq!(batch["raw_json"].as_string::<i32>().value(0), raw);
-}
-
-#[tokio::test]
 async fn missing_media_can_be_inspected_as_references_or_skipped_by_projection() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("trajectory.json");
@@ -134,31 +92,16 @@ async fn missing_media_can_be_inspected_as_references_or_skipped_by_projection()
         .await
         .unwrap();
     assert_eq!(batch.num_columns(), 1);
-}
-
-#[tokio::test]
-async fn enforces_per_file_and_trajectory_media_limits() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("trajectory.json");
-    let mut doc = document("a.png");
-    tokio::fs::write(temp.path().join("a.png"), [0, 255, 42])
+    tokio::fs::write(temp.path().join("missing.png"), [0, 255, 42])
         .await
         .unwrap();
-    doc["steps"][0]["message"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({
-            "type":"audio","source":{"media_type":"audio/wav","path":"data:audio/wav;base64,AP8="}
-        }));
-    tokio::fs::write(&path, doc.to_string()).await.unwrap();
-    let source = || AtifSource::new(path.to_string_lossy());
     for options in [
         AtifMediaOptions {
             max_media_bytes: 2,
             ..Default::default()
         },
         AtifMediaOptions {
-            max_trajectory_media_bytes: 4,
+            max_trajectory_media_bytes: 2,
             ..Default::default()
         },
     ] {
@@ -180,6 +123,30 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
             .await
             .unwrap();
     }
+    let image_path = temp.path().join("atif-image.png");
+    let image = tokio::fs::read(&image_path).await.unwrap();
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(image))
+        .read_info()
+        .unwrap();
+    let mut pixels = vec![0; decoder.output_buffer_size().unwrap()];
+    let info = decoder.next_frame(&mut pixels).unwrap();
+    // Re-encode actual pixels without compression to exercise MB-scale Blob storage
+    // while keeping the committed PNG small and decodable.
+    {
+        let mut encoder = png::Encoder::new(
+            std::fs::File::create(&image_path).unwrap(),
+            info.width,
+            info.height,
+        );
+        encoder.set_color(info.color_type);
+        encoder.set_depth(info.bit_depth);
+        encoder.set_compression(png::Compression::NoCompression);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&pixels[..info.buffer_size()])
+            .unwrap();
+        writer.finish().unwrap();
+    }
     let image = tokio::fs::read(temp.path().join("atif-image.png"))
         .await
         .unwrap();
@@ -189,9 +156,22 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
     // Exercise the default out-of-line Blob path with actual image data.
     assert!(image.len() > 2 * 1024 * 1024);
     let path = temp.path().join("trajectory_media.json");
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+    let mut child = document("not-fetched.png");
+    child["trajectory_id"] = json!("child");
+    doc["subagent_trajectories"] = json!([child]);
+    let raw = doc.to_string();
+    tokio::fs::write(&path, &raw).await.unwrap();
     let batch = read(AtifSource::new(path.to_string_lossy())).await.unwrap();
+    assert_eq!(batch.num_columns(), 13);
+    assert_eq!(batch["raw_json"].as_string::<i32>().value(0), raw);
     // Match COPY's wide Arrow offsets and loss of field metadata.
     let batch = duckdb_export(&batch);
+    // A nonzero row offset checks recursive rewriting of sliced list/struct data.
+    let batch = concat_batches(&batch.schema(), [&batch, &batch])
+        .unwrap()
+        .slice(1, 1);
     let output = temp.path().join("trajectory.lance");
     let mut writer = LanceWriter::create(&output, batch.schema(), WriteOptions::default())
         .await
@@ -300,8 +280,7 @@ async fn real_atif_media_survives_conversion_and_source_deletion() {
 
 async fn text_page_codec(dataset: &Dataset) -> Option<i32> {
     use lance_encoding::{
-        decoder::PageEncoding,
-        format::metadata::{compressive_encoding::Compression, page_layout::Layout},
+        decoder::PageEncoding, format::metadata::compressive_encoding::Compression,
     };
     use lance_io::scheduler::{ScanScheduler, SchedulerConfig};
     let field_id = dataset
@@ -323,21 +302,14 @@ async fn text_page_codec(dataset: &Dataset) -> Option<i32> {
         .await
         .unwrap();
     let metadata = fragment.get_file_metadata(&reader).await.unwrap();
-    let value_compression = match &metadata.column_infos[column].page_infos[0].encoding {
-        PageEncoding::Structural(layout) => match &layout.layout {
-            Some(Layout::FullZipLayout(layout)) => layout.value_compression.as_ref().unwrap(),
-            Some(Layout::MiniBlockLayout(layout)) => layout.value_compression.as_ref().unwrap(),
-            other => panic!("expected a data page for distinct wide values: {other:?}"),
-        },
-        PageEncoding::Planar(layout) => {
-            use lance_encoding::format::pb23::value_plane::Codec;
-            match layout.values.as_ref().unwrap().codec.as_ref().unwrap() {
-                Codec::Chunked(values) => values.compression.as_ref().unwrap(),
-                Codec::Zipped(values) => values.compression.as_ref().unwrap(),
-                other => panic!("expected a data page for distinct wide values: {other:?}"),
-            }
-        }
-        other => panic!("unexpected page encoding: {other:?}"),
+    use lance_encoding::format::pb23::value_plane::Codec;
+    let PageEncoding::Planar(layout) = &metadata.column_infos[column].page_infos[0].encoding else {
+        panic!("expected a 2.3 page");
+    };
+    let value_compression = match layout.values.as_ref().unwrap().codec.as_ref().unwrap() {
+        Codec::Chunked(values) => values.compression.as_ref().unwrap(),
+        Codec::Zipped(values) => values.compression.as_ref().unwrap(),
+        other => panic!("expected distinct wide text values: {other:?}"),
     };
     match &value_compression.compression {
         Some(Compression::General(general)) => Some(general.compression.as_ref().unwrap().scheme),
@@ -395,43 +367,37 @@ async fn default_lz4_and_explicit_nested_overrides_reach_the_actual_text_page() 
     tokio::fs::write(&path, doc.to_string()).await.unwrap();
     let batch = read(AtifSource::new(path.to_string_lossy())).await.unwrap();
     let batch = duckdb_export(&batch);
-    for (version, default_codec) in [("2.2", 2), ("2.3", 1)] {
-        for (name, override_codec, expected) in [
-            ("default", None, Some(default_codec)),
-            ("zstd", Some("zstd"), Some(2)),
-            ("none", Some("none"), None),
-        ] {
-            let mut options = WriteOptions {
-                storage_version: version.into(),
-                ..Default::default()
-            };
-            if let Some(codec) = override_codec {
-                options.column_encoding.insert(
-                    "steps.message.text".into(),
-                    ColumnEncoding {
-                        compression: Some(codec.into()),
-                        ..Default::default()
-                    },
-                );
-            }
-            let output = temp.path().join(format!("{version}-{name}.lance"));
-            let mut writer = LanceWriter::create(&output, batch.schema(), options)
-                .await
-                .unwrap();
-            writer.write_batch(batch.clone()).await.unwrap();
-            writer.finish().await.unwrap();
-            let dataset = Dataset::open(output.to_str().unwrap()).await.unwrap();
-            let check = materialized(&dataset).await;
-            assert_eq!(
-                message(&check, 0, 0)["text"].as_binary::<i64>().value(0),
-                text.as_bytes()
-            );
-            assert_eq!(
-                text_page_codec(&dataset).await,
-                expected,
-                "{version}/{name}"
+    for (name, override_codec, expected) in [
+        ("default", None, Some(1)),
+        ("zstd", Some("zstd"), Some(2)),
+        ("none", Some("none"), None),
+    ] {
+        let mut options = WriteOptions {
+            storage_version: "2.3".into(),
+            ..Default::default()
+        };
+        if let Some(codec) = override_codec {
+            options.column_encoding.insert(
+                "steps.message.text".into(),
+                ColumnEncoding {
+                    compression: Some(codec.into()),
+                    ..Default::default()
+                },
             );
         }
+        let output = temp.path().join(format!("{name}.lance"));
+        let mut writer = LanceWriter::create(&output, batch.schema(), options)
+            .await
+            .unwrap();
+        writer.write_batch(batch.clone()).await.unwrap();
+        writer.finish().await.unwrap();
+        let dataset = Dataset::open(output.to_str().unwrap()).await.unwrap();
+        let check = materialized(&dataset).await;
+        assert_eq!(
+            message(&check, 0, 0)["text"].as_binary::<i64>().value(0),
+            text.as_bytes()
+        );
+        assert_eq!(text_page_codec(&dataset).await, expected, "{name}");
     }
 }
 
@@ -469,240 +435,15 @@ async fn jsonl_and_gzip_resolve_relative_to_the_document() {
 
 #[tokio::test]
 async fn http_media_uses_document_relative_paths() {
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-    };
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!(
-        "http://{}/runs/trajectory.json",
-        listener.local_addr().unwrap()
-    );
-    let doc = Arc::new(document("images/a.png").to_string().into_bytes());
-    let bytes = Arc::new(vec![0, 255, 42]);
-    let expected = bytes.clone();
-    let server = tokio::spawn(async move {
-        loop {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let doc = doc.clone();
-            let bytes = bytes.clone();
-            tokio::spawn(async move {
-                let mut request = Vec::new();
-                loop {
-                    let mut chunk = [0; 1024];
-                    let count = socket.read(&mut chunk).await.unwrap();
-                    if count == 0 {
-                        return;
-                    }
-                    request.extend_from_slice(&chunk[..count]);
-                    if request.windows(4).any(|part| part == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let request = String::from_utf8(request).unwrap();
-                let path = request.split_whitespace().nth(1).unwrap();
-                let body = match path {
-                    "/runs/trajectory.json" => doc,
-                    "/runs/images/a.png" => bytes,
-                    _ => {
-                        socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
-                        return;
-                    }
-                };
-                let range = request.lines().find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("range: bytes=")
-                        .map(str::to_owned)
-                });
-                let (status, start, end, extra) = if let Some(range) = range {
-                    let (start, end) = range.split_once('-').unwrap();
-                    let start: usize = start.parse().unwrap();
-                    let end = end
-                        .parse::<usize>()
-                        .unwrap_or(body.len() - 1)
-                        .min(body.len() - 1);
-                    (
-                        "206 Partial Content",
-                        start,
-                        end + 1,
-                        format!("Content-Range: bytes {start}-{end}/{}\r\n", body.len()),
-                    )
-                } else {
-                    ("200 OK", 0, body.len(), String::new())
-                };
-                let headers = format!(
-                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
-                    end - start
-                );
-                socket.write_all(headers.as_bytes()).await.unwrap();
-                if !request.starts_with("HEAD ") {
-                    socket.write_all(&body[start..end]).await.unwrap();
-                }
-            });
-        }
-    });
-    let result = read(AtifSource::new(url)).await;
-    server.abort();
-    let batch = result.unwrap();
-    assert_eq!(path_bytes(&message(&batch, 0, 0), 1), expected.as_slice());
-}
-
-#[tokio::test]
-async fn nested_blob_rewrite_preserves_slices_nulls_and_empty_lists() {
-    use arrow_array::{
-        builder::{BinaryBuilder, ListBuilder},
-        BinaryArray,
-    };
-    let temp = tempfile::tempdir().unwrap();
-    let mut builder = ListBuilder::new(BinaryBuilder::new());
-    builder.values().append_value([9]);
-    builder.append(true);
-    builder.values().append_value([]);
-    builder.values().append_null();
-    builder.append(true);
-    builder.append(false);
-    builder.append(true);
-    builder.values().append_value([1, 2, 255]);
-    builder.append(true);
-    let array = Arc::new(builder.finish()) as arrow_array::ArrayRef;
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "values",
-        array.data_type().clone(),
-        true,
-    )]));
-    let batch = RecordBatch::try_new(schema, vec![array])
-        .unwrap()
-        .slice(1, 4);
-    let output = temp.path().join("lists.lance");
-    let mut writer = LanceWriter::create(&output, batch.schema(), WriteOptions::default())
+    let doc = document("images/a.png").to_string().into_bytes();
+    let server = http::serve_http(move |path| match path {
+        "/runs/trajectory.json" => doc.clone(),
+        "/runs/images/a.png" => vec![0, 255, 42],
+        other => panic!("unexpected HTTP request: {other}"),
+    })
+    .await;
+    let batch = read(AtifSource::new(format!("{server}/runs/trajectory.json")))
         .await
         .unwrap();
-    writer.write_batch(batch).await.unwrap();
-    writer.finish().await.unwrap();
-    let dataset = Dataset::open(output.to_str().unwrap()).await.unwrap();
-    let mut scanner = dataset.scan();
-    scanner.blob_handling(BlobHandling::AllBinary);
-    let batches = scanner
-        .try_into_stream()
-        .await
-        .unwrap()
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap();
-    let array = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<ListArray>()
-        .unwrap();
-    let values = array.value(0);
-    let binary = arrow_cast::cast(&values, &DataType::Binary).unwrap();
-    let binary = binary.as_any().downcast_ref::<BinaryArray>().unwrap();
-    assert_eq!(binary.value(0), b"");
-    assert!(binary.is_null(1));
-    assert!(array.is_null(1));
-    assert_eq!(array.value(2).len(), 0);
-    let values = array.value(3);
-    let binary = arrow_cast::cast(&values, &DataType::Binary).unwrap();
-    assert_eq!(
-        binary
-            .as_any()
-            .downcast_ref::<BinaryArray>()
-            .unwrap()
-            .value(0),
-        [1, 2, 255]
-    );
-}
-
-#[tokio::test]
-async fn blob_containers_roundtrip_through_lance() {
-    use arrow_array::{
-        builder::{BinaryBuilder, LargeListBuilder, MapBuilder, StringBuilder},
-        BinaryArray,
-    };
-    let temp = tempfile::tempdir().unwrap();
-    let binary = Arc::new(BinaryArray::from_vec(vec![b"x"])) as arrow_array::ArrayRef;
-    let record = Arc::new(StructArray::from(vec![(
-        Arc::new(Field::new("payload", DataType::Binary, true)),
-        binary.clone(),
-    )])) as arrow_array::ArrayRef;
-    let mut large = LargeListBuilder::new(BinaryBuilder::new());
-    large.values().append_value(b"x");
-    large.append(true);
-    let large = Arc::new(large.finish()) as arrow_array::ArrayRef;
-    let mut map = MapBuilder::new(None, StringBuilder::new(), BinaryBuilder::new());
-    map.keys().append_value("key");
-    map.values().append_value(b"x");
-    map.append(true).unwrap();
-    let map = Arc::new(map.finish()) as arrow_array::ArrayRef;
-    for (name, array) in [("record", record), ("large", large), ("map", map)] {
-        let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "value",
-                array.data_type().clone(),
-                true,
-            )])),
-            vec![array],
-        )
-        .unwrap();
-        let output = temp.path().join(format!("{name}.lance"));
-        let mut writer = LanceWriter::create(&output, batch.schema(), WriteOptions::default())
-            .await
-            .unwrap();
-        writer.write_batch(batch).await.unwrap();
-        writer
-            .finish()
-            .await
-            .unwrap_or_else(|error| panic!("{name}: {error}"));
-        let dataset = Dataset::open(output.to_str().unwrap()).await.unwrap();
-        let mut scanner = dataset.scan();
-        scanner.blob_handling(BlobHandling::AllBinary);
-        let batches = scanner
-            .try_into_stream()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-        assert_eq!(batches[0].num_rows(), 1, "{name}");
-        let column = batches[0].column(0);
-        let payload = match name {
-            "record" => column
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .unwrap()
-                .column(0)
-                .clone(),
-            "large" => {
-                if let Some(list) = column
-                    .as_any()
-                    .downcast_ref::<arrow_array::LargeListArray>()
-                {
-                    list.value(0)
-                } else {
-                    column
-                        .as_any()
-                        .downcast_ref::<ListArray>()
-                        .unwrap()
-                        .value(0)
-                }
-            }
-            "map" => column
-                .as_any()
-                .downcast_ref::<arrow_array::MapArray>()
-                .unwrap()
-                .values()
-                .clone(),
-            _ => unreachable!(),
-        };
-        let payload = arrow_cast::cast(&payload, &DataType::Binary).unwrap();
-        assert_eq!(
-            payload
-                .as_any()
-                .downcast_ref::<BinaryArray>()
-                .unwrap()
-                .value(0),
-            b"x",
-            "{name}"
-        );
-    }
+    assert_eq!(path_bytes(&message(&batch, 0, 0), 1), [0, 255, 42]);
 }

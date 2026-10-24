@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use arrow_array::{make_array, new_null_array, Array, ArrayRef, RecordBatch, StructArray};
 use arrow_cast::cast;
-use arrow_schema::{ArrowError, DataType, Field, FieldRef, Schema};
+use arrow_schema::{ArrowError, DataType, Field, FieldRef, Schema, SchemaRef};
 use datafusion_physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream};
 use futures::StreamExt;
 use lance::{blob_field_with_options, BlobFieldOptions};
@@ -17,8 +17,24 @@ pub(super) fn configure_column_storage(
     stream: SendableRecordBatchStream,
     options: &WriteOptions,
 ) -> Result<SendableRecordBatchStream> {
-    let stream = configure_blob_storage(stream, options)?;
-    configure_column_encoding(stream, &options.column_encoding)
+    let input_schema = stream.schema();
+    let schema = blob_schema(&input_schema, options)?;
+    let schema = configure_column_encoding(schema, &options.column_encoding)?;
+    if schema == input_schema {
+        return Ok(stream);
+    }
+    let output = schema.clone();
+    let batches = stream.map(move |batch| {
+        let batch = batch?;
+        let columns = batch
+            .columns()
+            .iter()
+            .zip(output.fields())
+            .map(|(array, field)| transform_array(array, field))
+            .collect::<std::result::Result<Vec<_>, ArrowError>>()?;
+        Ok(RecordBatch::try_new(output.clone(), columns)?)
+    });
+    Ok(Box::pin(RecordBatchStreamAdapter::new(schema, batches)))
 }
 
 fn is_binary(data_type: &DataType) -> bool {
@@ -45,27 +61,26 @@ fn is_blob(field: &Field) -> bool {
 /// ATIF's fixed ContentPart shape survives DuckDB's Arrow round trip, which
 /// drops field metadata and narrows LargeBinary to Binary.
 fn is_atif_content(fields: &arrow_schema::Fields) -> bool {
-    if fields.len() != 3
-        || fields[0].name() != "type"
-        || !is_string(fields[0].data_type())
-        || fields[1].name() != "text"
-        || !is_binary(fields[1].data_type())
-        || fields[2].name() != "source"
-    {
-        return false;
-    }
-    let DataType::Struct(source) = fields[2].data_type() else {
+    let [kind, text, source] = fields.as_ref() else {
         return false;
     };
-    source.len() == 3
-        && source[0].name() == "media_type"
-        && is_string(source[0].data_type())
-        && source[1].name() == "path"
-        && (is_binary(source[1].data_type())
-            || is_string(source[1].data_type())
-            || is_blob(&source[1]))
-        && source[2].name() == "duration_sec"
-        && source[2].data_type() == &DataType::Float64
+    let DataType::Struct(source) = source.data_type() else {
+        return false;
+    };
+    let [mime, path, duration] = source.as_ref() else {
+        return false;
+    };
+    kind.name() == "type"
+        && is_string(kind.data_type())
+        && text.name() == "text"
+        && is_binary(text.data_type())
+        && fields[2].name() == "source"
+        && mime.name() == "media_type"
+        && is_string(mime.data_type())
+        && path.name() == "path"
+        && (is_binary(path.data_type()) || is_string(path.data_type()) || is_blob(path))
+        && duration.name() == "duration_sec"
+        && duration.data_type() == &DataType::Float64
 }
 
 fn atif_text(field: &FieldRef) -> FieldRef {
@@ -82,50 +97,51 @@ fn atif_text(field: &FieldRef) -> FieldRef {
     )
 }
 
-/// Promote through structs and variable-length lists, which the pinned Lance
-/// blob preprocessor supports. Fixed-size lists, maps and dictionaries retain
-/// their existing binary storage. Already-logical blobs are opaque.
-fn blob_field(field: &FieldRef, options: Option<&BlobFieldOptions>) -> FieldRef {
+fn blob_field(field: &FieldRef, options: &BlobFieldOptions) -> FieldRef {
+    let blob = blob_field_with_options(field.name(), field.is_nullable(), options.clone());
+    let mut metadata = field.metadata().clone();
+    metadata.extend(blob.metadata().clone());
+    Arc::new(blob.with_metadata(metadata))
+}
+
+/// Apply ATIF defaults inside structs/lists. Other nested binary fields retain
+/// their storage policy; top-level binary and explicit URI blobs are handled separately.
+fn atif_field(field: &FieldRef, options: Option<&BlobFieldOptions>) -> FieldRef {
     if is_blob(field) {
         return field.clone();
     }
-    if is_binary(field.data_type()) {
-        let Some(options) = options else {
-            return field.clone();
-        };
-        let mut blob = blob_field_with_options(field.name(), field.is_nullable(), options.clone());
-        let mut metadata = field.metadata().clone();
-        metadata.extend(blob.metadata().clone());
-        blob = blob.with_metadata(metadata);
-        return Arc::new(blob);
-    }
     let data_type = match field.data_type() {
-        DataType::Struct(fields) => {
-            let atif = is_atif_content(fields);
-            DataType::Struct(
-                fields
-                    .iter()
-                    .map(|field| {
-                        if atif && field.name() == "text" {
-                            atif_text(field)
-                        } else {
-                            blob_field(field, options)
-                        }
-                    })
-                    .collect(),
-            )
+        DataType::Struct(fields) if is_atif_content(fields) => {
+            let mut fields = fields.to_vec();
+            fields[1] = atif_text(&fields[1]);
+            if let (Some(options), DataType::Struct(source)) = (options, fields[2].data_type()) {
+                if is_binary(source[1].data_type()) {
+                    let mut source = source.to_vec();
+                    source[1] = blob_field(&source[1], options);
+                    fields[2] = Arc::new(
+                        fields[2]
+                            .as_ref()
+                            .clone()
+                            .with_data_type(DataType::Struct(source.into())),
+                    );
+                }
+            }
+            DataType::Struct(fields.into())
         }
-        DataType::List(child) => DataType::List(blob_field(child, options)),
-        DataType::LargeList(child) => DataType::LargeList(blob_field(child, options)),
+        DataType::Struct(fields) => DataType::Struct(
+            fields
+                .iter()
+                .map(|field| atif_field(field, options))
+                .collect(),
+        ),
+        DataType::List(child) => DataType::List(atif_field(child, options)),
+        DataType::LargeList(child) => DataType::LargeList(atif_field(child, options)),
         _ => return field.clone(),
     };
     Arc::new(field.as_ref().clone().with_data_type(data_type))
 }
 
-pub(super) fn transform_array(
-    array: &ArrayRef,
-    target: &Field,
-) -> std::result::Result<ArrayRef, ArrowError> {
+fn transform_array(array: &ArrayRef, target: &Field) -> std::result::Result<ArrayRef, ArrowError> {
     if array.data_type() == target.data_type() {
         return Ok(array.clone());
     }
@@ -160,7 +176,7 @@ pub(super) fn transform_array(
         }
         _ => {
             return Err(ArrowError::SchemaError(format!(
-                "unsupported blob container {}",
+                "unsupported Arrow container {}",
                 target.data_type()
             )))
         }
@@ -187,10 +203,7 @@ pub(super) fn transform_array(
     ))
 }
 
-fn configure_blob_storage(
-    stream: SendableRecordBatchStream,
-    options: &WriteOptions,
-) -> Result<SendableRecordBatchStream> {
+fn blob_schema(input_schema: &SchemaRef, options: &WriteOptions) -> Result<SchemaRef> {
     let promote_binary = options.blob_inline_size_threshold.is_some()
         || options.blob_dedicated_size_threshold.is_some()
         || !options.blob_columns.is_empty();
@@ -204,7 +217,6 @@ fn configure_blob_storage(
         })?;
         blob_options = blob_options.with_dedicated_size_threshold(threshold);
     }
-    let input_schema = stream.schema();
     let mut uri_blob_columns = options
         .blob_columns
         .iter()
@@ -230,41 +242,18 @@ fn configure_blob_storage(
         .iter()
         .enumerate()
         .map(|(index, field)| {
-            if uri_blob_columns.binary_search(&index).is_ok() {
-                let blob = blob_field_with_options(
-                    field.name(),
-                    field.is_nullable(),
-                    blob_options.clone(),
-                );
-                let mut metadata = field.metadata().clone();
-                metadata.extend(blob.metadata().clone());
-                Arc::new(blob.with_metadata(metadata))
+            if uri_blob_columns.binary_search(&index).is_ok()
+                || (promote_binary && is_binary(field.data_type()))
+            {
+                blob_field(field, &blob_options)
             } else {
-                blob_field(field, promote_binary.then_some(&blob_options))
+                atif_field(field, promote_binary.then_some(&blob_options))
             }
         })
         .collect::<Vec<_>>();
-    let output_schema = Arc::new(Schema::new_with_metadata(
+    Ok(Arc::new(Schema::new_with_metadata(
         fields,
         input_schema.metadata().clone(),
-    ));
-    if output_schema == input_schema {
-        return Ok(stream);
-    }
-    let batch_schema = output_schema.clone();
-    let batches = stream.map(move |batch| {
-        let batch = batch?;
-        let columns = batch
-            .columns()
-            .iter()
-            .zip(batch_schema.fields().iter())
-            .map(|(array, field)| transform_array(array, field))
-            .collect::<std::result::Result<Vec<_>, ArrowError>>()?;
-        Ok(RecordBatch::try_new(batch_schema.clone(), columns)?)
-    });
-    Ok(Box::pin(RecordBatchStreamAdapter::new(
-        output_schema,
-        batches,
     )))
 }
 
@@ -275,5 +264,28 @@ fn ensure_uri_column(data_type: &DataType, name: &str) -> Result<()> {
         Err(Error::message(format!(
             "BLOB_COLUMNS column must be a string: {name}"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_nested_binary_retains_its_storage_policy() {
+        let payload = Arc::new(Field::new("payload", DataType::Binary, true));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "record",
+                DataType::Struct(vec![payload.clone()].into()),
+                true,
+            ),
+            Field::new("list", DataType::List(payload.clone()), true),
+            Field::new("large_list", DataType::LargeList(payload), true),
+        ]));
+        assert_eq!(
+            blob_schema(&schema, &WriteOptions::default()).unwrap(),
+            schema
+        );
     }
 }

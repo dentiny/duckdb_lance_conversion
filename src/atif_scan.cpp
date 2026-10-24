@@ -49,9 +49,6 @@ unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput
 	if (max_total_entry != input.named_parameters.end()) {
 		media_options.max_trajectory_media_bytes = max_total_entry->second.GetValue<uint64_t>();
 	}
-	if (media_options.max_media_bytes == 0 || media_options.max_trajectory_media_bytes == 0) {
-		throw BinderException("ATIF media byte limits must be positive");
-	}
 	auto opendal_config = ReadOpendalConfig(context);
 	SourceStreamFactory *factory = nullptr;
 	ThrowIfLanceError(lance_atif_open(path.c_str(), format.empty() ? nullptr : format.c_str(), &media_options,

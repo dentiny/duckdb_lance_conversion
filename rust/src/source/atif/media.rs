@@ -8,11 +8,11 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, FieldRef, Schema, SchemaRef};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use futures::{future::BoxFuture, TryStreamExt};
+use futures::{future::BoxFuture, AsyncReadExt};
 use url::Url;
 
 use crate::error::ResultExt;
-use crate::source::ReadMetrics;
+use crate::source::{read_object, ReadMetrics};
 use crate::storage::InputFile;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
@@ -35,7 +35,7 @@ impl Default for AtifMediaOptions {
 }
 
 impl AtifMediaOptions {
-    pub(super) fn validate(self) -> Result<Self> {
+    pub(crate) fn validate(self) -> Result<Self> {
         if self.max_media_bytes == 0 || self.max_trajectory_media_bytes == 0 {
             return Err(Error::message("ATIF media byte limits must be positive"));
         }
@@ -193,20 +193,20 @@ impl MediaResolver {
             return Err(limit_error());
         }
         self.metrics.add_total_bytes(size);
-        let mut stream = input
-            .operator
-            .reader_with(&input.opendal_path)
-            .content_length_hint(size)
-            .await?
-            .into_bytes_stream(..)
-            .await?;
+        let reader = read_object(
+            &input.operator,
+            &input.opendal_path,
+            size,
+            self.metrics.clone(),
+        )
+        .await?;
         let mut bytes = Vec::new();
-        while let Some(chunk) = stream.try_next().await? {
-            self.metrics.add_bytes_read(chunk.len());
-            if (bytes.len() as u64).saturating_add(chunk.len() as u64) > limit {
-                return Err(limit_error());
-            }
-            bytes.extend_from_slice(&chunk);
+        reader
+            .take(limit.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .await?;
+        if bytes.len() as u64 > limit {
+            return Err(limit_error());
         }
         if bytes.len() as u64 != size {
             return Err(Error::message("ATIF media size changed during read"));
