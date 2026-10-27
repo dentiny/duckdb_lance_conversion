@@ -383,8 +383,8 @@ name generated columns.
 An expression may reference source columns by name and use DuckDB scalar
 functions, macros, operators, casts, and constants. It cannot reference another
 generated column, or use aggregate or window functions, `unnest`, subqueries,
-`*`, parameters, or volatile functions such as `random()`. A generated column
-name must not already exist in the source.
+`*`, parameters, or volatile functions such as `random()`, including inside
+macros. A generated column name must not already exist in the source.
 
 Each column's normalized expression is stored in its
 `lance_conversion:generated_expression` field metadata. `APPEND` must use the

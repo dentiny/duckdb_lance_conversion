@@ -3,8 +3,6 @@
 #include "lance_ffi.hpp"
 #include "storage_options.hpp"
 #include "lance_conversion.h"
-#include "duckdb/catalog/catalog.hpp"
-#include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/identifier.hpp"
@@ -16,7 +14,6 @@
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
-#include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/parsed_data/sample_options.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
@@ -26,8 +23,8 @@
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/binder.hpp"
-#include "duckdb/planner/expression.hpp"
-#include "duckdb/planner/expression_binder.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 
 #include <algorithm>
@@ -744,14 +741,10 @@ struct GeneratedColumn {
 	string definition;
 };
 
-// Generated values must be a per-row function of the source columns.
-void ValidateGeneratedExpression(ClientContext &context, const Identifier &column, const ParsedExpression &expression,
+// Rejects what binding hides: `*` expansion, parameters, and lateral references to other generated columns.
+void ValidateGeneratedExpression(const Identifier &column, const ParsedExpression &expression,
                                  const identifier_set_t &generated_names) {
 	switch (expression.GetExpressionClass()) {
-	case ExpressionClass::SUBQUERY:
-		throw BinderException("GENERATED_COLUMNS expression cannot contain a subquery: %s", column);
-	case ExpressionClass::WINDOW:
-		throw BinderException("GENERATED_COLUMNS expression cannot contain a window function: %s", column);
 	case ExpressionClass::STAR:
 		throw BinderException("GENERATED_COLUMNS expression cannot contain *: %s", column);
 	case ExpressionClass::PARAMETER:
@@ -764,25 +757,11 @@ void ValidateGeneratedExpression(ClientContext &context, const Identifier &colum
 		}
 		break;
 	}
-	case ExpressionClass::FUNCTION: {
-		auto &function = expression.Cast<FunctionExpression>();
-		if (ExpressionBinder::IsUnnestFunction(function.FunctionName())) {
-			throw BinderException("GENERATED_COLUMNS expression cannot contain unnest: %s", column);
-		}
-		EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, function.GetQualifiedName());
-		auto entry = Catalog::GetEntry(context, lookup, OnEntryNotFound::RETURN_NULL);
-		if (entry && (entry->type == CatalogType::AGGREGATE_FUNCTION_ENTRY ||
-		              entry->type == CatalogType::WINDOW_FUNCTION_ENTRY)) {
-			throw BinderException("GENERATED_COLUMNS expression cannot contain aggregate function %s: %s",
-			                      function.FunctionName(), column);
-		}
-		break;
-	}
 	default:
 		break;
 	}
 	ParsedExpressionIterator::EnumerateChildren(expression, [&](const ParsedExpression &child) {
-		ValidateGeneratedExpression(context, column, child, generated_names);
+		ValidateGeneratedExpression(column, child, generated_names);
 	});
 }
 
@@ -819,7 +798,7 @@ vector<GeneratedColumn> TakeGeneratedColumns(ClientContext &context, CopyInfo &i
 			throw BinderException("GENERATED_COLUMNS expression must be exactly one SQL expression: %s", name);
 		}
 		auto &expression = expressions[0];
-		ValidateGeneratedExpression(context, name, *expression, names);
+		ValidateGeneratedExpression(name, *expression, names);
 		expression->ClearAlias();
 		GeneratedColumn column;
 		column.name = name;
@@ -841,17 +820,35 @@ unique_ptr<QueryNode> ApplyGeneratedColumns(unique_ptr<QueryNode> query, const v
 	return result;
 }
 
-// Checks the bound `SELECT *, <expressions>` wrapper; generated columns are its trailing outputs.
+// Checks the bound, deduplicated `SELECT *, <expressions>` wrapper; generated columns are its trailing outputs.
+// A generated value may only read columns of the source row: aggregates, windows, unnest and subqueries,
+// including those inside macros, surface as references to other operators.
 void ValidateBoundGeneratedColumns(const BoundStatement &source, const vector<GeneratedColumn> &columns) {
-	auto first = source.names.size() - columns.size();
-	if (source.plan->type != LogicalOperatorType::LOGICAL_PROJECTION ||
-	    source.plan->expressions.size() != source.names.size()) {
+	auto &expressions = source.plan->expressions;
+	if (source.plan->type != LogicalOperatorType::LOGICAL_PROJECTION || expressions.size() != source.names.size() ||
+	    expressions[0]->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		throw InternalException("GENERATED_COLUMNS expected a projection over the COPY source");
 	}
+	auto source_table = expressions[0]->Cast<BoundColumnRefExpression>().Binding().table_index;
+	auto first = source.names.size() - columns.size();
 	for (idx_t i = 0; i < columns.size(); i++) {
-		if (source.plan->expressions[first + i]->IsVolatile()) {
-			throw BinderException("GENERATED_COLUMNS expression cannot use volatile functions: %s", columns[i].name);
+		const auto &name = columns[i].name;
+		if (source.names[first + i] != name) {
+			throw BinderException("GENERATED_COLUMNS column already exists in the COPY source: %s", name);
 		}
+		auto &expression = *expressions[first + i];
+		if (expression.IsVolatile()) {
+			throw BinderException("GENERATED_COLUMNS expression cannot use volatile functions: %s", name);
+		}
+		ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+		    expression, [&](const BoundColumnRefExpression &reference) {
+			    if (reference.Binding().table_index != source_table) {
+				    throw BinderException(
+				        "GENERATED_COLUMNS expression must be computed from one source row (no aggregate, window, "
+				        "unnest or subquery): %s",
+				        name);
+			    }
+		    });
 	}
 }
 
@@ -869,23 +866,17 @@ BoundStatement LancePlan(Binder &binder, CopyStatement &statement) {
 		query = ApplyGeneratedColumns(std::move(query), generated);
 	}
 	auto source = binder.Bind(*query);
+	QueryResult::DeduplicateColumns(source.names);
 	if (!generated.empty()) {
 		ValidateBoundGeneratedColumns(source, generated);
-	}
-	QueryResult::DeduplicateColumns(source.names);
-	auto first_generated = source.names.size() - generated.size();
-	for (idx_t i = 0; i < generated.size(); i++) {
-		if (source.names[first_generated + i] != generated[i].name) {
-			throw BinderException("GENERATED_COLUMNS column already exists in the COPY source: %s", generated[i].name);
-		}
 	}
 	CopyFunctionBindInput input(*info);
 	auto data = LanceBind(binder.context, input, source.names, source.types);
 	if (!generated.empty()) {
 		auto &lance_data = data->Cast<LanceBindData>();
-		lance_data.generated_expressions.resize(source.names.size());
-		for (idx_t i = 0; i < generated.size(); i++) {
-			lance_data.generated_expressions[first_generated + i] = generated[i].definition;
+		lance_data.generated_expressions.resize(source.names.size() - generated.size());
+		for (const auto &column : generated) {
+			lance_data.generated_expressions.push_back(column.definition);
 		}
 	}
 	auto copy = make_uniq<LogicalCopyToFile>(function, std::move(data), std::move(info), binder.GenerateTableIndex());

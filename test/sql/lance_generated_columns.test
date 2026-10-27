@@ -56,13 +56,40 @@ statement error
 COPY (SELECT [i, i] AS l FROM range(1) t(i))
 TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'item': 'unnest(l)'});
 ----
-cannot contain unnest
+must be computed from one source row
+
+statement error
+COPY (SELECT 'a,b' AS s FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'part': $$ regexp_split_to_table(s, ',') $$});
+----
+must be computed from one source row
+
+statement ok
+CREATE MACRO generated_row_number() AS row_number() OVER ();
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'n': 'generated_row_number()'});
+----
+must be computed from one source row
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'n': '(SELECT 1)'});
+----
+must be computed from one source row
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'r': 'random()'});
+----
+cannot use volatile functions
 
 statement error
 COPY (SELECT i FROM range(1) t(i))
 TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'total': 'sum(i)'});
 ----
-cannot contain aggregate function
+must appear in the GROUP BY clause
 
 restart no_extension_load
 
