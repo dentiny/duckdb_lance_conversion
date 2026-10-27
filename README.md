@@ -380,17 +380,18 @@ stores the results as ordinary columns after the source columns, in the order
 listed. Other options, such as `COLUMN_COMPRESSION` and the index options, can
 name generated columns.
 
-An expression may reference source columns by name and use DuckDB scalar
-functions, macros, operators, casts, and constants. It cannot reference another
-generated column, or use aggregate or window functions, `unnest`, subqueries,
-`*`, parameters, or volatile functions such as `random()`, including inside
-macros. A generated column name must not already exist in the source.
+An expression may reference source columns and earlier generated columns by
+name, and use DuckDB scalar functions, macros, operators, casts, and constants.
+It cannot use aggregate or window functions, `unnest`, subqueries, `*`,
+parameters, or volatile functions such as `random()`, including inside macros.
+A generated column name must not already exist in the source.
 
 Each column's normalized expression is stored in its
 `lance_conversion:generated_expression` field metadata. `APPEND` must use the
 same `GENERATED_COLUMNS` definitions as the existing dataset; a missing,
-additional, or different definition fails before any data is written.
-`OVERWRITE` replaces them.
+additional, or different definition fails before any data is written. The
+stored text is compared as written, so redefining a macro it calls is not
+detected. `OVERWRITE` replaces them.
 
 ### File and Blob configuration
 

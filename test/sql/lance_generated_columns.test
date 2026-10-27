@@ -40,6 +40,12 @@ TO '__TEST_DIR__/generated_dotted.lance' (FORMAT LANCE, APPEND, GENERATED_COLUMN
 ----
 1
 
+query I
+COPY (SELECT i FROM range(2) t(i))
+TO '__TEST_DIR__/generated_chained.lance' (FORMAT LANCE, GENERATED_COLUMNS {'j': 'i + 1', 'k': 'j * 2'});
+----
+2
+
 statement error
 COPY (SELECT i FROM range(1) t(i))
 TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'i': 'i + 1'});
@@ -108,3 +114,9 @@ SELECT i, "d.x" FROM '__TEST_DIR__/generated_dotted.lance' ORDER BY i;
 ----
 0	1
 1	2
+
+query III
+SELECT i, j, k FROM '__TEST_DIR__/generated_chained.lance' ORDER BY i;
+----
+0	1	2
+1	2	4

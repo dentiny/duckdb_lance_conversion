@@ -13,7 +13,6 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/query_result.hpp"
-#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/parsed_data/sample_options.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
@@ -741,28 +740,18 @@ struct GeneratedColumn {
 	string definition;
 };
 
-// Rejects what binding hides: `*` expansion, parameters, and lateral references to other generated columns.
-void ValidateGeneratedExpression(const Identifier &column, const ParsedExpression &expression,
-                                 const identifier_set_t &generated_names) {
+// Rejects what binding hides: `*` expansion shifts the generated outputs, and a parameter is not a stable definition.
+void ValidateGeneratedExpression(const Identifier &column, const ParsedExpression &expression) {
 	switch (expression.GetExpressionClass()) {
 	case ExpressionClass::STAR:
 		throw BinderException("GENERATED_COLUMNS expression cannot contain *: %s", column);
 	case ExpressionClass::PARAMETER:
 		throw BinderException("GENERATED_COLUMNS expression cannot contain a parameter: %s", column);
-	case ExpressionClass::COLUMN_REF: {
-		auto &reference = expression.Cast<ColumnRefExpression>().ColumnNames()[0];
-		if (generated_names.count(reference)) {
-			throw BinderException("GENERATED_COLUMNS expression cannot reference generated column %s: %s", reference,
-			                      column);
-		}
-		break;
-	}
 	default:
 		break;
 	}
-	ParsedExpressionIterator::EnumerateChildren(expression, [&](const ParsedExpression &child) {
-		ValidateGeneratedExpression(column, child, generated_names);
-	});
+	ParsedExpressionIterator::EnumerateChildren(
+	    expression, [&](const ParsedExpression &child) { ValidateGeneratedExpression(column, child); });
 }
 
 // Removes GENERATED_COLUMNS {'column': 'expression'} from the COPY options and parses each expression.
@@ -782,14 +771,12 @@ vector<GeneratedColumn> TakeGeneratedColumns(ClientContext &context, CopyInfo &i
 		throw BinderException("GENERATED_COLUMNS requires at least one column");
 	}
 	identifier_set_t names;
-	for (const auto &child : entries) {
-		if (!names.insert(child.first).second) {
-			throw BinderException("Duplicate GENERATED_COLUMNS column: %s", child.first);
-		}
-	}
 	Parser parser(context.GetParserOptions());
 	for (idx_t i = 0; i < entries.size(); i++) {
 		const auto &name = entries[i].first;
+		if (!names.insert(name).second) {
+			throw BinderException("Duplicate GENERATED_COLUMNS column: %s", name);
+		}
 		if (children[i].IsNull() || children[i].type().id() != LogicalTypeId::VARCHAR) {
 			throw BinderException("GENERATED_COLUMNS expression must be a string: %s", name);
 		}
@@ -798,7 +785,7 @@ vector<GeneratedColumn> TakeGeneratedColumns(ClientContext &context, CopyInfo &i
 			throw BinderException("GENERATED_COLUMNS expression must be exactly one SQL expression: %s", name);
 		}
 		auto &expression = expressions[0];
-		ValidateGeneratedExpression(name, *expression, names);
+		ValidateGeneratedExpression(name, *expression);
 		expression->ClearAlias();
 		GeneratedColumn column;
 		column.name = name;
