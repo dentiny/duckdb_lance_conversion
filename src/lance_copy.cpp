@@ -733,13 +733,6 @@ unique_ptr<QueryNode> ApplySample(unique_ptr<QueryNode> query, unique_ptr<Sample
 	return result;
 }
 
-struct GeneratedColumn {
-	Identifier name;
-	unique_ptr<ParsedExpression> expression;
-	// Stored with the column so APPEND can reject a different definition.
-	string definition;
-};
-
 // Rejects what binding hides: `*` expansion shifts the generated outputs, and a parameter is not a stable definition.
 void ValidateGeneratedExpression(const Identifier &column, const ParsedExpression &expression) {
 	switch (expression.GetExpressionClass()) {
@@ -754,9 +747,10 @@ void ValidateGeneratedExpression(const Identifier &column, const ParsedExpressio
 	    expression, [&](const ParsedExpression &child) { ValidateGeneratedExpression(column, child); });
 }
 
-// Removes GENERATED_COLUMNS {'column': 'expression'} from the COPY options and parses each expression.
-vector<GeneratedColumn> TakeGeneratedColumns(ClientContext &context, CopyInfo &info) {
-	vector<GeneratedColumn> result;
+// Removes GENERATED_COLUMNS {'column': 'expression'} from the COPY options and parses each expression, aliased
+// with its column name.
+vector<unique_ptr<ParsedExpression>> TakeGeneratedColumns(ClientContext &context, CopyInfo &info) {
+	vector<unique_ptr<ParsedExpression>> result;
 	auto entry = info.options.find(Identifier("generated_columns"));
 	if (entry == info.options.end()) {
 		return result;
@@ -767,9 +761,6 @@ vector<GeneratedColumn> TakeGeneratedColumns(ClientContext &context, CopyInfo &i
 	}
 	auto &entries = StructType::GetChildTypes(values[0].type());
 	auto &children = StructValue::GetChildren(values[0]);
-	if (entries.empty()) {
-		throw BinderException("GENERATED_COLUMNS requires at least one column");
-	}
 	identifier_set_t names;
 	Parser parser(context.GetParserOptions());
 	for (idx_t i = 0; i < entries.size(); i++) {
@@ -784,25 +775,20 @@ vector<GeneratedColumn> TakeGeneratedColumns(ClientContext &context, CopyInfo &i
 		if (expressions.size() != 1) {
 			throw BinderException("GENERATED_COLUMNS expression must be exactly one SQL expression: %s", name);
 		}
-		auto &expression = expressions[0];
-		ValidateGeneratedExpression(name, *expression);
-		expression->ClearAlias();
-		GeneratedColumn column;
-		column.name = name;
-		column.definition = expression->ToString();
-		expression->SetAlias(name);
-		column.expression = std::move(expression);
-		result.push_back(std::move(column));
+		ValidateGeneratedExpression(name, *expressions[0]);
+		expressions[0]->SetAlias(name);
+		result.push_back(std::move(expressions[0]));
 	}
 	info.options.erase(entry);
 	return result;
 }
 
 // SELECT *, <expression> AS <name>, ... FROM (query)
-unique_ptr<QueryNode> ApplyGeneratedColumns(unique_ptr<QueryNode> query, const vector<GeneratedColumn> &columns) {
+unique_ptr<QueryNode> ApplyGeneratedColumns(unique_ptr<QueryNode> query,
+                                            const vector<unique_ptr<ParsedExpression>> &columns) {
 	auto result = SelectAllFrom(std::move(query));
 	for (const auto &column : columns) {
-		result->select_list.push_back(column.expression->Copy());
+		result->select_list.push_back(column->Copy());
 	}
 	return result;
 }
@@ -810,7 +796,7 @@ unique_ptr<QueryNode> ApplyGeneratedColumns(unique_ptr<QueryNode> query, const v
 // Checks the bound, deduplicated `SELECT *, <expressions>` wrapper; generated columns are its trailing outputs.
 // A generated value may only read columns of the source row: aggregates, windows, unnest and subqueries,
 // including those inside macros, surface as references to other operators.
-void ValidateBoundGeneratedColumns(const BoundStatement &source, const vector<GeneratedColumn> &columns) {
+void ValidateBoundGeneratedColumns(const BoundStatement &source, const vector<unique_ptr<ParsedExpression>> &columns) {
 	auto &expressions = source.plan->expressions;
 	if (source.plan->type != LogicalOperatorType::LOGICAL_PROJECTION || expressions.size() != source.names.size() ||
 	    expressions[0]->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
@@ -819,7 +805,7 @@ void ValidateBoundGeneratedColumns(const BoundStatement &source, const vector<Ge
 	auto source_table = expressions[0]->Cast<BoundColumnRefExpression>().Binding().table_index;
 	auto first = source.names.size() - columns.size();
 	for (idx_t i = 0; i < columns.size(); i++) {
-		const auto &name = columns[i].name;
+		const auto &name = columns[i]->GetAlias();
 		if (source.names[first + i] != name) {
 			throw BinderException("GENERATED_COLUMNS column already exists in the COPY source: %s", name);
 		}
@@ -863,7 +849,7 @@ BoundStatement LancePlan(Binder &binder, CopyStatement &statement) {
 		auto &lance_data = data->Cast<LanceBindData>();
 		lance_data.generated_expressions.resize(source.names.size() - generated.size());
 		for (const auto &column : generated) {
-			lance_data.generated_expressions.push_back(column.definition);
+			lance_data.generated_expressions.push_back(column->ToString());
 		}
 	}
 	auto copy = make_uniq<LogicalCopyToFile>(function, std::move(data), std::move(info), binder.GenerateTableIndex());
