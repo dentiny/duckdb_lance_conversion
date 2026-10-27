@@ -1,11 +1,14 @@
+#include "dataset_util.hpp"
 #include "storage_options.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/identifier.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/secret/secret.hpp"
+#include "lance_ffi.hpp"
 
 #include <cmath>
 #include <limits>
@@ -102,6 +105,31 @@ unique_ptr<LanceS3Options> ReadS3Options(ClientContext &context, const string &p
 	                  result->use_ssl ? 1 : 0,
 	                  result->virtual_host_style ? 1 : 0};
 	return result;
+}
+
+namespace {
+
+template <class CALLBACK>
+void WithDatasetStorage(ClientContext &context, const string &path, CALLBACK callback) {
+	auto s3 = StringUtil::CIStartsWith(path, "s3://") ? ReadS3Options(context, path) : nullptr;
+	auto opendal = ReadOpendalConfig(context);
+	callback(s3 ? &s3->config : nullptr, &opendal);
+}
+
+} // namespace
+
+bool LanceDatasetExists(ClientContext &context, const string &path) {
+	bool exists = false;
+	WithDatasetStorage(context, path, [&](const LanceS3Config *s3, const LanceOpendalConfig *opendal) {
+		ThrowIfLanceError(lance_conversion_dataset_exists(path.c_str(), s3, opendal, &exists), "Lance dataset lookup");
+	});
+	return exists;
+}
+
+void DeleteLanceDataset(ClientContext &context, const string &path) {
+	WithDatasetStorage(context, path, [&](const LanceS3Config *s3, const LanceOpendalConfig *opendal) {
+		ThrowIfLanceError(lance_conversion_remove_dataset(path.c_str(), s3, opendal), "Lance dataset deletion");
+	});
 }
 
 } // namespace duckdb
