@@ -123,6 +123,12 @@ char *lance_conversion_open(const char *path, const struct ArrowSchema *schema, 
 char *lance_conversion_finish(struct LanceConversionDataset *dataset);
 void lance_conversion_get_metrics(const struct LanceConversionDataset *dataset, struct LanceWriteMetrics *output);
 void lance_conversion_destroy(struct LanceConversionDataset *dataset);
+// Inspect and recursively remove a dataset prefix using the writer's OpenDAL storage configuration.
+// The path must end in .lance. `exists` is set only on success.
+char *lance_conversion_dataset_exists(const char *path, const struct LanceS3Config *s3,
+                                      const struct LanceOpendalConfig *opendal_config, bool *exists);
+char *lance_conversion_remove_dataset(const char *path, const struct LanceS3Config *s3,
+                                      const struct LanceOpendalConfig *opendal_config);
 
 // Writers write data files for one dataset write, so several threads can write
 // in parallel; a writer itself is not thread-safe.

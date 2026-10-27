@@ -13,6 +13,7 @@ use arrow_schema::{ffi::FFI_ArrowSchema, ArrowError, DataType, Schema, SchemaRef
 use futures::TryStreamExt;
 
 use crate::source::ReadMetrics;
+use crate::storage::OpendalStorage;
 use crate::{
     atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, ColumnEncoding, Error,
     HuggingFaceSource, IndexKind, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
@@ -391,6 +392,64 @@ pub unsafe extern "C" fn lance_conversion_error_free(error: *mut c_char) {
     }
 }
 
+fn dataset_prefix(storage: &OpendalStorage) -> Result<String> {
+    let path = storage.object_path.to_string();
+    if !path.ends_with(".lance") {
+        return Err(Error::message(
+            "dataset cleanup requires a .lance destination",
+        ));
+    }
+    Ok(format!("{path}/"))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_conversion_dataset_exists(
+    path: *const c_char,
+    s3: *const LanceS3Config,
+    opendal_config: *const OpendalConfig,
+    exists: *mut bool,
+) -> *mut c_char {
+    call(|| {
+        if path.is_null() || exists.is_null() {
+            return Err(Error::message("null dataset existence argument"));
+        }
+        *exists = false;
+        let path = CStr::from_ptr(path).to_str()?;
+        let s3 = s3_config(s3)?;
+        let config = parse_opendal_config(opendal_config)?;
+        let storage = OpendalStorage::from_path(path, s3.as_ref(), &config)?;
+        let prefix = dataset_prefix(&storage)?;
+        *exists = source_runtime()?.block_on(async {
+            Ok::<_, Error>(
+                storage.operator.exists(&prefix).await?
+                    || !storage.operator.list(&prefix).await?.is_empty(),
+            )
+        })?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_conversion_remove_dataset(
+    path: *const c_char,
+    s3: *const LanceS3Config,
+    opendal_config: *const OpendalConfig,
+) -> *mut c_char {
+    call(|| {
+        if path.is_null() {
+            return Err(Error::message("null dataset cleanup path"));
+        }
+        let path = CStr::from_ptr(path).to_str()?;
+        let s3 = s3_config(s3)?;
+        let config = parse_opendal_config(opendal_config)?;
+        let storage = OpendalStorage::from_path(path, s3.as_ref(), &config)?;
+        let prefix = dataset_prefix(&storage)?;
+        source_runtime()?
+            .block_on(async { storage.operator.delete_with(&prefix).recursive(true).await })?;
+        Ok(())
+    })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn lance_conversion_open(
     path: *const c_char,
@@ -760,6 +819,40 @@ pub unsafe extern "C" fn lance_source_destroy(factory: *mut SourceStreamFactory)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dataset_cleanup_only_removes_selected_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let dataset = root.path().join("trial.lance");
+        let sibling = root.path().join("trial.lance-other");
+        std::fs::create_dir(&dataset).unwrap();
+        std::fs::write(dataset.join("part"), b"data").unwrap();
+        std::fs::write(&sibling, b"keep").unwrap();
+        let path = CString::new(dataset.to_str().unwrap()).unwrap();
+        unsafe {
+            let mut exists = false;
+            assert!(lance_conversion_dataset_exists(
+                path.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                &mut exists,
+            )
+            .is_null());
+            assert!(exists);
+            assert!(
+                lance_conversion_remove_dataset(path.as_ptr(), ptr::null(), ptr::null()).is_null()
+            );
+            assert!(lance_conversion_dataset_exists(
+                path.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                &mut exists,
+            )
+            .is_null());
+            assert!(!exists);
+        }
+        assert_eq!(std::fs::read(sibling).unwrap(), b"keep");
+    }
 
     #[tokio::test]
     async fn ffi_errors_remain_valid_across_calls() {
