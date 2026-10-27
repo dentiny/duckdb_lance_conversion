@@ -23,10 +23,40 @@ TO '__TEST_DIR__/generated.lance' (FORMAT LANCE, APPEND, GENERATED_COLUMNS {'dou
 differs from the existing Lance dataset
 
 statement error
+COPY (SELECT i, i * 2 AS doubled FROM range(3, 4) t(i))
+TO '__TEST_DIR__/generated.lance' (FORMAT LANCE, APPEND);
+----
+differs from the existing Lance dataset
+
+query I
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_dotted.lance' (FORMAT LANCE, GENERATED_COLUMNS {'d.x': 'i + 1'});
+----
+1
+
+query I
+COPY (SELECT i FROM range(1, 2) t(i))
+TO '__TEST_DIR__/generated_dotted.lance' (FORMAT LANCE, APPEND, GENERATED_COLUMNS {'d.x': 'i + 1'});
+----
+1
+
+statement error
 COPY (SELECT i FROM range(1) t(i))
 TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'i': 'i + 1'});
 ----
 already exists in the COPY source
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'I': 'i + 1'});
+----
+already exists in the COPY source
+
+statement error
+COPY (SELECT [i, i] AS l FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'item': 'unnest(l)'});
+----
+cannot contain unnest
 
 statement error
 COPY (SELECT i FROM range(1) t(i))
@@ -45,3 +75,9 @@ SELECT i, doubled FROM '__TEST_DIR__/generated.lance' ORDER BY i;
 0	0
 1	2
 2	4
+
+query II
+SELECT i, "d.x" FROM '__TEST_DIR__/generated_dotted.lance' ORDER BY i;
+----
+0	1
+1	2

@@ -27,6 +27,7 @@
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 
 #include <algorithm>
@@ -765,6 +766,9 @@ void ValidateGeneratedExpression(ClientContext &context, const Identifier &colum
 	}
 	case ExpressionClass::FUNCTION: {
 		auto &function = expression.Cast<FunctionExpression>();
+		if (ExpressionBinder::IsUnnestFunction(function.FunctionName())) {
+			throw BinderException("GENERATED_COLUMNS expression cannot contain unnest: %s", column);
+		}
 		EntryLookupInfo lookup(CatalogType::SCALAR_FUNCTION_ENTRY, function.GetQualifiedName());
 		auto entry = Catalog::GetEntry(context, lookup, OnEntryNotFound::RETURN_NULL);
 		if (entry && (entry->type == CatalogType::AGGREGATE_FUNCTION_ENTRY ||
@@ -840,12 +844,6 @@ unique_ptr<QueryNode> ApplyGeneratedColumns(unique_ptr<QueryNode> query, const v
 // Checks the bound `SELECT *, <expressions>` wrapper; generated columns are its trailing outputs.
 void ValidateBoundGeneratedColumns(const BoundStatement &source, const vector<GeneratedColumn> &columns) {
 	auto first = source.names.size() - columns.size();
-	identifier_set_t source_names(source.names.begin(), source.names.begin() + NumericCast<int64_t>(first));
-	for (const auto &column : columns) {
-		if (source_names.count(column.name)) {
-			throw BinderException("GENERATED_COLUMNS column already exists in the COPY source: %s", column.name);
-		}
-	}
 	if (source.plan->type != LogicalOperatorType::LOGICAL_PROJECTION ||
 	    source.plan->expressions.size() != source.names.size()) {
 		throw InternalException("GENERATED_COLUMNS expected a projection over the COPY source");

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::{
@@ -38,25 +39,31 @@ fn empty_stream(schema: SchemaRef) -> SendableRecordBatchStream {
 
 /// Appended rows must compute each generated column with the dataset's stored expression.
 fn validate_generated_columns(dataset: &Dataset, schema: &SchemaRef) -> Result<()> {
-    let existing = dataset.schema();
-    let names = existing
+    let stored: BTreeMap<_, _> = dataset
+        .schema()
         .fields
         .iter()
-        .map(|field| field.name.as_str())
-        .chain(schema.fields().iter().map(|field| field.name().as_str()));
-    for name in names {
-        let stored = existing
-            .field(name)
-            .and_then(|field| field.metadata.get(GENERATED_EXPRESSION_METADATA_KEY));
-        let appended = schema
-            .field_with_name(name)
-            .ok()
-            .and_then(|field| field.metadata().get(GENERATED_EXPRESSION_METADATA_KEY));
-        if stored != appended {
-            return Err(Error::message(format!(
-                "GENERATED_COLUMNS definition of '{name}' differs from the existing Lance dataset"
-            )));
-        }
+        .filter_map(|field| {
+            Some((
+                &field.name,
+                field.metadata.get(GENERATED_EXPRESSION_METADATA_KEY)?,
+            ))
+        })
+        .collect();
+    let appended: BTreeMap<_, _> = schema
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            Some((
+                field.name(),
+                field.metadata().get(GENERATED_EXPRESSION_METADATA_KEY)?,
+            ))
+        })
+        .collect();
+    if stored != appended {
+        return Err(Error::message(
+            "GENERATED_COLUMNS definitions differ from the existing Lance dataset",
+        ));
     }
     Ok(())
 }
