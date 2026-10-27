@@ -1,0 +1,47 @@
+# name: test/sql/lance_generated_columns.test
+# description: GENERATED_COLUMNS computes Lance columns from each source row
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (SELECT i FROM range(2) t(i))
+TO '__TEST_DIR__/generated.lance' (FORMAT LANCE, GENERATED_COLUMNS {'doubled': 'i * 2'});
+----
+2
+
+query I
+COPY (SELECT i FROM range(2, 3) t(i))
+TO '__TEST_DIR__/generated.lance' (FORMAT LANCE, APPEND, GENERATED_COLUMNS {'doubled': 'i * 2'});
+----
+1
+
+statement error
+COPY (SELECT i FROM range(3, 4) t(i))
+TO '__TEST_DIR__/generated.lance' (FORMAT LANCE, APPEND, GENERATED_COLUMNS {'doubled': 'i + i'});
+----
+differs from the existing Lance dataset
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'i': 'i + 1'});
+----
+already exists in the COPY source
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'total': 'sum(i)'});
+----
+cannot contain aggregate function
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query II
+SELECT i, doubled FROM '__TEST_DIR__/generated.lance' ORDER BY i;
+----
+0	0
+1	2
+2	4

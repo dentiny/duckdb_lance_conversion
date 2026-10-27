@@ -29,8 +29,36 @@ use crate::sink::WriteSummary;
 use crate::storage::{is_s3_uri, OpendalStorage, OpendalStoreProvider};
 use crate::{Error, Result};
 
+/// Field metadata holding the SQL expression of a `GENERATED_COLUMNS` column.
+const GENERATED_EXPRESSION_METADATA_KEY: &str = "lance_conversion:generated_expression";
+
 fn empty_stream(schema: SchemaRef) -> SendableRecordBatchStream {
     Box::pin(RecordBatchStreamAdapter::new(schema, stream::empty()))
+}
+
+/// Appended rows must compute each generated column with the dataset's stored expression.
+fn validate_generated_columns(dataset: &Dataset, schema: &SchemaRef) -> Result<()> {
+    let existing = dataset.schema();
+    let names = existing
+        .fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .chain(schema.fields().iter().map(|field| field.name().as_str()));
+    for name in names {
+        let stored = existing
+            .field(name)
+            .and_then(|field| field.metadata.get(GENERATED_EXPRESSION_METADATA_KEY));
+        let appended = schema
+            .field_with_name(name)
+            .ok()
+            .and_then(|field| field.metadata().get(GENERATED_EXPRESSION_METADATA_KEY));
+        if stored != appended {
+            return Err(Error::message(format!(
+                "GENERATED_COLUMNS definition of '{name}' differs from the existing Lance dataset"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// State shared by every fragment writer of one dataset write.
@@ -213,6 +241,9 @@ impl LanceDatasetWriter {
             Err(lance::Error::DatasetNotFound { .. } | lance::Error::NotFound { .. }) => None,
             Err(error) => return Err(error).context("opening Lance destination"),
         };
+        if let (WriteMode::Append, Some(dataset)) = (options.mode, &dataset) {
+            validate_generated_columns(dataset, &schema)?;
+        }
         let params = WriteParams {
             mode: options.mode,
             max_bytes_per_file: options.target_file_size,

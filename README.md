@@ -361,6 +361,37 @@ source is still read. `SAMPLE_PERCENT` accepts values from 0 to 100,
 specified together. The returned row count is the number of sampled rows
 written.
 
+### Generated columns
+
+`GENERATED_COLUMNS` adds columns computed from each source row. Each entry maps
+a new column name to one DuckDB SQL expression, written as a string; `$$...$$`
+avoids doubling quotes inside the expression:
+
+```sql
+COPY (SELECT * FROM read_warc('archive.warc.gz') WHERE type = 'response')
+TO 'responses.lance' (FORMAT LANCE, GENERATED_COLUMNS {
+    'doc_id': $$ sha256(id || ':' || target_uri) $$,
+    'body_size': 'octet_length(body)'
+});
+```
+
+DuckDB evaluates the expressions while writing, after any sampling, and Lance
+stores the results as ordinary columns after the source columns, in the order
+listed. Other options, such as `COLUMN_COMPRESSION` and the index options, can
+name generated columns.
+
+An expression may reference source columns by name and use DuckDB scalar
+functions, macros, operators, casts, and constants. It cannot reference another
+generated column, or use aggregate or window functions, subqueries, `*`,
+parameters, or volatile functions such as `random()`. A generated column name
+must not already exist in the source.
+
+Each column's normalized expression is stored in its
+`lance_conversion:generated_expression` field metadata. `APPEND` must use the
+same `GENERATED_COLUMNS` definitions as the existing dataset; a missing,
+additional, or different definition fails before any data is written.
+`OVERWRITE` replaces them.
+
 ### File and Blob configuration
 
 Size options are specified in bytes:
@@ -483,6 +514,9 @@ TO 'catalog.lance' (
 
     -- Optional: write a sample instead of every row (or SAMPLE_ROWS n).
     SAMPLE_PERCENT 10,
+
+    -- Optional: columns computed from each source row.
+    GENERATED_COLUMNS {'event_key': $$ sha256(event_id::VARCHAR) $$},
 
     -- Lance data and Blob v2 layout.
     TARGET_FILE_SIZE 536870912,
