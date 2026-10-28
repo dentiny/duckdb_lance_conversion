@@ -104,4 +104,12 @@ void ExportSourceMetadata(const vector<LogicalType> &types, ArrowSchema &schema)
 	}
 }
 
+void ExportFieldMetadata(ArrowSchema &schema, idx_t column, const string &key, const string &value) {
+	auto &holder = *static_cast<DuckDBArrowSchemaHolder *>(schema.private_data);
+	auto &field = *schema.children[column];
+	auto metadata = field.metadata ? ArrowSchemaMetadata(field.metadata) : ArrowSchemaMetadata();
+	metadata.AddOption(key, value);
+	StoreMetadata(field, metadata, holder);
+}
+
 } // namespace duckdb

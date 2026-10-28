@@ -1,0 +1,122 @@
+# name: test/sql/lance_generated_columns.test
+# description: GENERATED_COLUMNS computes Lance columns from each source row
+# group: [sql]
+
+require lance_conversion
+
+query I
+COPY (SELECT i FROM range(2) t(i))
+TO '__TEST_DIR__/generated.lance' (FORMAT LANCE, GENERATED_COLUMNS {'doubled': 'i * 2'});
+----
+2
+
+query I
+COPY (SELECT i FROM range(2, 3) t(i))
+TO '__TEST_DIR__/generated.lance' (FORMAT LANCE, APPEND, GENERATED_COLUMNS {'doubled': 'i * 2'});
+----
+1
+
+statement error
+COPY (SELECT i FROM range(3, 4) t(i))
+TO '__TEST_DIR__/generated.lance' (FORMAT LANCE, APPEND, GENERATED_COLUMNS {'doubled': 'i + i'});
+----
+differs from the existing Lance dataset
+
+statement error
+COPY (SELECT i, i * 2 AS doubled FROM range(3, 4) t(i))
+TO '__TEST_DIR__/generated.lance' (FORMAT LANCE, APPEND);
+----
+differs from the existing Lance dataset
+
+query I
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_dotted.lance' (FORMAT LANCE, GENERATED_COLUMNS {'d.x': 'i + 1'});
+----
+1
+
+query I
+COPY (SELECT i FROM range(1, 2) t(i))
+TO '__TEST_DIR__/generated_dotted.lance' (FORMAT LANCE, APPEND, GENERATED_COLUMNS {'d.x': 'i + 1'});
+----
+1
+
+query I
+COPY (SELECT i FROM range(2) t(i))
+TO '__TEST_DIR__/generated_chained.lance' (FORMAT LANCE, GENERATED_COLUMNS {'j': 'i + 1', 'k': 'j * 2'});
+----
+2
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'i': 'i + 1'});
+----
+already exists in the COPY source
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'I': 'i + 1'});
+----
+already exists in the COPY source
+
+statement error
+COPY (SELECT [i, i] AS l FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'item': 'unnest(l)'});
+----
+must be computed from one source row
+
+statement error
+COPY (SELECT 'a,b' AS s FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'part': $$ regexp_split_to_table(s, ',') $$});
+----
+must be computed from one source row
+
+statement ok
+CREATE MACRO generated_row_number() AS row_number() OVER ();
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'n': 'generated_row_number()'});
+----
+must be computed from one source row
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'n': '(SELECT 1)'});
+----
+must be computed from one source row
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'r': 'random()'});
+----
+cannot use volatile functions
+
+statement error
+COPY (SELECT i FROM range(1) t(i))
+TO '__TEST_DIR__/generated_error.lance' (FORMAT LANCE, GENERATED_COLUMNS {'total': 'sum(i)'});
+----
+must appear in the GROUP BY clause
+
+restart no_extension_load
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
+
+query II
+SELECT i, doubled FROM '__TEST_DIR__/generated.lance' ORDER BY i;
+----
+0	0
+1	2
+2	4
+
+query II
+SELECT i, "d.x" FROM '__TEST_DIR__/generated_dotted.lance' ORDER BY i;
+----
+0	1
+1	2
+
+query III
+SELECT i, j, k FROM '__TEST_DIR__/generated_chained.lance' ORDER BY i;
+----
+0	1	2
+1	2	4

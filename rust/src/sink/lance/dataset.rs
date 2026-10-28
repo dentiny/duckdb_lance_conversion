@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::{
@@ -29,8 +30,42 @@ use crate::sink::WriteSummary;
 use crate::storage::{is_s3_uri, OpendalStorage, OpendalStoreProvider};
 use crate::{Error, Result};
 
+/// Field metadata holding the SQL expression of a `GENERATED_COLUMNS` column.
+const GENERATED_EXPRESSION_METADATA_KEY: &str = "lance_conversion:generated_expression";
+
 fn empty_stream(schema: SchemaRef) -> SendableRecordBatchStream {
     Box::pin(RecordBatchStreamAdapter::new(schema, stream::empty()))
+}
+
+/// Appended rows must compute each generated column with the dataset's stored expression.
+fn validate_generated_columns(dataset: &Dataset, schema: &SchemaRef) -> Result<()> {
+    let stored: BTreeMap<_, _> = dataset
+        .schema()
+        .fields
+        .iter()
+        .filter_map(|field| {
+            Some((
+                &field.name,
+                field.metadata.get(GENERATED_EXPRESSION_METADATA_KEY)?,
+            ))
+        })
+        .collect();
+    let appended: BTreeMap<_, _> = schema
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            Some((
+                field.name(),
+                field.metadata().get(GENERATED_EXPRESSION_METADATA_KEY)?,
+            ))
+        })
+        .collect();
+    if stored != appended {
+        return Err(Error::message(
+            "GENERATED_COLUMNS definitions differ from the existing Lance dataset",
+        ));
+    }
+    Ok(())
 }
 
 /// State shared by every fragment writer of one dataset write.
@@ -213,6 +248,9 @@ impl LanceDatasetWriter {
             Err(lance::Error::DatasetNotFound { .. } | lance::Error::NotFound { .. }) => None,
             Err(error) => return Err(error).context("opening Lance destination"),
         };
+        if let (WriteMode::Append, Some(dataset)) = (options.mode, &dataset) {
+            validate_generated_columns(dataset, &schema)?;
+        }
         let params = WriteParams {
             mode: options.mode,
             max_bytes_per_file: options.target_file_size,
