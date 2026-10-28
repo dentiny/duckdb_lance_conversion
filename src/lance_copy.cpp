@@ -34,7 +34,7 @@
 namespace duckdb {
 namespace {
 
-constexpr const char *GENERATED_EXPRESSION_METADATA_KEY = "lance_conversion:generated_expression";
+constexpr std::string_view GENERATED_EXPRESSION_METADATA_KEY = "lance_conversion:generated_expression";
 
 // Lance encoding settings for one column; an empty compression and unset level or encoding keep Lance's defaults.
 struct ColumnEncodingOptions {
@@ -521,7 +521,7 @@ unique_ptr<GlobalFunctionData> LanceInitialize(ClientContext &context, FunctionD
 	ExportSourceMetadata(bind.types, schema.arrow_schema);
 	for (idx_t column = 0; column < bind.generated_expressions.size(); column++) {
 		if (!bind.generated_expressions[column].empty()) {
-			ExportFieldMetadata(schema.arrow_schema, column, GENERATED_EXPRESSION_METADATA_KEY,
+			ExportFieldMetadata(schema.arrow_schema, column, string(GENERATED_EXPRESSION_METADATA_KEY),
 			                    bind.generated_expressions[column]);
 		}
 	}
@@ -763,6 +763,7 @@ vector<unique_ptr<ParsedExpression>> TakeGeneratedColumns(ClientContext &context
 	auto &children = StructValue::GetChildren(values[0]);
 	identifier_set_t names;
 	Parser parser(context.GetParserOptions());
+	result.reserve(entries.size());
 	for (idx_t i = 0; i < entries.size(); i++) {
 		const auto &name = entries[i].first;
 		if (!names.insert(name).second) {
@@ -777,7 +778,7 @@ vector<unique_ptr<ParsedExpression>> TakeGeneratedColumns(ClientContext &context
 		}
 		ValidateGeneratedExpression(name, *expressions[0]);
 		expressions[0]->SetAlias(name);
-		result.push_back(std::move(expressions[0]));
+		result.emplace_back(std::move(expressions[0]));
 	}
 	info.options.erase(entry);
 	return result;
@@ -787,8 +788,9 @@ vector<unique_ptr<ParsedExpression>> TakeGeneratedColumns(ClientContext &context
 unique_ptr<QueryNode> ApplyGeneratedColumns(unique_ptr<QueryNode> query,
                                             const vector<unique_ptr<ParsedExpression>> &columns) {
 	auto result = SelectAllFrom(std::move(query));
+	result->select_list.reserve(result->select_list.size() + columns.size());
 	for (const auto &column : columns) {
-		result->select_list.push_back(column->Copy());
+		result->select_list.emplace_back(column->Copy());
 	}
 	return result;
 }
@@ -847,9 +849,10 @@ BoundStatement LancePlan(Binder &binder, CopyStatement &statement) {
 	auto data = LanceBind(binder.context, input, source.names, source.types);
 	if (!generated.empty()) {
 		auto &lance_data = data->Cast<LanceBindData>();
+		lance_data.generated_expressions.reserve(source.names.size());
 		lance_data.generated_expressions.resize(source.names.size() - generated.size());
 		for (const auto &column : generated) {
-			lance_data.generated_expressions.push_back(column->ToString());
+			lance_data.generated_expressions.emplace_back(column->ToString());
 		}
 	}
 	auto copy = make_uniq<LogicalCopyToFile>(function, std::move(data), std::move(info), binder.GenerateTableIndex());
