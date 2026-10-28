@@ -1,7 +1,21 @@
+# 0.2.1
+
+## Added
+
+- Add the `GENERATED_COLUMNS` COPY option, which writes extra columns computed by DuckDB SQL expressions from each source row. Expressions may use scalar functions, macros, and earlier generated columns, but not aggregates, window functions, `unnest`, subqueries, or volatile functions. Each normalized expression is stored in the column's Lance field metadata, and `APPEND` fails unless it uses the same definitions ([#76]).
+
+[#76]: https://github.com/dentiny/duckdb_lance_conversion/pull/76
+
 # 0.2.0
+
+## Added
+
+- `read_atif` embeds the image and audio bytes referenced by `ContentPart.source.path`, and `COPY ... FORMAT LANCE` stores them as Blob v2 ([#73]).
+- `COLUMN_COMPRESSION` and `COLUMN_COMPRESSION_LEVEL` accept dot paths to nested fields, such as `steps.message.text` ([#73]).
 
 ## Fixed
 
+- Fix the profiling test's traversal of heterogeneous operator JSON ([#72]).
 - Validate executed batch COPY paths with EXPLAIN ANALYZE and round-trip data checks, without duplicate dataset writes or JSON layout matching.
 - Use the optional-result cast API for compression levels and include the client context directly for Hugging Face secret lookup on DuckDB v2.
 - Remove the obsolete DONT_LINK option from the optional Lance test dependency so DuckDB v2 configuration succeeds with unit tests enabled.
@@ -14,6 +28,13 @@
 - Migrate profiling counters and the profiling SQL test to DuckDB v2 metric APIs and names. Reuse DuckDB's Arrow partition callback instead of duplicating it.
 - Use C++17 and string views for static setting and option names.
 - Align Cargo, extension metadata, and the fallback extension version at `0.2.0`.
+- `STORAGE_VERSION` now defaults to `2.2` instead of `stable`. ATIF text is stored as `LargeBinary` with LZ4 compression by default ([#73]).
+- Update Lance to `fb70d38c` with its merged compression fixes, and pin its build regression fixes ([#70], [#71]).
+
+[#70]: https://github.com/dentiny/duckdb_lance_conversion/pull/70
+[#71]: https://github.com/dentiny/duckdb_lance_conversion/pull/71
+[#72]: https://github.com/dentiny/duckdb_lance_conversion/pull/72
+[#73]: https://github.com/dentiny/duckdb_lance_conversion/pull/73
 
 # 0.1.5
 
