@@ -762,7 +762,7 @@ vector<unique_ptr<ParsedExpression>> TakeGeneratedColumns(ClientContext &context
 	auto &entries = StructType::GetChildTypes(values[0].type());
 	auto &children = StructValue::GetChildren(values[0]);
 	identifier_set_t names;
-	Parser parser(context.GetParserOptions());
+	Parser parser(context);
 	result.reserve(entries.size());
 	for (idx_t i = 0; i < entries.size(); i++) {
 		const auto &name = entries[i].first;
