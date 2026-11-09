@@ -9,6 +9,12 @@ format-all: format
 	cmake-format -i $(CMAKE_FILES)
 	cargo fmt --manifest-path rust/Cargo.toml
 
-.PHONY: format-all rust-test
 rust-test:
 	cargo test --locked --manifest-path rust/Cargo.toml
+
+clean: clean-rust
+
+clean-rust:
+	rm -rf rust/target
+
+.PHONY: format-all rust-test clean-rust
