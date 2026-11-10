@@ -23,6 +23,7 @@ format or data source that DuckDB can query, including:
 - Hugging Face Parquet datasets through `read_huggingface`
 - Local, S3, and HTTP(S) WARC/WARC.GZ files and Common Crawl segments through `read_warc`
 - Local, S3, and HTTP(S) ATIF agent trajectory JSON/JSONL files, plain or gzipped, through `read_atif`
+- Local, S3, and HTTP(S) XML files, plain or gzipped, through `read_xml_records`
 
 The Lance sink supports local and S3-compatible destinations, Create/Append/
 Overwrite modes, Blob v2 storage policies, target file sizing, and scalar,
@@ -277,6 +278,42 @@ FullZip text. Use `STORAGE_VERSION '2.3'` for the upstream per-value LZ4 fix.
 The pinned SQL-test reader (`lance-duckdb`, SDK 12) has a nested Blob schema
 mismatch when selecting `steps`; full media round trips use the current SDK's
 `BlobHandling::AllBinary` scanner.
+
+`read_xml_records` reads one row per element at `record_path` through
+[xml-arrow](https://github.com/dentiny/xml-arrow-rs). The record path is
+absolute and includes the document root. The schema is inferred from the first
+`sample_records` records (default 128) or `sample_bytes` bytes (default 8 MiB):
+child elements become columns, attributes become columns such as `@id`, nested
+elements become structs, and repeated siblings become lists. Columns are sorted
+by name and every column is nullable. Integer fields become `BIGINT`, fields
+mixing integers and decimals become `DOUBLE`, and other mixtures become
+`VARCHAR`. Fields first seen after the sample are ignored, and later values that
+do not fit the inferred type fail the scan; raise `sample_records` or
+`sample_bytes` for sparse fields. Paths ending in `.gz` are decompressed while
+reading. Local, `s3://`, and `http(s)://` paths are supported:
+
+```sql
+COPY (
+    SELECT station_id, station_name, latitude, longitude
+    FROM read_xml_records('stations.xml', record_path := '/wx_station_index/station')
+)
+TO 'stations.lance' (FORMAT LANCE);
+```
+
+Bind prefixes with `namespaces` to read namespaced documents. Columns use the
+bound prefixes, and unbound namespaces get generated prefixes such as `ns0`:
+
+```sql
+SELECT "atom:title", "georss:point", "atom:category"
+FROM read_xml_records('feed.atom', record_path := '/atom:feed/atom:entry',
+    namespaces := MAP {'atom': 'http://www.w3.org/2005/Atom',
+                       'georss': 'http://www.georss.org/georss'});
+```
+
+Input must be UTF-8, and DTDs and custom entities are rejected. Each scan infers
+the schema again and fails if the file changed since the query was bound. Lance
+column names cannot contain `.`, so alias such XML element names before
+`COPY ... (FORMAT LANCE)`.
 
 ### Profiling
 

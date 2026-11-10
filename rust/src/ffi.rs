@@ -2,7 +2,7 @@ use std::collections::{btree_map::Entry, BTreeMap};
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use arrow_array::{
     ffi::{from_ffi_and_data_type, FFI_ArrowArray},
@@ -18,7 +18,7 @@ use crate::{
     atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, ColumnEncoding, Error,
     HuggingFaceSource, IndexKind, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
     S3StorageConfig, StructuralEncoding, WarcSource, WriteMode, WriteOptions, WriteSummary,
-    DEFAULT_MAX_READ_PARALLELISM, DEFAULT_READ_AHEAD_BYTES,
+    XmlSource, DEFAULT_MAX_READ_PARALLELISM, DEFAULT_READ_AHEAD_BYTES,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -740,6 +740,67 @@ pub unsafe extern "C" fn lance_atif_open(
             }
             source
         });
+        *output = Box::into_raw(Box::new(factory));
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lance_xml_open(
+    path: *const c_char,
+    record_path: *const c_char,
+    namespace_prefixes: *const *const c_char,
+    namespace_uris: *const *const c_char,
+    namespace_count: usize,
+    sample_records: u64,
+    sample_bytes: u64,
+    s3: *const LanceS3Config,
+    opendal_config: *const OpendalConfig,
+    output: *mut *mut SourceStreamFactory,
+) -> *mut c_char {
+    call(|| {
+        if path.is_null() || record_path.is_null() || output.is_null() {
+            return Err(Error::message("null XML reader argument"));
+        }
+        *output = ptr::null_mut();
+        let path = CStr::from_ptr(path).to_str()?.to_owned();
+        let record_path = CStr::from_ptr(record_path).to_str()?.to_owned();
+        let namespaces = string_list(namespace_prefixes, namespace_count)?
+            .into_iter()
+            .zip(string_list(namespace_uris, namespace_count)?)
+            .collect::<Vec<_>>();
+        let sample_records = usize::try_from(sample_records)
+            .map_err(|_| Error::message("sample_records is too large"))?;
+        let sample_bytes = usize::try_from(sample_bytes)
+            .map_err(|_| Error::message("sample_bytes is too large"))?;
+        let s3_config = s3_config(s3)?;
+        let opendal_config = parse_opendal_config(opendal_config)?;
+        // Set after bind; every later open checks it re-inferred the same schema.
+        let bound_schema = Arc::new(OnceLock::<SchemaRef>::new());
+        let expected_schema = bound_schema.clone();
+        let factory =
+            SourceStreamFactory::new(Arc::new(Schema::empty()), move |projection, metrics| {
+                let mut source = XmlSource::new(&path, &record_path)
+                    .with_namespaces(namespaces.clone())
+                    .with_projection(projection)
+                    .with_opendal_config(opendal_config)
+                    .with_metrics(metrics);
+                if sample_records != 0 {
+                    source = source.with_sample_records(sample_records);
+                }
+                if sample_bytes != 0 {
+                    source = source.with_sample_bytes(sample_bytes);
+                }
+                if let Some(schema) = expected_schema.get() {
+                    source = source.with_expected_schema(schema.clone());
+                }
+                if let Some(config) = &s3_config {
+                    source = source.with_s3_config(config.clone());
+                }
+                source
+            })
+            .bind()?;
+        let _ = bound_schema.set(factory.schema.clone());
         *output = Box::into_raw(Box::new(factory));
         Ok(())
     })

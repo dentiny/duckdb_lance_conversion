@@ -15,6 +15,7 @@ pub use sink::{
 };
 pub use source::{
     atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, HuggingFaceSource,
-    SourceReadOptions, WarcSource, DEFAULT_MAX_READ_PARALLELISM, DEFAULT_READ_AHEAD_BYTES,
+    SourceReadOptions, WarcSource, XmlSource, DEFAULT_MAX_READ_PARALLELISM,
+    DEFAULT_READ_AHEAD_BYTES,
 };
 pub use storage::{OpendalConfig, S3StorageConfig};

@@ -11,9 +11,10 @@ SELECT function_name,
        examples[1],
        array_to_string(categories, ',')
 FROM duckdb_functions()
-WHERE function_name IN ('read_atif', 'read_huggingface', 'read_warc')
+WHERE function_name IN ('read_atif', 'read_huggingface', 'read_warc', 'read_xml_records')
 ORDER BY function_name;
 ----
 read_atif	Reads ATIF agent trajectories from a local, S3, or HTTP(S) JSON or JSONL file, optionally gzipped, embedding referenced media.	path,format	SELECT * FROM read_atif('trajectories.jsonl');	lance_conversion,reader
 read_huggingface	Reads a Hugging Face dataset's Parquet files.	dataset,config,split,preserve_insertion_order,max_read_parallelism,read_ahead_bytes	SELECT * FROM read_huggingface('lhoestq/demo1');	lance_conversion,reader
 read_warc	Reads records from a local, S3, or HTTP(S) WARC file or Common Crawl crawl or segment.	path,index_path,max_read_parallelism	SELECT * FROM read_warc('archive.warc.gz');	lance_conversion,reader
+read_xml_records	Reads one row per XML element at record_path from a local, S3, or HTTP(S) file, optionally gzipped, inferring the schema from the leading records.	path,record_path,namespaces,sample_records,sample_bytes	SELECT * FROM read_xml_records('catalog.xml', record_path := '/catalog/book');	lance_conversion,reader

@@ -12,3 +12,18 @@ The Rust round-trip test re-encodes the same pixels without compression to excee
 2 MiB, exercises default out-of-line Blob storage, deletes the input files,
 then compares and decodes the bytes read back from Lance. PNG/WAV decoders are
 test-only dependencies; conversion does not transcode media.
+
+# XML fixture
+
+`noaa_stations_al.xml` is real data from NOAA's National Weather Service
+observation station index (<https://forecast.weather.gov/xml/current_obs/index.xml>,
+fetched 2026-11-10), a US government work in the public domain. It keeps the
+original header and the 46 Alabama `<station>` elements verbatim, including an
+escaped `&amp;` in KJFX's name. `noaa_stations_al.xml.gz` is the same file
+compressed with `gzip -9 -n`.
+
+`usgs_significant_month.atom` is the USGS "Significant Earthquakes, Past Month"
+Atom feed (<https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/significant_month.atom>,
+fetched 2026-11-10), a US government work in the public domain, kept verbatim.
+It has a default Atom namespace, `georss:` elements, attributes, and repeated
+`<category>` elements.
