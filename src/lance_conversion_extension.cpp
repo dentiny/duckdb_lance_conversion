@@ -31,7 +31,7 @@ std::string LanceConversionExtension::Version() const {
 #ifdef EXT_VERSION_LANCE_CONVERSION
 	return EXT_VERSION_LANCE_CONVERSION;
 #else
-	return "0.2.1";
+	return "0.2.2";
 #endif
 }
 } // namespace duckdb

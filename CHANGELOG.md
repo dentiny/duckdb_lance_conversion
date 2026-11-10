@@ -1,14 +1,17 @@
-# Unreleased
+# 0.2.2
 
 ## Added
 
-- Add `read_xml_records` for local, S3, and HTTP(S) XML files, plain or gzipped. Each element at `record_element` becomes one row, with a schema inferred from the leading records by `xml-arrow`; `namespaces`, `sample_records`, and `sample_bytes` bind namespace prefixes and size the inference sample.
+- Add `read_xml_records` for local, S3, and HTTP(S) XML files, plain or gzipped. Each element at `record_element` becomes one row, with a schema inferred from the leading records by `xml-arrow`; `namespaces`, `sample_records`, and `sample_bytes` bind namespace prefixes and size the inference sample ([#79]).
 
 ## Changed
 
 - Use crates.io releases of `atif-arrow` and `atif-io` `0.4.5` and `warc-rs` `0.3.2`, which moves Arrow and Parquet to `59`, DataFusion to `55`, and Lance to `78916cda`. The Lance reader used by round-trip SQL tests moves to `778bf0d6`, which replaces deprecated DuckDB DataChunk APIs ([#78]).
+- `make format-all` now fixes C++, SQL test, CMake, and Rust formatting instead of stopping at the first formatting difference ([#80]).
 
 [#78]: https://github.com/dentiny/duckdb_lance_conversion/pull/78
+[#79]: https://github.com/dentiny/duckdb_lance_conversion/pull/79
+[#80]: https://github.com/dentiny/duckdb_lance_conversion/pull/80
 
 # 0.2.1
 
