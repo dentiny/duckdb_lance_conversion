@@ -5,18 +5,20 @@
 #include "huggingface_scan.hpp"
 #include "lance_copy.hpp"
 #include "warc_scan.hpp"
+#include "xml_scan.hpp"
 #include "storage_options.hpp"
 
 namespace duckdb {
 
 static void LoadLanceConversion(ExtensionLoader &loader) {
-	loader.SetDescription(
-	    "Converts many data formats to Lance, including Parquet, Hugging Face datasets, WARC, and ATIF trajectories.");
+	loader.SetDescription("Converts many data formats to Lance, including Parquet, Hugging Face datasets, WARC, ATIF "
+	                      "trajectories, and XML.");
 	RegisterOpendalSettings(loader);
 	RegisterLanceCopyFunction(loader);
 	RegisterHuggingFaceScanFunction(loader);
 	RegisterWarcScanFunction(loader);
 	RegisterAtifScanFunction(loader);
+	RegisterXmlScanFunction(loader);
 }
 
 void LanceConversionExtension::Load(ExtensionLoader &loader) {
@@ -29,7 +31,7 @@ std::string LanceConversionExtension::Version() const {
 #ifdef EXT_VERSION_LANCE_CONVERSION
 	return EXT_VERSION_LANCE_CONVERSION;
 #else
-	return "0.2.1";
+	return "0.2.2";
 #endif
 }
 } // namespace duckdb

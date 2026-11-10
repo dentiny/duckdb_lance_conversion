@@ -1,0 +1,518 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wx_station_index>
+        <credit>NOAA's National Weather Service</credit>
+        <credit_URL>https://weather.gov/</credit_URL>
+        <image>
+                <url>https://weather.gov/images/xml_logo.gif</url>
+                <title>NOAA's National Weather Service</title>
+                <link>https://www.weather.gov</link>
+        </image>
+        <suggested_pickup>08:00 EST</suggested_pickup>
+        <suggested_pickup_period>1140</suggested_pickup_period>
+	<station>
+		<station_id>KSXS</station_id>
+		<state>AL</state>
+            	<station_name>SCHELL AHP</station_name>
+		<latitude>31.35</latitude>
+		<longitude>-85.85</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KSXS.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KSXS.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KSXS.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KBFM</station_id>
+		<state>AL</state>
+            	<station_name>Mobile, Mobile Downtown Airport</station_name>
+		<latitude>30.61389</latitude>
+		<longitude>-88.06333</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KBFM.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KBFM.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KBFM.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KSCD</station_id>
+		<state>AL</state>
+            	<station_name>Merkel Field Sylacauga Municipal Airport</station_name>
+		<latitude>33.1718</latitude>
+		<longitude>-86.3055</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KSCD.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KSCD.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KSCD.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KBHM</station_id>
+		<state>AL</state>
+            	<station_name>Birmingham, Birmingham International Airport</station_name>
+		<latitude>33.56556</latitude>
+		<longitude>-86.745</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KBHM.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KBHM.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KBHM.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KTCL</station_id>
+		<state>AL</state>
+            	<station_name>Tuscaloosa Regional Airport</station_name>
+		<latitude>33.21215</latitude>
+		<longitude>-87.61554</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KTCL.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KTCL.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KTCL.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>K1R8</station_id>
+		<state>AL</state>
+            	<station_name>Bay Minette Municipal Airport</station_name>
+		<latitude>30.87033</latitude>
+		<longitude>-87.81933</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/K1R8.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/K1R8.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/K1R8.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KTOI</station_id>
+		<state>AL</state>
+            	<station_name>Troy, Troy Municipal Airport</station_name>
+		<latitude>31.86056</latitude>
+		<longitude>-86.01222</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KTOI.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KTOI.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KTOI.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KOZR</station_id>
+		<state>AL</state>
+            	<station_name>Cairns Army Air Field / Ozark</station_name>
+		<latitude>31.27672</latitude>
+		<longitude>-85.71099</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KOZR.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KOZR.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KOZR.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>K0J4</station_id>
+		<state>AL</state>
+            	<station_name>Florala, Florala Municipal Airport</station_name>
+		<latitude>31.0425</latitude>
+		<longitude>-86.31167</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/K0J4.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/K0J4.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/K0J4.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KLOR</station_id>
+		<state>AL</state>
+            	<station_name>Fort Rucker, Lowe Army Heliport</station_name>
+		<latitude>31.35889</latitude>
+		<longitude>-85.74833</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KLOR.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KLOR.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KLOR.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KDYA</station_id>
+		<state>AL</state>
+            	<station_name>Demopolis Municipal Airport</station_name>
+		<latitude>32.4638</latitude>
+		<longitude>-87.9541</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KDYA.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KDYA.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KDYA.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KBFZ</station_id>
+		<state>AL</state>
+            	<station_name>Albertville Regional Airport-Thomas J Brumlik Field</station_name>
+		<latitude>34.22911</latitude>
+		<longitude>-86.25575</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KBFZ.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KBFZ.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KBFZ.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KASN</station_id>
+		<state>AL</state>
+            	<station_name>Talladega Municipal Airport</station_name>
+		<latitude>33.5695</latitude>
+		<longitude>-86.0512</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KASN.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KASN.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KASN.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KEDN</station_id>
+		<state>AL</state>
+            	<station_name>Enterprise Municipal Airport</station_name>
+		<latitude>31.2982</latitude>
+		<longitude>-85.9048</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KEDN.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KEDN.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KEDN.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>K8A1</station_id>
+		<state>AL</state>
+            	<station_name>Guntersville Municipal Airport</station_name>
+		<latitude>34.40115</latitude>
+		<longitude>-86.26722</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/K8A1.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/K8A1.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/K8A1.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KCMD</station_id>
+		<state>AL</state>
+            	<station_name>Cullman Regional Folsom Field</station_name>
+		<latitude>34.2687</latitude>
+		<longitude>-86.858</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KCMD.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KCMD.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KCMD.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KMDQ</station_id>
+		<state>AL</state>
+            	<station_name>Huntsville, Madison County Executive Airport</station_name>
+		<latitude>34.86139</latitude>
+		<longitude>-86.55722</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KMDQ.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KMDQ.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KMDQ.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KHUA</station_id>
+		<state>AL</state>
+            	<station_name>Redstone Airfield</station_name>
+		<latitude>34.6786</latitude>
+		<longitude>-86.6847</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KHUA.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KHUA.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KHUA.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KJKA</station_id>
+		<state>AL</state>
+            	<station_name>Jack Edwards Airport</station_name>
+		<latitude>30.2896</latitude>
+		<longitude>-87.6718</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KJKA.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KJKA.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KJKA.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KPRN</station_id>
+		<state>AL</state>
+            	<station_name>Mac Crenshaw Memorial Airport</station_name>
+		<latitude>31.8457</latitude>
+		<longitude>-86.6107</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KPRN.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KPRN.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KPRN.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>K79J</station_id>
+		<state>AL</state>
+            	<station_name>Andalusia, Andalusia-Opp Municipal Airport</station_name>
+		<latitude>31.3</latitude>
+		<longitude>-86.38333</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/K79J.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/K79J.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/K79J.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KGZH</station_id>
+		<state>AL</state>
+            	<station_name>Evergreen, Middleton Field</station_name>
+		<latitude>31.41889</latitude>
+		<longitude>-87.04806</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KGZH.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KGZH.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KGZH.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KMGM</station_id>
+		<state>AL</state>
+            	<station_name>Montgomery, Dannelly Field</station_name>
+		<latitude>32.30028</latitude>
+		<longitude>-86.40611</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KMGM.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KMGM.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KMGM.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>K4A9</station_id>
+		<state>AL</state>
+            	<station_name>Fort Payne, Isbell Field Airport</station_name>
+		<latitude>34.47361</latitude>
+		<longitude>-85.72139</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/K4A9.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/K4A9.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/K4A9.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KCQF</station_id>
+		<state>AL</state>
+            	<station_name>Sonny Callahan Airport</station_name>
+		<latitude>30.461</latitude>
+		<longitude>-87.877</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KCQF.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KCQF.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KCQF.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KHEY</station_id>
+		<state>AL</state>
+            	<station_name>Hanchey AHP / Ozark</station_name>
+		<latitude>31.35</latitude>
+		<longitude>-85.66667</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KHEY.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KHEY.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KHEY.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KNBJ</station_id>
+		<state>AL</state>
+            	<station_name>Barin, Barin Field, Naval Air Facility</station_name>
+		<latitude>30.39111</latitude>
+		<longitude>-87.6325</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KNBJ.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KNBJ.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KNBJ.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KEUF</station_id>
+		<state>AL</state>
+            	<station_name>Eufaula Municipal Airport</station_name>
+		<latitude>31.951</latitude>
+		<longitude>-85.129</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KEUF.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KEUF.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KEUF.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>K4A6</station_id>
+		<state>AL</state>
+            	<station_name>Scottsboro Municipal Airport</station_name>
+		<latitude>34.68871</latitude>
+		<longitude>-86.00593</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/K4A6.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/K4A6.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/K4A6.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>K9A4</station_id>
+		<state>AL</state>
+            	<station_name>Lawrence County Airport</station_name>
+		<latitude>34.65939</latitude>
+		<longitude>-87.34883</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/K9A4.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/K9A4.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/K9A4.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KJFX</station_id>
+		<state>AL</state>
+            	<station_name>Jasper Walker County Airport &amp; Bevill Field</station_name>
+		<latitude>33.902</latitude>
+		<longitude>-87.31417</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KJFX.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KJFX.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KJFX.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KDCU</station_id>
+		<state>AL</state>
+            	<station_name>Decatur, Pryor Field</station_name>
+		<latitude>34.65806</latitude>
+		<longitude>-86.94333</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KDCU.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KDCU.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KDCU.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KMOB</station_id>
+		<state>AL</state>
+            	<station_name>Mobile, Mobile Regional Airport</station_name>
+		<latitude>30.68833</latitude>
+		<longitude>-88.24556</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KMOB.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KMOB.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KMOB.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KDHN</station_id>
+		<state>AL</state>
+            	<station_name>Dothan, Dothan Regional Airport</station_name>
+		<latitude>31.32139</latitude>
+		<longitude>-85.44972</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KDHN.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KDHN.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KDHN.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KHSV</station_id>
+		<state>AL</state>
+            	<station_name>Huntsville, Huntsville International / Jones Field</station_name>
+		<latitude>34.64361</latitude>
+		<longitude>-86.78556</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KHSV.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KHSV.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KHSV.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KMSL</station_id>
+		<state>AL</state>
+            	<station_name>Muscle Shoals, North West Alabama Regional Airport</station_name>
+		<latitude>34.74389</latitude>
+		<longitude>-87.59944</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KMSL.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KMSL.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KMSL.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KANB</station_id>
+		<state>AL</state>
+            	<station_name>Anniston Metro Airport</station_name>
+		<latitude>33.59045</latitude>
+		<longitude>-85.84789</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KANB.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KANB.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KANB.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>K1M4</station_id>
+		<state>AL</state>
+            	<station_name>Haleyville, Posey Field Airport</station_name>
+		<latitude>34.28028</latitude>
+		<longitude>-87.60028</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/K1M4.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/K1M4.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/K1M4.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KEKY</station_id>
+		<state>AL</state>
+            	<station_name>Bessemer Airport</station_name>
+		<latitude>33.3126</latitude>
+		<longitude>-86.9263</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KEKY.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KEKY.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KEKY.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KMXF</station_id>
+		<state>AL</state>
+            	<station_name>Maxwell Air Force Base / Montgomery</station_name>
+		<latitude>32.38333</latitude>
+		<longitude>-86.36667</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KMXF.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KMXF.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KMXF.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KEET</station_id>
+		<state>AL</state>
+            	<station_name>Alabaster, Shelby County Airport</station_name>
+		<latitude>33.17833</latitude>
+		<longitude>-86.78167</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KEET.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KEET.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KEET.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KSEM</station_id>
+		<state>AL</state>
+            	<station_name>Craig Field / Selma</station_name>
+		<latitude>32.35</latitude>
+		<longitude>-86.98333</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KSEM.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KSEM.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KSEM.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KAUO</station_id>
+		<state>AL</state>
+            	<station_name>Auburn-Opelika Airport</station_name>
+		<latitude>32.61667</latitude>
+		<longitude>-85.43333</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KAUO.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KAUO.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KAUO.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KALX</station_id>
+		<state>AL</state>
+            	<station_name>Alexander City, Thomas C Russell Field Airport</station_name>
+		<latitude>32.91472</latitude>
+		<longitude>-85.96278</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KALX.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KALX.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KALX.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>KPLR</station_id>
+		<state>AL</state>
+            	<station_name>St Clair County Airport</station_name>
+		<latitude>33.5588</latitude>
+		<longitude>-86.2491</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/KPLR.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/KPLR.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/KPLR.xml</xml_url>
+	</station>
+
+	<station>
+		<station_id>K1A9</station_id>
+		<state>AL</state>
+            	<station_name>Prattville - Grouby Field</station_name>
+		<latitude>32.4387</latitude>
+		<longitude>-86.5127</longitude>
+            	<html_url>https://forecast.weather.gov/data/obhistory/K1A9.html</html_url>
+            	<rss_url>https://forecast.weather.gov/xml/current_obs/K1A9.rss</rss_url>
+            	<xml_url>https://forecast.weather.gov/xml/current_obs/K1A9.xml</xml_url>
+	</station>
+
+</wx_station_index>

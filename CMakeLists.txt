@@ -88,7 +88,8 @@ set(EXTENSION_SOURCES
     src/source_metadata.cpp
     src/source_options.cpp
     src/storage_options.cpp
-    src/warc_scan.cpp)
+    src/warc_scan.cpp
+    src/xml_scan.cpp)
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 foreach(target ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
