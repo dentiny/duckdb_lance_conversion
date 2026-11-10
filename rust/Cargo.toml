@@ -12,42 +12,38 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-atif-arrow = { git = "https://github.com/dentiny/atif-arrow", rev = "2639b6b4ce6af3b93122d9990ae5efb66b2bfae8" }
-atif-io = { git = "https://github.com/dentiny/atif-arrow", rev = "2639b6b4ce6af3b93122d9990ae5efb66b2bfae8" }
-arrow-array = { version = "58", features = ["ffi"] }
-arrow-cast = "58"
-arrow-schema = { version = "58", features = ["ffi"] }
+atif-arrow = "0.4.5"
+atif-io = "0.4.5"
+arrow-array = { version = "59", features = ["ffi"] }
+arrow-cast = "59"
+arrow-schema = { version = "59", features = ["ffi"] }
 bytes = "1"
 base64 = "0.23"
-datafusion-physical-plan = "54"
+datafusion-physical-plan = "55"
 futures = "0.3"
 flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
-lance = { git = "https://github.com/lance-format/lance.git", rev = "8fb3be66e5bab97c86754010dbe817507a1d7279", default-features = false }
-lance-index = { git = "https://github.com/lance-format/lance.git", rev = "8fb3be66e5bab97c86754010dbe817507a1d7279" }
-lance-io = { git = "https://github.com/lance-format/lance.git", rev = "8fb3be66e5bab97c86754010dbe817507a1d7279", default-features = false }
-lance-linalg = { git = "https://github.com/lance-format/lance.git", rev = "8fb3be66e5bab97c86754010dbe817507a1d7279" }
+lance = { git = "https://github.com/lance-format/lance.git", rev = "78916cdae92080c83cbd6d8fb5f9137c09af94ae", default-features = false }
+lance-index = { git = "https://github.com/lance-format/lance.git", rev = "78916cdae92080c83cbd6d8fb5f9137c09af94ae" }
+lance-io = { git = "https://github.com/lance-format/lance.git", rev = "78916cdae92080c83cbd6d8fb5f9137c09af94ae", default-features = false }
+lance-linalg = { git = "https://github.com/lance-format/lance.git", rev = "78916cdae92080c83cbd6d8fb5f9137c09af94ae" }
 object_store = "0.14"
 object_store_opendal = "0.60"
 opendal = { version = "0.59.3", default-features = false, features = ["executors-tokio", "http-transport-reqwest", "layers-retry", "layers-timeout", "services-fs", "services-hf", "services-http", "services-s3"] }
 opendal-http-transport-reqwest = "0.59"
-parquet = { version = "58", features = ["arrow", "arrow_canonical_extension_types", "async"] }
+parquet = { version = "59", features = ["arrow", "arrow_canonical_extension_types", "async"] }
 percent-encoding = "2"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "fs", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 url = "2"
-warc-rs = { git = "https://github.com/dentiny/warc-rs", rev = "728fb6d8852c40febf490424528d9e937545e45d" }
+warc-rs = "0.3.2"
 
 [dev-dependencies]
 png = "0.18"
 hound = "3.5"
 tokio = { version = "1", features = ["io-util", "macros"] }
-arrow-select = "58"
+arrow-select = "59"
 tempfile = "3"
-
-[patch.crates-io]
-# Match Lance's patch: its multipart writer uses an API not in the registry release.
-object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c10758c207c0103355f940f0c736fb8ecb157b04" }
 
 [profile.dev]
 debug = 0
