@@ -8,12 +8,29 @@ use super::{decompressed_input, is_gzipped, read_object, BatchSource, BatchStrea
 use crate::storage::InputFile;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
+/// Binds `prefix` to the namespace `uri` for record paths and inferred
+/// column names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XmlNamespace {
+    pub prefix: String,
+    pub uri: String,
+}
+
+impl XmlNamespace {
+    pub fn new(prefix: impl Into<String>, uri: impl Into<String>) -> Self {
+        Self {
+            prefix: prefix.into(),
+            uri: uri.into(),
+        }
+    }
+}
+
 /// Reads one row per element at an absolute record path such as
 /// `/catalog/book`, with a schema inferred from the leading records.
 pub struct XmlSource {
     path: String,
     record_path: String,
-    namespaces: Vec<(String, String)>,
+    namespaces: Vec<XmlNamespace>,
     inference: InferenceOptions,
     expected_schema: Option<SchemaRef>,
     s3_config: Option<S3StorageConfig>,
@@ -37,10 +54,9 @@ impl XmlSource {
         }
     }
 
-    /// `(prefix, uri)` pairs for prefixes in the record path. Inferred
-    /// columns use these prefixes, such as `atom:title`; other namespaces
-    /// get generated prefixes such as `ns0`.
-    pub fn with_namespaces(mut self, namespaces: Vec<(String, String)>) -> Self {
+    /// Prefixes usable in the record path. Inferred columns use them, such
+    /// as `atom:title`; other namespaces get generated prefixes such as `ns0`.
+    pub fn with_namespaces(mut self, namespaces: Vec<XmlNamespace>) -> Self {
         self.namespaces = namespaces;
         self
     }
@@ -112,7 +128,10 @@ impl BatchSource for XmlSource {
         let bindings = self
             .namespaces
             .iter()
-            .map(|(prefix, uri)| NamespaceBinding { prefix, uri })
+            .map(|namespace| NamespaceBinding {
+                prefix: &namespace.prefix,
+                uri: &namespace.uri,
+            })
             .collect::<Vec<_>>();
         let reader = XmlReader::infer(
             reader,
@@ -249,8 +268,8 @@ mod tests {
             "/atom:feed/atom:entry",
         )
         .with_namespaces(vec![
-            ("atom".into(), "http://www.w3.org/2005/Atom".into()),
-            ("georss".into(), "http://www.georss.org/georss".into()),
+            XmlNamespace::new("atom", "http://www.w3.org/2005/Atom"),
+            XmlNamespace::new("georss", "http://www.georss.org/georss"),
         ]);
         let (schema, batch) = read_all(source).await.unwrap();
         assert_eq!(batch.num_rows(), 11);

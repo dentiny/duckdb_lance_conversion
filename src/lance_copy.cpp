@@ -339,9 +339,8 @@ Identifier ResolveEncodingColumn(const Identifier &option_name, const Identifier
 			throw BinderException("%s column not found: %s", option_name, requested);
 		}
 		const auto &children = StructType::GetChildTypes(*type);
-		auto child = std::find_if(children.begin(), children.end(), [&](const auto &entry) {
-			return entry.first == Identifier(parts[index]);
-		});
+		auto child = std::find_if(children.begin(), children.end(),
+		                          [&](const auto &entry) { return entry.first == Identifier(parts[index]); });
 		if (child == children.end()) {
 			throw BinderException("%s column not found: %s", option_name, requested);
 		}

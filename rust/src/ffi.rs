@@ -19,7 +19,7 @@ use crate::{
     atif_schema, warc_schema, AtifSource, BatchSource, BatchStream, ColumnEncoding, Error,
     HuggingFaceSource, IndexKind, LanceDatasetWriter, LanceFragmentWriter, OpendalConfig, Result,
     S3StorageConfig, StructuralEncoding, WarcSource, WriteMode, WriteOptions, WriteSummary,
-    XmlSource, DEFAULT_MAX_READ_PARALLELISM, DEFAULT_READ_AHEAD_BYTES,
+    XmlNamespace, XmlSource, DEFAULT_MAX_READ_PARALLELISM, DEFAULT_READ_AHEAD_BYTES,
 };
 
 static SOURCE_RUNTIME: LazyLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -771,7 +771,7 @@ pub extern "C" fn lance_xml_default_options() -> LanceXmlOptions {
     }
 }
 
-unsafe fn xml_namespaces(options: &LanceXmlOptions) -> Result<Vec<(String, String)>> {
+unsafe fn xml_namespaces(options: &LanceXmlOptions) -> Result<Vec<XmlNamespace>> {
     if options.namespace_count == 0 {
         return Ok(Vec::new());
     }
@@ -784,9 +784,9 @@ unsafe fn xml_namespaces(options: &LanceXmlOptions) -> Result<Vec<(String, Strin
             if namespace.prefix.is_null() || namespace.uri.is_null() {
                 return Err(Error::message("null XML namespace prefix or URI"));
             }
-            Ok((
-                CStr::from_ptr(namespace.prefix).to_str()?.to_owned(),
-                CStr::from_ptr(namespace.uri).to_str()?.to_owned(),
+            Ok(XmlNamespace::new(
+                CStr::from_ptr(namespace.prefix).to_str()?,
+                CStr::from_ptr(namespace.uri).to_str()?,
             ))
         })
         .collect()
