@@ -279,9 +279,10 @@ The pinned SQL-test reader (`lance-duckdb`, SDK 12) has a nested Blob schema
 mismatch when selecting `steps`; full media round trips use the current SDK's
 `BlobHandling::AllBinary` scanner.
 
-`read_xml_records` reads one row per element at `record_path` through
-[xml-arrow](https://github.com/dentiny/xml-arrow-rs). The record path is
-absolute and includes the document root. The schema is inferred from the first
+`read_xml_records` reads one row per element matched by `record_element`
+through [xml-arrow](https://github.com/dentiny/xml-arrow-rs). `record_element`
+is an absolute element path inside the document, starting at its root element,
+such as `/catalog/book`; `path` is the file to read. The schema is inferred from the first
 `sample_records` records (default 128) or `sample_bytes` bytes (default 8 MiB):
 child elements become columns, attributes become columns such as `@id`, nested
 elements become structs, and repeated siblings become lists. Columns are sorted
@@ -295,7 +296,7 @@ reading. Local, `s3://`, and `http(s)://` paths are supported:
 ```sql
 COPY (
     SELECT station_id, station_name, latitude, longitude
-    FROM read_xml_records('stations.xml', record_path := '/wx_station_index/station')
+    FROM read_xml_records('stations.xml', record_element := '/wx_station_index/station')
 )
 TO 'stations.lance' (FORMAT LANCE);
 ```
@@ -305,7 +306,7 @@ bound prefixes, and unbound namespaces get generated prefixes such as `ns0`:
 
 ```sql
 SELECT "atom:title", "georss:point", "atom:category"
-FROM read_xml_records('feed.atom', record_path := '/atom:feed/atom:entry',
+FROM read_xml_records('feed.atom', record_element := '/atom:feed/atom:entry',
     namespaces := MAP {'atom': 'http://www.w3.org/2005/Atom',
                        'georss': 'http://www.georss.org/georss'});
 ```

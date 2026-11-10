@@ -95,7 +95,7 @@ struct LanceXmlNamespace {
 
 // Start from lance_xml_default_options(), which holds the Rust defaults.
 struct LanceXmlOptions {
-	// Prefixes usable in the record path and used in inferred column names.
+	// Prefixes usable in record_element and used in inferred column names.
 	const struct LanceXmlNamespace *namespaces;
 	size_t namespace_count;
 	// Bounds of the leading sample used for schema inference.
@@ -173,9 +173,9 @@ char *lance_warc_open(const char *path, const char *index_path, const struct Lan
 // Projected media references are always loaded into source.path as binary bytes.
 char *lance_atif_open(const char *path, const char *format, const struct LanceS3Config *s3,
                       const struct LanceOpendalConfig *opendal_config, struct SourceStreamFactory **output);
-// record_path is an absolute element path such as "/catalog/book"; each matching element becomes a row.
+// record_element is an absolute element path such as "/catalog/book"; each matching element becomes a row.
 // This infers the schema from the start of the file; later scans fail if they infer a different one.
-char *lance_xml_open(const char *path, const char *record_path, const struct LanceXmlOptions *options,
+char *lance_xml_open(const char *path, const char *record_element, const struct LanceXmlOptions *options,
                      const struct LanceS3Config *s3, const struct LanceOpendalConfig *opendal_config,
                      struct SourceStreamFactory **output);
 char *lance_source_get_schema(const struct SourceStreamFactory *factory, struct ArrowSchema *output);

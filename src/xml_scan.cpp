@@ -30,11 +30,11 @@ unique_ptr<FunctionData> BindXml(ClientContext &context, TableFunctionBindInput 
                                  vector<LogicalType> &return_types, vector<Identifier> &names) {
 	RejectNullParameters("read_xml_records", "path", input);
 	auto path = input.inputs[0].GetValue<string>();
-	auto record_path_entry = input.named_parameters.find("record_path");
-	if (record_path_entry == input.named_parameters.end()) {
-		throw BinderException("read_xml_records requires record_path, such as record_path := '/catalog/book'");
+	auto record_element_entry = input.named_parameters.find("record_element");
+	if (record_element_entry == input.named_parameters.end()) {
+		throw BinderException("read_xml_records requires record_element, such as record_element := '/catalog/book'");
 	}
-	auto record_path = record_path_entry->second.GetValue<string>();
+	auto record_element = record_element_entry->second.GetValue<string>();
 
 	// Bindings point into the map value's strings, which outlive lance_xml_open.
 	auto options = lance_xml_default_options();
@@ -64,7 +64,7 @@ unique_ptr<FunctionData> BindXml(ClientContext &context, TableFunctionBindInput 
 
 	auto opendal_config = ReadOpendalConfig(context);
 	SourceStreamFactory *factory = nullptr;
-	ThrowIfLanceError(lance_xml_open(path.c_str(), record_path.c_str(), &options, s3 ? &s3->config : nullptr,
+	ThrowIfLanceError(lance_xml_open(path.c_str(), record_element.c_str(), &options, s3 ? &s3->config : nullptr,
 	                                 &opendal_config, &factory),
 	                  "XML reader");
 	return BindSourceStream(context, factory, return_types, names);
@@ -75,18 +75,18 @@ unique_ptr<FunctionData> BindXml(ClientContext &context, TableFunctionBindInput 
 void RegisterXmlScanFunction(ExtensionLoader &loader) {
 	auto function = SourceStreamTableFunction("read_xml_records", BindXml);
 	function.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
-		options.Add("record_path", LogicalType::VARCHAR);
+		options.Add("record_element", LogicalType::VARCHAR);
 		options.Add("namespaces", LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 		options.Add("sample_records", LogicalType::UBIGINT);
 		options.Add("sample_bytes", LogicalType::UBIGINT);
 	});
 	RegisterTableFunctionWithMetadata(
 	    loader, std::move(function),
-	    /*parameter_names=*/ {"path", "record_path", "namespaces", "sample_records", "sample_bytes"},
+	    /*parameter_names=*/ {"path", "record_element", "namespaces", "sample_records", "sample_bytes"},
 	    /*description=*/
-	    "Reads one row per XML element at record_path from a local, S3, or HTTP(S) file, optionally gzipped, "
+	    "Reads one row per XML element at record_element from a local, S3, or HTTP(S) file, optionally gzipped, "
 	    "inferring the schema from the leading records.",
-	    /*examples=*/ {"SELECT * FROM read_xml_records('catalog.xml', record_path := '/catalog/book');"},
+	    /*examples=*/ {"SELECT * FROM read_xml_records('catalog.xml', record_element := '/catalog/book');"},
 	    /*categories=*/ {"lance_conversion", "reader"});
 }
 

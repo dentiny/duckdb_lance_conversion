@@ -795,19 +795,19 @@ unsafe fn xml_namespaces(options: &LanceXmlOptions) -> Result<Vec<XmlNamespace>>
 #[no_mangle]
 pub unsafe extern "C" fn lance_xml_open(
     path: *const c_char,
-    record_path: *const c_char,
+    record_element: *const c_char,
     options: *const LanceXmlOptions,
     s3: *const LanceS3Config,
     opendal_config: *const OpendalConfig,
     output: *mut *mut SourceStreamFactory,
 ) -> *mut c_char {
     call(|| {
-        if path.is_null() || record_path.is_null() || options.is_null() || output.is_null() {
+        if path.is_null() || record_element.is_null() || options.is_null() || output.is_null() {
             return Err(Error::message("null XML reader argument"));
         }
         *output = ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?.to_owned();
-        let record_path = CStr::from_ptr(record_path).to_str()?.to_owned();
+        let record_element = CStr::from_ptr(record_element).to_str()?.to_owned();
         let options = &*options;
         let namespaces = xml_namespaces(options)?;
         let sample_records = usize::try_from(options.sample_records)
@@ -821,7 +821,7 @@ pub unsafe extern "C" fn lance_xml_open(
         let expected_schema = bound_schema.clone();
         let factory =
             SourceStreamFactory::new(Arc::new(Schema::empty()), move |projection, metrics| {
-                let mut source = XmlSource::new(&path, &record_path)
+                let mut source = XmlSource::new(&path, &record_element)
                     .with_namespaces(namespaces.clone())
                     .with_sample_records(sample_records)
                     .with_sample_bytes(sample_bytes)

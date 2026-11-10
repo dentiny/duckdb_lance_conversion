@@ -8,7 +8,7 @@ use super::{decompressed_input, is_gzipped, read_object, BatchSource, BatchStrea
 use crate::storage::InputFile;
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
-/// Binds `prefix` to the namespace `uri` for record paths and inferred
+/// Binds `prefix` to the namespace `uri` for record elements and inferred
 /// column names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct XmlNamespace {
@@ -25,12 +25,19 @@ impl XmlNamespace {
     }
 }
 
-/// Reads one row per element at an absolute record path such as
+/// Reads one row per record element, given by an absolute path such as
 /// `/catalog/book`, with a schema inferred from the leading records.
 pub struct XmlSource {
+    /// File to read: a local path, `file://` URL, `s3://` URI, or HTTP(S)
+    /// URL. A `.gz` suffix is decompressed.
     path: String,
-    record_path: String,
+    /// Absolute element path inside the document, starting at the root
+    /// element, such as `/catalog/book`. Each matching element is one row.
+    record_element: String,
+    /// Prefix bindings that `record_element` may use; inferred column names
+    /// use the same prefixes.
     namespaces: Vec<XmlNamespace>,
+    /// Bounds on the leading records sampled to infer the schema.
     inference: InferenceOptions,
     expected_schema: Option<SchemaRef>,
     s3_config: Option<S3StorageConfig>,
@@ -40,10 +47,10 @@ pub struct XmlSource {
 }
 
 impl XmlSource {
-    pub fn new(path: impl Into<String>, record_path: impl Into<String>) -> Self {
+    pub fn new(path: impl Into<String>, record_element: impl Into<String>) -> Self {
         Self {
             path: path.into(),
-            record_path: record_path.into(),
+            record_element: record_element.into(),
             namespaces: Vec::new(),
             inference: InferenceOptions::default(),
             expected_schema: None,
@@ -54,7 +61,7 @@ impl XmlSource {
         }
     }
 
-    /// Prefixes usable in the record path. Inferred columns use them, such
+    /// Prefixes usable in the record element. Inferred columns use them, such
     /// as `atom:title`; other namespaces get generated prefixes such as `ns0`.
     pub fn with_namespaces(mut self, namespaces: Vec<XmlNamespace>) -> Self {
         self.namespaces = namespaces;
@@ -135,7 +142,7 @@ impl BatchSource for XmlSource {
             .collect::<Vec<_>>();
         let reader = XmlReader::infer(
             reader,
-            &self.record_path,
+            &self.record_element,
             &bindings,
             options,
             self.inference,
@@ -145,8 +152,8 @@ impl BatchSource for XmlSource {
         let schema = reader.schema();
         if reads_every_column && schema.fields().is_empty() {
             return Err(Error::message(format!(
-                "XML record path '{}' matched no fields in '{}'",
-                self.record_path, input.uri
+                "XML record element '{}' matched no fields in '{}'",
+                self.record_element, input.uri
             )));
         }
         if let Some(expected) = expected_fields {

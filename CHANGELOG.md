@@ -2,7 +2,7 @@
 
 ## Added
 
-- Add `read_xml_records` for local, S3, and HTTP(S) XML files, plain or gzipped. Each element at `record_path` becomes one row, with a schema inferred from the leading records by `xml-arrow`; `namespaces`, `sample_records`, and `sample_bytes` bind namespace prefixes and size the inference sample.
+- Add `read_xml_records` for local, S3, and HTTP(S) XML files, plain or gzipped. Each element at `record_element` becomes one row, with a schema inferred from the leading records by `xml-arrow`; `namespaces`, `sample_records`, and `sample_bytes` bind namespace prefixes and size the inference sample.
 
 ## Changed
 

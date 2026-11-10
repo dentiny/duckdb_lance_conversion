@@ -9,7 +9,7 @@ require lance_conversion
 query TT
 SELECT column_name, column_type
 FROM (DESCRIBE SELECT * FROM read_xml_records('test/data/noaa_stations_al.xml',
-                                      record_path := '/wx_station_index/station'));
+                                      record_element := '/wx_station_index/station'));
 ----
 html_url	VARCHAR
 latitude	DOUBLE
@@ -23,7 +23,7 @@ xml_url	VARCHAR
 query IIRRRRR
 SELECT count(*), count(DISTINCT station_id), min(latitude), max(latitude), round(avg(latitude), 4),
        min(longitude), max(longitude)
-FROM read_xml_records('test/data/noaa_stations_al.xml', record_path := '/wx_station_index/station')
+FROM read_xml_records('test/data/noaa_stations_al.xml', record_element := '/wx_station_index/station')
 WHERE state = 'AL';
 ----
 46	46	30.2896	34.86139	32.6914	-88.24556	-85.129
@@ -31,7 +31,7 @@ WHERE state = 'AL';
 # Entity references decode, and projections may reorder columns.
 query TRRT
 SELECT station_name, latitude, longitude, xml_url
-FROM read_xml_records('test/data/noaa_stations_al.xml', record_path := '/wx_station_index/station')
+FROM read_xml_records('test/data/noaa_stations_al.xml', record_element := '/wx_station_index/station')
 WHERE station_id = 'KJFX';
 ----
 Jasper Walker County Airport & Bevill Field	33.902	-87.31417	https://forecast.weather.gov/xml/current_obs/KJFX.xml
@@ -39,14 +39,14 @@ Jasper Walker County Airport & Bevill Field	33.902	-87.31417	https://forecast.we
 # The gzipped copy decodes to the same records.
 query I
 SELECT count(*)
-FROM read_xml_records('test/data/noaa_stations_al.xml.gz', record_path := '/wx_station_index/station') g
-JOIN read_xml_records('test/data/noaa_stations_al.xml', record_path := '/wx_station_index/station') p
+FROM read_xml_records('test/data/noaa_stations_al.xml.gz', record_element := '/wx_station_index/station') g
+JOIN read_xml_records('test/data/noaa_stations_al.xml', record_element := '/wx_station_index/station') p
 USING (station_id, station_name, latitude, longitude);
 ----
 46
 
 query I
-COPY (SELECT * FROM read_xml_records('test/data/noaa_stations_al.xml.gz', record_path := '/wx_station_index/station'))
+COPY (SELECT * FROM read_xml_records('test/data/noaa_stations_al.xml.gz', record_element := '/wx_station_index/station'))
 TO '__TEST_DIR__/noaa_stations.lance' (FORMAT LANCE);
 ----
 46
@@ -54,20 +54,20 @@ TO '__TEST_DIR__/noaa_stations.lance' (FORMAT LANCE);
 statement error
 SELECT * FROM read_xml_records('test/data/noaa_stations_al.xml');
 ----
-read_xml_records requires record_path
+read_xml_records requires record_element
 
 statement error
-SELECT * FROM read_xml_records('test/data/noaa_stations_al.xml', record_path := '/wx_station_index/missing');
+SELECT * FROM read_xml_records('test/data/noaa_stations_al.xml', record_element := '/wx_station_index/missing');
 ----
 matched no fields
 
 statement error
-SELECT * FROM read_xml_records('test/data/noaa_stations_al.xml', record_path := 'station');
+SELECT * FROM read_xml_records('test/data/noaa_stations_al.xml', record_element := 'station');
 ----
 XML reader
 
 statement error
-SELECT * FROM read_xml_records('test/data/records.warc', record_path := '/rows/row');
+SELECT * FROM read_xml_records('test/data/records.warc', record_element := '/rows/row');
 ----
 XML
 
