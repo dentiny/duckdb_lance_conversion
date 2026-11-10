@@ -5,7 +5,7 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 CMAKE_FILES := CMakeLists.txt extension_config.cmake
 
-format-all: format
+format-all: format-fix
 	cmake-format -i $(CMAKE_FILES)
 	cargo fmt --manifest-path rust/Cargo.toml
 
