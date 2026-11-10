@@ -15,16 +15,15 @@
 namespace duckdb {
 namespace {
 
-uint64_t ReadUnsigned(const TableFunctionBindInput &input, const string &name) {
+void ReadPositive(const TableFunctionBindInput &input, const char *name, uint64_t &value) {
 	auto entry = input.named_parameters.find(name);
 	if (entry == input.named_parameters.end()) {
-		return 0;
+		return;
 	}
-	auto value = entry->second.GetValue<uint64_t>();
+	value = entry->second.GetValue<uint64_t>();
 	if (value == 0) {
 		throw InvalidInputException("read_xml_records %s must be positive", name);
 	}
-	return value;
 }
 
 unique_ptr<FunctionData> BindXml(ClientContext &context, TableFunctionBindInput &input,
@@ -37,8 +36,9 @@ unique_ptr<FunctionData> BindXml(ClientContext &context, TableFunctionBindInput 
 	}
 	auto record_path = record_path_entry->second.GetValue<string>();
 
-	vector<string> prefixes;
-	vector<string> uris;
+	// Bindings point into the map value's strings, which outlive lance_xml_open.
+	auto options = lance_xml_default_options();
+	vector<LanceXmlNamespace> namespaces;
 	auto namespaces_entry = input.named_parameters.find("namespaces");
 	if (namespaces_entry != input.named_parameters.end()) {
 		for (const auto &binding : MapValue::GetChildren(namespaces_entry->second)) {
@@ -46,18 +46,13 @@ unique_ptr<FunctionData> BindXml(ClientContext &context, TableFunctionBindInput 
 			if (key_value[0].IsNull() || key_value[1].IsNull()) {
 				throw BinderException("read_xml_records namespaces must not contain NULL prefixes or URIs");
 			}
-			prefixes.push_back(key_value[0].GetValue<string>());
-			uris.push_back(key_value[1].GetValue<string>());
+			namespaces.push_back({StringValue::Get(key_value[0]).c_str(), StringValue::Get(key_value[1]).c_str()});
 		}
 	}
-	vector<const char *> prefix_ptrs;
-	vector<const char *> uri_ptrs;
-	for (idx_t i = 0; i < prefixes.size(); i++) {
-		prefix_ptrs.push_back(prefixes[i].c_str());
-		uri_ptrs.push_back(uris[i].c_str());
-	}
-	auto sample_records = ReadUnsigned(input, "sample_records");
-	auto sample_bytes = ReadUnsigned(input, "sample_bytes");
+	options.namespaces = namespaces.data();
+	options.namespace_count = namespaces.size();
+	ReadPositive(input, "sample_records", options.sample_records);
+	ReadPositive(input, "sample_bytes", options.sample_bytes);
 
 	unique_ptr<LanceS3Options> s3;
 	if (StringUtil::CIStartsWith(path, "s3://")) {
@@ -69,8 +64,7 @@ unique_ptr<FunctionData> BindXml(ClientContext &context, TableFunctionBindInput 
 
 	auto opendal_config = ReadOpendalConfig(context);
 	SourceStreamFactory *factory = nullptr;
-	ThrowIfLanceError(lance_xml_open(path.c_str(), record_path.c_str(), prefix_ptrs.data(), uri_ptrs.data(),
-	                                 prefix_ptrs.size(), sample_records, sample_bytes, s3 ? &s3->config : nullptr,
+	ThrowIfLanceError(lance_xml_open(path.c_str(), record_path.c_str(), &options, s3 ? &s3->config : nullptr,
 	                                 &opendal_config, &factory),
 	                  "XML reader");
 	return BindSourceStream(context, factory, return_types, names);

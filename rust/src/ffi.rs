@@ -11,6 +11,7 @@ use arrow_array::{
 };
 use arrow_schema::{ffi::FFI_ArrowSchema, ArrowError, DataType, Schema, SchemaRef};
 use futures::TryStreamExt;
+use xml_arrow::InferenceOptions;
 
 use crate::source::ReadMetrics;
 use crate::storage::OpendalStorage;
@@ -87,6 +88,20 @@ pub struct LanceWriteConfig {
 pub struct LanceSourceDefaults {
     max_read_parallelism: u64,
     read_ahead_bytes: u64,
+}
+
+#[repr(C)]
+pub struct LanceXmlNamespace {
+    prefix: *const c_char,
+    uri: *const c_char,
+}
+
+#[repr(C)]
+pub struct LanceXmlOptions {
+    namespaces: *const LanceXmlNamespace,
+    namespace_count: usize,
+    sample_records: u64,
+    sample_bytes: u64,
 }
 
 #[repr(C)]
@@ -746,32 +761,58 @@ pub unsafe extern "C" fn lance_atif_open(
 }
 
 #[no_mangle]
+pub extern "C" fn lance_xml_default_options() -> LanceXmlOptions {
+    let defaults = InferenceOptions::default();
+    LanceXmlOptions {
+        namespaces: ptr::null(),
+        namespace_count: 0,
+        sample_records: defaults.max_records as u64,
+        sample_bytes: defaults.max_bytes as u64,
+    }
+}
+
+unsafe fn xml_namespaces(options: &LanceXmlOptions) -> Result<Vec<(String, String)>> {
+    if options.namespace_count == 0 {
+        return Ok(Vec::new());
+    }
+    if options.namespaces.is_null() {
+        return Err(Error::message("null XML namespace list"));
+    }
+    std::slice::from_raw_parts(options.namespaces, options.namespace_count)
+        .iter()
+        .map(|namespace| {
+            if namespace.prefix.is_null() || namespace.uri.is_null() {
+                return Err(Error::message("null XML namespace prefix or URI"));
+            }
+            Ok((
+                CStr::from_ptr(namespace.prefix).to_str()?.to_owned(),
+                CStr::from_ptr(namespace.uri).to_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn lance_xml_open(
     path: *const c_char,
     record_path: *const c_char,
-    namespace_prefixes: *const *const c_char,
-    namespace_uris: *const *const c_char,
-    namespace_count: usize,
-    sample_records: u64,
-    sample_bytes: u64,
+    options: *const LanceXmlOptions,
     s3: *const LanceS3Config,
     opendal_config: *const OpendalConfig,
     output: *mut *mut SourceStreamFactory,
 ) -> *mut c_char {
     call(|| {
-        if path.is_null() || record_path.is_null() || output.is_null() {
+        if path.is_null() || record_path.is_null() || options.is_null() || output.is_null() {
             return Err(Error::message("null XML reader argument"));
         }
         *output = ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?.to_owned();
         let record_path = CStr::from_ptr(record_path).to_str()?.to_owned();
-        let namespaces = string_list(namespace_prefixes, namespace_count)?
-            .into_iter()
-            .zip(string_list(namespace_uris, namespace_count)?)
-            .collect::<Vec<_>>();
-        let sample_records = usize::try_from(sample_records)
+        let options = &*options;
+        let namespaces = xml_namespaces(options)?;
+        let sample_records = usize::try_from(options.sample_records)
             .map_err(|_| Error::message("sample_records is too large"))?;
-        let sample_bytes = usize::try_from(sample_bytes)
+        let sample_bytes = usize::try_from(options.sample_bytes)
             .map_err(|_| Error::message("sample_bytes is too large"))?;
         let s3_config = s3_config(s3)?;
         let opendal_config = parse_opendal_config(opendal_config)?;
@@ -782,15 +823,11 @@ pub unsafe extern "C" fn lance_xml_open(
             SourceStreamFactory::new(Arc::new(Schema::empty()), move |projection, metrics| {
                 let mut source = XmlSource::new(&path, &record_path)
                     .with_namespaces(namespaces.clone())
+                    .with_sample_records(sample_records)
+                    .with_sample_bytes(sample_bytes)
                     .with_projection(projection)
                     .with_opendal_config(opendal_config)
                     .with_metrics(metrics);
-                if sample_records != 0 {
-                    source = source.with_sample_records(sample_records);
-                }
-                if sample_bytes != 0 {
-                    source = source.with_sample_bytes(sample_bytes);
-                }
                 if let Some(schema) = expected_schema.get() {
                     source = source.with_expected_schema(schema.clone());
                 }

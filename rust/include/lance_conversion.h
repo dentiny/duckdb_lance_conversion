@@ -88,6 +88,21 @@ struct LanceSourceDefaults {
 	uint64_t read_ahead_bytes;
 };
 
+struct LanceXmlNamespace {
+	const char *prefix;
+	const char *uri;
+};
+
+// Start from lance_xml_default_options(), which holds the Rust defaults.
+struct LanceXmlOptions {
+	// Prefixes usable in the record path and used in inferred column names.
+	const struct LanceXmlNamespace *namespaces;
+	size_t namespace_count;
+	// Bounds of the leading sample used for schema inference.
+	uint64_t sample_records;
+	uint64_t sample_bytes;
+};
+
 // Cumulative source metrics sampled while a scan is running.
 // bytes_read contributes to DuckDB's query-level TOTAL_BYTES_READ.
 // total_bytes is the expected source size used only for progress reporting.
@@ -112,6 +127,7 @@ extern "C" {
 struct LanceOpendalConfig lance_opendal_default_config(void);
 struct LanceWriteConfig lance_write_default_config(void);
 struct LanceSourceDefaults lance_source_defaults(void);
+struct LanceXmlOptions lance_xml_default_options(void);
 
 // NULL means success. Free each owned error with lance_conversion_error_free.
 void lance_conversion_error_free(char *error);
@@ -158,13 +174,10 @@ char *lance_warc_open(const char *path, const char *index_path, const struct Lan
 char *lance_atif_open(const char *path, const char *format, const struct LanceS3Config *s3,
                       const struct LanceOpendalConfig *opendal_config, struct SourceStreamFactory **output);
 // record_path is an absolute element path such as "/catalog/book"; each matching element becomes a row.
-// namespace_prefixes[i] binds to namespace_uris[i] for prefixed record paths and inferred column names.
-// The schema is inferred from at most sample_records records and sample_bytes bytes; 0 keeps a default.
-// This reads the start of the file, and later scans fail if they infer a different schema.
-char *lance_xml_open(const char *path, const char *record_path, const char *const *namespace_prefixes,
-                     const char *const *namespace_uris, size_t namespace_count, uint64_t sample_records,
-                     uint64_t sample_bytes, const struct LanceS3Config *s3,
-                     const struct LanceOpendalConfig *opendal_config, struct SourceStreamFactory **output);
+// This infers the schema from the start of the file; later scans fail if they infer a different one.
+char *lance_xml_open(const char *path, const char *record_path, const struct LanceXmlOptions *options,
+                     const struct LanceS3Config *s3, const struct LanceOpendalConfig *opendal_config,
+                     struct SourceStreamFactory **output);
 char *lance_source_get_schema(const struct SourceStreamFactory *factory, struct ArrowSchema *output);
 // columns lists the projected column names in output order; column_count 0 reads every column.
 char *lance_source_get_stream(const struct SourceStreamFactory *factory, const char *const *columns,
