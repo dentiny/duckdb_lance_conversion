@@ -12,8 +12,8 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-atif-arrow = "0.4.5"
-atif-io = "0.4.5"
+atif-arrow = "0.5.0"
+atif-io = "0.5.0"
 arrow-array = { version = "59", features = ["ffi"] }
 arrow-cast = "59"
 arrow-schema = { version = "59", features = ["ffi"] }
@@ -37,7 +37,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "fs", "sy
 tokio-util = { version = "0.7", features = ["rt"] }
 url = "2"
 warc-rs = "0.3.2"
-xml-arrow = "0.2.6"
+xml-arrow = "0.3.0"
 
 [dev-dependencies]
 png = "0.18"
