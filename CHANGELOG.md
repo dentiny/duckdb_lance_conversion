@@ -2,6 +2,8 @@
 
 ### Fixed
 
+- Align the independent round-trip test reader with the Lance v14.0.3 writer
+  and DuckDB v2.0.1 API baseline.
 - Align the extension-version regression with the v0.2.3 patch release.
 - Supply the I/O duration argument required by DuckDB v2.0.1's byte profiler;
   preserve byte counts without inventing timing unavailable from the Rust bridge.
