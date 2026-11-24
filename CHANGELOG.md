@@ -1,3 +1,16 @@
+## Unreleased
+
+### Fixed
+
+- Use the Lance reader revision selected by DuckDB v2.0.1 for round-trip tests.
+- Unify Arrow and Parquet on version 58 and DataFusion on version 54 so Lance,
+  ATIF, and XML readers exchange the same Arrow types.
+
+### Changed
+
+- Pin Lance dependencies to the latest stable release, v14.0.3, replacing the
+  unreleased v15.0.0-beta.15 Git revision.
+
 ## 0.2.3 - 2026-11-23
 
 ### Changed
