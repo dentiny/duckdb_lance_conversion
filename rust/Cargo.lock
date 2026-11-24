@@ -403,9 +403,9 @@ checksum = "5d2050892d4691cf110586070786712b504985a4d37ed64a9cd8a402718e1706"
 
 [[package]]
 name = "atif-arrow"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c568936dd63943e81df044579fa679af571d843feef22b586d8ca6ca2b1b6932"
+checksum = "5ab06c675f25b07426666fc1214bdfe4c73ebb41bca39c3dbe17b87f08b1eedf"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -417,9 +417,9 @@ dependencies = [
 
 [[package]]
 name = "atif-io"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62f266af5d75bc0b1c22b5d859bf73d955197b34c3a50cedcd5d348636ab1b08"
+checksum = "f0962aa715be1ed0e4d1ef3256527c97ed887e5b5e9a83f88065cf1637022d84"
 dependencies = [
  "arrow-array",
  "async-compression",
@@ -642,9 +642,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.12.1"
+version = "1.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+checksum = "776dfebd015e2d8732c684a2c71003674ccb49457b539b9e82151ba38e96dd7c"
 
 [[package]]
 name = "cc"
@@ -1902,9 +1902,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -6059,9 +6059,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
@@ -6141,9 +6141,9 @@ dependencies = [
 
 [[package]]
 name = "warc-rs"
-version = "0.3.3"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99174793d99ca20c6511793f3feff565925d73a85f840bc7f4888a13edf3d217"
+checksum = "5226de0c1956dac7c3ee47484905c0321331ea2f3b7453810726277a42a41fd1"
 dependencies = [
  "async-compression",
  "chrono",
@@ -6792,9 +6792,9 @@ dependencies = [
 
 [[package]]
 name = "xml-arrow"
-version = "0.3.0"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f2044b4edab4af2aff0ed6d59267e4680c8f847043ee4642db98519a15dfac4"
+checksum = "527e65da26d90803d624cc2c65d1b793d57f27517137042e6e442e7d3bb060de"
 dependencies = [
  "arrow-array",
  "arrow-schema",
