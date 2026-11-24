@@ -18,6 +18,6 @@ duckdb_extension_load(parquet)
 if(BUILD_UNITTESTS)
   duckdb_extension_load(
     lance GIT_URL https://github.com/lance-format/lance-duckdb.git
-    # Pin the upstream Lance reader used by the round-trip SQL tests.
-    GIT_TAG 778bf0d63896f6ee2746939fc7df9c92f10085ce)
+    # Match the test reader selected by DuckDB v2.0.1's lance.cmake.
+    GIT_TAG 86118537da79138e6ec5c7358f2384c7ae650ab0)
 endif()
