@@ -53,7 +53,8 @@ public:
 	void ReportBytes(ClientContext &context) {
 		auto delta = TakeDelta(reported_bytes, Snapshot().bytes_read);
 		if (delta > 0) {
-			QueryProfiler::Get(context).TrackBytesRead(delta);
+			// The source bridge reports byte counts without I/O duration.
+			QueryProfiler::Get(context).TrackBytesRead(delta, /*elapsed_us=*/0);
 		}
 	}
 

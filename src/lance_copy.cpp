@@ -618,8 +618,9 @@ void LanceFinalize(ClientContext &context, FunctionData &bind, GlobalFunctionDat
 	LanceWriteMetrics metrics;
 	lance_conversion_get_metrics(global.dataset, &metrics);
 	auto &profiler = QueryProfiler::Get(context);
-	profiler.TrackBytesRead(metrics.bytes_read);
-	profiler.TrackBytesWritten(metrics.bytes_written);
+	// The writer bridge reports byte counts without I/O duration.
+	profiler.TrackBytesRead(metrics.bytes_read, /*elapsed_us=*/0);
+	profiler.TrackBytesWritten(metrics.bytes_written, /*elapsed_us=*/0);
 }
 
 CopyFunctionExecutionMode LanceExecutionMode(bool preserve_insertion_order, bool supports_batch_index) {
