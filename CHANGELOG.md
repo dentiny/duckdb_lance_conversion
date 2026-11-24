@@ -2,6 +2,9 @@
 
 ### Fixed
 
+- Cast WARC timestamps to `TIMESTAMP` in epoch-millisecond assertions to avoid
+  DuckDB v2.0.1's failing `epoch_ms` overload for `TIMESTAMP_MS` / `TIMESTAMP_NS`.
+
 - Align the independent round-trip test reader with the Lance v14.0.3 writer
   and DuckDB v2.0.1 API baseline.
 - Align the extension-version regression with the v0.2.3 patch release.

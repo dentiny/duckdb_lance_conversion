@@ -49,8 +49,17 @@ EXECUTE warc_scan;
 ----
 2
 
+query T
+SELECT DISTINCT typeof(date)
+FROM read_warc('test/data/records.warc');
+----
+TIMESTAMP_MS
+
+# DuckDB v2.0.1 binds TIMESTAMP_MS to an epoch_ms overload that fails with
+# "Unimplemented type for cast (INT64 -> INT64)". Use the working microsecond
+# overload while retaining exact epoch-millisecond assertions.
 query TTI rowsort
-SELECT type, id, epoch_ms(date)
+SELECT type, id, epoch_ms(date::TIMESTAMP)
 FROM read_warc('test/data/records.warc', max_read_parallelism = 2);
 ----
 response	<urn:uuid:1>	1704164645000
@@ -98,7 +107,7 @@ statement ok
 LOAD '__BUILD_DIRECTORY__/extension/lance/lance.duckdb_extension'
 
 query TIITT rowsort
-SELECT id, content_length, epoch_ms(date), type, content_type
+SELECT id, content_length, epoch_ms(date::TIMESTAMP), type, content_type
 FROM '__TEST_DIR__/warc.lance';
 ----
 <urn:uuid:1>	5	1704164645000	response	application/octet-stream
