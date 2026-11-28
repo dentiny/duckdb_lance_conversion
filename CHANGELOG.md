@@ -2,6 +2,9 @@
 
 ### Fixed
 
+- Resolve S3 secrets for each ATIF media URI, including references from local
+  trajectories, while preserving scoped credentials and original provenance.
+
 - Cast WARC timestamps to `TIMESTAMP` in epoch-millisecond assertions to avoid
   DuckDB v2.0.1's failing `epoch_ms` overload for `TIMESTAMP_MS` / `TIMESTAMP_NS`.
 

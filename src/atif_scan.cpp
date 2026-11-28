@@ -38,8 +38,9 @@ unique_ptr<FunctionData> BindAtif(ClientContext &context, TableFunctionBindInput
 
 	auto opendal_config = ReadOpendalConfig(context);
 	SourceStreamFactory *factory = nullptr;
+	auto media_s3_resolver = CreateS3Resolver(context);
 	ThrowIfLanceError(lance_atif_open(path.c_str(), format.empty() ? nullptr : format.c_str(),
-	                                  s3 ? &s3->config : nullptr, &opendal_config, &factory),
+	                                  s3 ? &s3->config : nullptr, &opendal_config, &media_s3_resolver, &factory),
 	                  "ATIF reader");
 	return BindSourceStream(context, factory, return_types, names);
 }

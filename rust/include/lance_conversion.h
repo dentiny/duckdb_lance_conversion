@@ -20,6 +20,16 @@ struct LanceS3Config {
 	int32_t virtual_host_style = 0;
 };
 
+// resolve calls receive synchronously while config/error are valid. The
+// receiver copies them before resolve returns. The source owns private_data and
+// calls release.
+struct LanceS3Resolver {
+	void *private_data;
+	void (*resolve)(void *private_data, const char *uri, void *result,
+	                void (*receive)(void *result, const struct LanceS3Config *config, const char *error));
+	void (*release)(void *private_data);
+};
+
 // Snapshot of the connection's OpenDAL extension settings. Durations are milliseconds.
 struct LanceOpendalConfig {
 	uint64_t timeout_ms;
@@ -171,8 +181,11 @@ char *lance_warc_open(const char *path, const char *index_path, const struct Lan
                       struct SourceStreamFactory **output);
 // format is "json" or "jsonl"; NULL or empty infers it from the path extension.
 // Projected media references are always loaded into source.path as binary bytes.
+// Takes ownership of media_s3_resolver->private_data, including on failure.
+// A NULL resolver preserves the fixed s3 configuration for Rust-only callers.
 char *lance_atif_open(const char *path, const char *format, const struct LanceS3Config *s3,
-                      const struct LanceOpendalConfig *opendal_config, struct SourceStreamFactory **output);
+                      const struct LanceOpendalConfig *opendal_config, const struct LanceS3Resolver *media_s3_resolver,
+                      struct SourceStreamFactory **output);
 // record_element is an absolute element path such as "/catalog/book"; each matching element becomes a row.
 // This infers the schema from the start of the file; later scans fail if they infer a different one.
 char *lance_xml_open(const char *path, const char *record_element, const struct LanceXmlOptions *options,
