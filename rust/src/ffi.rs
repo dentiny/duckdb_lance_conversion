@@ -1,5 +1,5 @@
 use std::collections::{btree_map::Entry, BTreeMap};
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
@@ -57,6 +57,60 @@ pub struct LanceS3Config {
     session_token: *const c_char,
     use_ssl: i32,
     virtual_host_style: i32,
+}
+
+type S3ConfigReceiver = unsafe extern "C" fn(*mut c_void, *const LanceS3Config, *const c_char);
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LanceS3Resolver {
+    private_data: *mut c_void,
+    resolve: unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_void, S3ConfigReceiver),
+    release: unsafe extern "C" fn(*mut c_void),
+}
+
+struct MediaS3Resolver(LanceS3Resolver);
+
+// The C++ bridge owns a DatabaseInstance reference and performs read-only secret
+// lookups through DuckDB's thread-safe secret manager, without mutable state.
+unsafe impl Send for MediaS3Resolver {}
+unsafe impl Sync for MediaS3Resolver {}
+
+impl MediaS3Resolver {
+    fn resolve(&self, uri: &str) -> Result<S3StorageConfig> {
+        unsafe extern "C" fn receive(
+            result: *mut c_void,
+            config: *const LanceS3Config,
+            error: *const c_char,
+        ) {
+            let result = &mut *result.cast::<Result<S3StorageConfig>>();
+            *result = if error.is_null() {
+                s3_config(config).and_then(|config| {
+                    config.ok_or_else(|| Error::message("Missing resolved S3 configuration"))
+                })
+            } else {
+                Err(Error::message(CStr::from_ptr(error).to_string_lossy()))
+            };
+        }
+        let uri =
+            CString::new(uri).map_err(|_| Error::message("S3 media URI contains a NUL byte"))?;
+        let mut result = Err(Error::message("S3 resolver did not return a configuration"));
+        unsafe {
+            (self.0.resolve)(
+                self.0.private_data,
+                uri.as_ptr(),
+                ptr::from_mut(&mut result).cast(),
+                receive,
+            );
+        }
+        result
+    }
+}
+
+impl Drop for MediaS3Resolver {
+    fn drop(&mut self) {
+        unsafe { (self.0.release)(self.0.private_data) };
+    }
 }
 
 #[repr(C)]
@@ -731,9 +785,14 @@ pub unsafe extern "C" fn lance_atif_open(
     format: *const c_char,
     s3: *const LanceS3Config,
     opendal_config: *const OpendalConfig,
+    media_s3_resolver: *const LanceS3Resolver,
     output: *mut *mut SourceStreamFactory,
 ) -> *mut c_char {
     call(|| {
+        let media_s3_resolver = media_s3_resolver
+            .as_ref()
+            .copied()
+            .map(|resolver| Arc::new(MediaS3Resolver(resolver)));
         if path.is_null() || output.is_null() {
             return Err(Error::message("null ATIF reader argument"));
         }
@@ -752,6 +811,10 @@ pub unsafe extern "C" fn lance_atif_open(
             }
             if let Some(config) = &s3_config {
                 source = source.with_s3_config(config.clone());
+            }
+            if let Some(resolver) = &media_s3_resolver {
+                let resolver = resolver.clone();
+                source = source.with_media_s3_resolver(move |uri| resolver.resolve(uri));
             }
             source
         });
@@ -917,6 +980,81 @@ pub unsafe extern "C" fn lance_source_destroy(factory: *mut SourceStreamFactory)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_s3_resolver_copies_results_and_releases_owner() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        unsafe extern "C" fn resolve(
+            _: *mut c_void,
+            uri: *const c_char,
+            result: *mut c_void,
+            receive: S3ConfigReceiver,
+        ) {
+            let endpoint = CString::new("localhost:9000").unwrap();
+            let error = CString::new("secret resolution failed").unwrap();
+            let config = LanceS3Config {
+                endpoint: endpoint.as_ptr(),
+                region: ptr::null(),
+                key_id: ptr::null(),
+                secret: ptr::null(),
+                session_token: ptr::null(),
+                use_ssl: 0,
+                virtual_host_style: 0,
+            };
+            if CStr::from_ptr(uri).to_bytes() == b"s3://fail/object" {
+                receive(result, ptr::null(), error.as_ptr());
+            } else {
+                receive(result, &config, ptr::null());
+            }
+        }
+        unsafe extern "C" fn release(data: *mut c_void) {
+            let released = Box::from_raw(data.cast::<Arc<AtomicBool>>());
+            released.store(true, Ordering::SeqCst);
+        }
+        let released = Arc::new(AtomicBool::new(false));
+        let resolver = Arc::new(MediaS3Resolver(LanceS3Resolver {
+            private_data: Box::into_raw(Box::new(released.clone())).cast(),
+            resolve,
+            release,
+        }));
+        let config = resolver.resolve("s3://bucket/object").unwrap();
+        assert_eq!(config.endpoint.as_deref(), Some("localhost:9000"));
+        assert!(!config.use_ssl);
+        assert!(resolver
+            .resolve("s3://fail/object")
+            .unwrap_err()
+            .to_string()
+            .contains("secret resolution failed"));
+        let retained = resolver.clone();
+        drop(resolver);
+        assert!(!released.load(Ordering::SeqCst));
+        drop(retained);
+        assert!(released.load(Ordering::SeqCst));
+
+        // Ownership is also released when opening the ATIF source fails.
+        released.store(false, Ordering::SeqCst);
+        let descriptor = LanceS3Resolver {
+            private_data: Box::into_raw(Box::new(released.clone())).cast(),
+            resolve,
+            release,
+        };
+        let mut output = ptr::null_mut();
+        unsafe {
+            let error = lance_atif_open(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                &descriptor,
+                &mut output,
+            );
+            assert!(!error.is_null());
+            lance_conversion_error_free(error);
+        }
+        assert!(output.is_null());
+        assert!(released.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn dataset_cleanup_only_removes_selected_prefix() {

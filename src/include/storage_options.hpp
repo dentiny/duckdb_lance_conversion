@@ -25,5 +25,6 @@ struct LanceS3Options {
 };
 
 unique_ptr<LanceS3Options> ReadS3Options(ClientContext &context, const string &path);
+LanceS3Resolver CreateS3Resolver(ClientContext &context);
 
 } // namespace duckdb

@@ -15,7 +15,7 @@ use url::Url;
 use crate::atif::{ContentType, StoragePolicy, SOURCE_TYPE, STORAGE_POLICY};
 use crate::error::ResultExt;
 use crate::source::{read_object, ReadMetrics};
-use crate::storage::InputFile;
+use crate::storage::{is_s3_uri, InputFile, S3ConfigResolver};
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 /// Each Arrow struct row is one ContentPart with its own concrete type.
@@ -140,6 +140,7 @@ fn decode_data_uri(uri: &str) -> Result<Vec<u8>> {
 pub(super) struct MediaResolver {
     pub document: String,
     pub s3_config: Option<S3StorageConfig>,
+    pub s3_resolver: Option<S3ConfigResolver>,
     pub opendal_config: OpendalConfig,
     pub metrics: Arc<ReadMetrics>,
 }
@@ -149,11 +150,15 @@ impl MediaResolver {
         if uri.starts_with("data:") {
             return decode_data_uri(uri);
         }
-        let input = InputFile::open(
-            uri,
-            self.s3_config.as_ref().filter(|_| uri.starts_with("s3://")),
-            &self.opendal_config,
-        )?;
+        let s3_config = if is_s3_uri(uri) {
+            match &self.s3_resolver {
+                Some(resolve) => Some(resolve(uri)?),
+                None => self.s3_config.clone(),
+            }
+        } else {
+            None
+        };
+        let input = InputFile::open(uri, s3_config.as_ref(), &self.opendal_config)?;
         let size = input
             .operator
             .stat(&input.opendal_path)

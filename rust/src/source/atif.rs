@@ -6,7 +6,7 @@ use atif_io::{InputFormat, TrajectoryReader};
 use futures::{StreamExt, TryStreamExt};
 
 use super::{decompressed_input, is_gzipped, read_object, BatchSource, BatchStream, ReadMetrics};
-use crate::storage::InputFile;
+use crate::storage::{InputFile, S3ConfigResolver};
 use crate::{Error, OpendalConfig, Result, S3StorageConfig};
 
 // Each row holds a whole trajectory, including its raw JSON, so batches are
@@ -45,6 +45,7 @@ pub struct AtifSource {
     path: String,
     format: Option<String>,
     s3_config: Option<S3StorageConfig>,
+    media_s3_resolver: Option<S3ConfigResolver>,
     opendal_config: OpendalConfig,
     projection: Option<Vec<usize>>,
     metrics: Arc<ReadMetrics>,
@@ -56,6 +57,7 @@ impl AtifSource {
             path: path.into(),
             format: None,
             s3_config: None,
+            media_s3_resolver: None,
             opendal_config: OpendalConfig::default(),
             projection: None,
             metrics: Arc::new(ReadMetrics::default()),
@@ -71,6 +73,15 @@ impl AtifSource {
 
     pub fn with_s3_config(mut self, config: S3StorageConfig) -> Self {
         self.s3_config = Some(config);
+        self
+    }
+
+    /// Resolve each S3 media URI separately, for example with DuckDB scoped secrets.
+    pub fn with_media_s3_resolver(
+        mut self,
+        resolver: impl Fn(&str) -> Result<S3StorageConfig> + Send + Sync + 'static,
+    ) -> Self {
+        self.media_s3_resolver = Some(Arc::new(resolver));
         self
     }
 
@@ -127,6 +138,7 @@ impl BatchSource for AtifSource {
         let resolver = Arc::new(MediaResolver {
             document: input.uri,
             s3_config: self.s3_config,
+            s3_resolver: self.media_s3_resolver,
             opendal_config: self.opendal_config,
             metrics: self.metrics,
         });

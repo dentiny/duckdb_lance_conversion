@@ -82,9 +82,9 @@ LanceOpendalConfig ReadOpendalConfig(ClientContext &context) {
 	return result;
 }
 
-unique_ptr<LanceS3Options> ReadS3Options(ClientContext &context, const string &path) {
+static unique_ptr<LanceS3Options> ReadS3Options(DatabaseInstance &db, const string &path) {
 	auto result = make_uniq<LanceS3Options>();
-	KeyValueSecretReader secret_reader(*context.db, "s3", path);
+	KeyValueSecretReader secret_reader(db, "s3", path);
 	secret_reader.TryGetSecretKey("key_id", result->key_id);
 	secret_reader.TryGetSecretKey("secret", result->secret);
 	secret_reader.TryGetSecretKey("session_token", result->session_token);
@@ -105,6 +105,29 @@ unique_ptr<LanceS3Options> ReadS3Options(ClientContext &context, const string &p
 	                  result->use_ssl ? 1 : 0,
 	                  result->virtual_host_style ? 1 : 0};
 	return result;
+}
+
+unique_ptr<LanceS3Options> ReadS3Options(ClientContext &context, const string &path) {
+	return ReadS3Options(*context.db, path);
+}
+
+LanceS3Resolver CreateS3Resolver(ClientContext &context) {
+	return {
+	    new shared_ptr<DatabaseInstance>(context.db),
+	    [](void *data, const char *uri, void *result, void (*receive)(void *, const LanceS3Config *, const char *)) {
+		    try {
+			    auto &db = *static_cast<shared_ptr<DatabaseInstance> *>(data);
+			    auto options = ReadS3Options(*db, uri);
+			    receive(result, &options->config, nullptr);
+		    } catch (const std::exception &error) {
+			    receive(result, nullptr, error.what());
+		    } catch (...) {
+			    receive(result, nullptr, "Failed to resolve S3 media secret");
+		    }
+	    },
+	    [](void *data) {
+		    delete static_cast<shared_ptr<DatabaseInstance> *>(data);
+	    }};
 }
 
 bool LanceDatasetExists(ClientContext &context, const string &path) {

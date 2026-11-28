@@ -269,8 +269,10 @@ TO 'trajectory.lance' (FORMAT LANCE, COLUMN_COMPRESSION {
 ```
 
 Media paths resolve relative to the document, including JSONL/gzip inputs.
-Local documents support local files, `file://`, HTTP(S) and data URIs; remote
-media stays within the document's storage origin and uses its credentials.
+Local documents support local files, `file://`, HTTP(S), S3 and data URIs. Each
+S3 media URI uses its own best-matching scoped DuckDB secret, including for a
+local trajectory; no application-side downloads or JSON rewriting are needed.
+Remote media stays within the document's storage origin.
 Missing projected media fails the scan; metadata-only projections skip media I/O.
 
 Format 2.2 is the default; its SDK codec policy may fall back to Zstd for wide
@@ -720,3 +722,17 @@ automatically cast them.
 - Add per-stage timing for download, decode, Lance write, and index creation.
 - Integrate cancellation with DuckDB.
 - Add crash recovery, resumable conversions, and cleanup of uncommitted files.
+
+### Scoped ATIF media regression
+
+With a built extension and `cache_httpfs` available to the CLI:
+
+```sh
+python3 test/python/atif_s3_media.py --unsigned \
+  --duckdb build/release/duckdb \
+  --extension build/release/extension/lance_conversion/lance_conversion.duckdb_extension
+```
+
+This stdlib-only check serves two local S3-compatible objects, verifies scoped
+secret selection and credentials for each, checks message and observation bytes
+and original JSON/provenance, and exports the resulting trajectory to Lance.

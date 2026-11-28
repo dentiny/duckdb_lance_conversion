@@ -20,6 +20,8 @@ use url::Url;
 use crate::error::ResultExt;
 use crate::{Error, Result};
 
+pub(crate) type S3ConfigResolver = Arc<dyn Fn(&str) -> Result<S3StorageConfig> + Send + Sync>;
+
 const DEFAULT_STORAGE_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_STORAGE_IO_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_STORAGE_RETRY_MAX_TIMES: u64 = 3;
